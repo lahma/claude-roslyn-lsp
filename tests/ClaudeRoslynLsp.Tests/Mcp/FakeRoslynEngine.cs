@@ -81,6 +81,9 @@ internal sealed class FakeRoslynEngine : IRoslynEngine
     /// <summary>The last compiler diagnostics scope that was set, if any.</summary>
     internal CompilerDiagnosticsScope? CompilerScope { get; private set; }
 
+    /// <summary>The last analyzer scope that was pushed, if any (D82).</summary>
+    internal CompilerDiagnosticsScope? AnalyzerScope { get; private set; }
+
     /// <summary>The last organize-imports-on-format setting, if any.</summary>
     internal bool? OrganizeImportsOnFormat { get; private set; }
 
@@ -209,6 +212,14 @@ internal sealed class FakeRoslynEngine : IRoslynEngine
     {
         Calls.Add(nameof(SetCompilerDiagnosticsScopeAsync) + ":" + scope);
         CompilerScope = scope;
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc />
+    public Task SetAnalyzerDiagnosticsScopeAsync(CompilerDiagnosticsScope scope, CancellationToken cancellationToken)
+    {
+        Calls.Add(nameof(SetAnalyzerDiagnosticsScopeAsync) + ":" + scope);
+        AnalyzerScope = scope;
         return Task.CompletedTask;
     }
 

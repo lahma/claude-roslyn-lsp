@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Text.Json;
 
 using ClaudeRoslynLsp.Cli;
@@ -619,7 +618,7 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
 
         if (_serverBound.TryResolveOutboundId(id, out var outboundId) && Server is { } server)
         {
-            server.Post(BuildCancelRequest(outboundId));
+            server.Post(RoslynResponses.BuildCancelRequest(outboundId));
         }
     }
 
@@ -833,7 +832,7 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
 
         if (pending.Completion is { } completion)
         {
-            CompleteAdapterRequest(body, info, pending, completion);
+            RoslynResponses.Complete(body, info, pending.Method, completion);
             return;
         }
 
@@ -883,37 +882,6 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
         }
 
         return LspMessageScanner.RewriteId(body, info, pending.OriginalIdToken!);
-    }
-
-    /// <summary>Delivers an answer to a question the adapter asked itself.</summary>
-    private static void CompleteAdapterRequest(
-        byte[] body,
-        LspMessageInfo info,
-        PendingRequest pending,
-        TaskCompletionSource<JsonElement> completion)
-    {
-        if (info.Kind == LspMessageKind.ErrorResponse)
-        {
-            // The code, not only the sentence: -32801 means "the document moved, ask again" and the
-            // diagnostics bridge acts on that differently from every other refusal.
-            var (code, message) = ErrorOf(body);
-            completion.TrySetException(new RoslynRequestException(pending.Method, code, message));
-
-            return;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-
-            completion.TrySetResult(document.RootElement.TryGetProperty("result", out var result)
-                ? result.Clone()
-                : JsonRpc.Null);
-        }
-        catch (JsonException exception)
-        {
-            completion.TrySetException(exception);
-        }
     }
 
     /// <summary>Forwards a Roslyn-originated message to the client, minting an id for a request.</summary>
@@ -1223,21 +1191,6 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
             : [];
     }
 
-    /// <summary>Builds a <c>$/cancelRequest</c> naming the id Roslyn knows the request by.</summary>
-    private static byte[] BuildCancelRequest(int outboundId)
-    {
-        var buffer = new ArrayBufferWriter<byte>(32);
-
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            writer.WriteNumber("id"u8, outboundId);
-            writer.WriteEndObject();
-        }
-
-        return JsonRpcErrors.Notification("$/cancelRequest", buffer.WrittenSpan);
-    }
-
     /// <summary>Reports what the backend said it was, which is the first thing a bug report needs.</summary>
     private void LogBackendIdentity(JsonElement result)
     {
@@ -1264,38 +1217,6 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
         // with an authored one, and Roslyn advertises four providers it would then be promising on
         // Roslyn's behalf (C26).
         Log.BackendReady(_logger, name, version.Length == 0 ? "(no version)" : version);
-    }
-
-    /// <summary>Pulls the code and the message out of an error response.</summary>
-    private static (int Code, string Message) ErrorOf(byte[] body)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-
-            if (!document.RootElement.TryGetProperty("error", out var error)
-                || error.ValueKind != JsonValueKind.Object)
-            {
-                return (JsonRpcErrors.InternalError, "(no error object)");
-            }
-
-            var code = error.TryGetProperty("code", out var codeValue)
-                       && codeValue.ValueKind == JsonValueKind.Number
-                       && codeValue.TryGetInt32(out var parsed)
-                ? parsed
-                : JsonRpcErrors.InternalError;
-
-            var message = error.TryGetProperty("message", out var messageValue)
-                          && messageValue.ValueKind == JsonValueKind.String
-                ? messageValue.GetString() ?? "(no message)"
-                : "(no message)";
-
-            return (code, message);
-        }
-        catch (JsonException)
-        {
-            return (JsonRpcErrors.InternalError, "(unreadable)");
-        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1342,7 +1263,7 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
         {
             if (_serverBound.TryComplete(outboundId, out _))
             {
-                Server?.Post(BuildCancelRequest(outboundId));
+                Server?.Post(RoslynResponses.BuildCancelRequest(outboundId));
                 completion.TrySetCanceled(cancellationToken);
             }
         }).ConfigureAwait(false);

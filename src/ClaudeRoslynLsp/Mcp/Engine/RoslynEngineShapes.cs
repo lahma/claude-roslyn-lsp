@@ -366,9 +366,20 @@ internal sealed record DocumentSymbolNode
 }
 
 /// <summary>The formatting options a <c>textDocument/formatting</c> request carries.</summary>
+/// <remarks>
+/// <b>Use <see cref="Default"/>, never <c>new LspFormattingOptions()</c>.</b> A positional record
+/// struct's parameter defaults belong to the primary constructor, and the parameterless one a struct
+/// always has zeroes every field instead — so <c>new LspFormattingOptions()</c> sends
+/// <c>tabSize: 0</c>, which Roslyn's formatter answers with an assertion failure rather than an
+/// error (C59). A live run found that; nothing in the type system does.
+/// </remarks>
 /// <param name="TabSize">Indent width.</param>
 /// <param name="InsertSpaces">Indent with spaces rather than tabs.</param>
-internal readonly record struct LspFormattingOptions(int TabSize = 4, bool InsertSpaces = true);
+internal readonly record struct LspFormattingOptions(int TabSize = 4, bool InsertSpaces = true)
+{
+    /// <summary>Four spaces, which is what <c>.editorconfig</c> overrides where it has an opinion.</summary>
+    internal static LspFormattingOptions Default { get; } = new(TabSize: 4, InsertSpaces: true);
+}
 
 /// <summary>What happened to a file, for <c>workspace/didChangeWatchedFiles</c>.</summary>
 internal enum FileChangeType
@@ -451,6 +462,11 @@ internal sealed record WorkspaceProject(string Name, string Path, IReadOnlyList<
 /// <param name="ProcessId">The process that actually holds the workspace (C45), not the one that was launched.</param>
 /// <param name="WorkingSetBytes">That process's working set, because a loaded solution is a quarter of a gigabyte (C38).</param>
 /// <param name="Message">Why the workspace is not ready, when it is not.</param>
+/// <param name="Engine">
+/// How this process got its Roslyn: <c>owned</c> for one it launched itself. The shared engine (D23)
+/// reserves <c>attached</c>, and reporting the distinction is what makes "there are two Roslyn
+/// processes" observable rather than only documented.
+/// </param>
 internal sealed record WorkspaceState(
     WorkspaceLoadStatus Status,
     string? SolutionPath = null,
@@ -461,7 +477,8 @@ internal sealed record WorkspaceState(
     string? RoslynVersion = null,
     int? ProcessId = null,
     long? WorkingSetBytes = null,
-    string? Message = null)
+    string? Message = null,
+    string? Engine = null)
 {
     /// <summary>Whether the workspace will answer a question truthfully rather than emptily (C27).</summary>
     internal bool IsReady => Status == WorkspaceLoadStatus.Ready;

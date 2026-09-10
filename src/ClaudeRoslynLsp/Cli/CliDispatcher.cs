@@ -99,7 +99,7 @@ internal static class CliDispatcher
                 return await LspAdapterServer.RunStdioAsync(args[1..]).ConfigureAwait(false);
 
             case CliVerbs.Mcp:
-                return await McpServerSetup.RunStdioAsync().ConfigureAwait(false);
+                return await RunMcpAsync(args[1..]).ConfigureAwait(false);
 
             case CliVerbs.Doctor:
                 return await DoctorCommand.RunAsync(args[1..], fix: false).ConfigureAwait(false);
@@ -128,6 +128,37 @@ internal static class CliDispatcher
             default:
                 return Usage($"{ServerVersion.Name}: unknown argument '{args[0]}'.");
         }
+    }
+
+    /// <summary>
+    /// Runs the MCP server, having decided which Roslyn it is talking to.
+    /// </summary>
+    /// <remarks>
+    /// The verb's only argument is the hidden <c>--smoke</c>, which swaps the launched Roslyn for the
+    /// scripted backend in this process (D80). It is hidden for the same reason the <c>lsp</c> verb's
+    /// is: it is what lets <c>SmokeTest</c> prove the tool surface of a published Native AOT binary
+    /// on every release RID without downloading seventy megabytes of Roslyn onto five runners.
+    /// </remarks>
+    /// <param name="arguments">Whatever followed the verb.</param>
+    private static async Task<int> RunMcpAsync(string[] arguments)
+    {
+        var smoke = false;
+
+        foreach (var argument in arguments)
+        {
+            if (string.Equals(argument, McpBackendSelection.SmokeFlag, StringComparison.Ordinal))
+            {
+                smoke = true;
+                continue;
+            }
+
+            CliRuntime.WriteError($"{ServerVersion.Name}: `mcp` does not take the argument '{argument}'.");
+            return ExitUsage;
+        }
+
+        return await McpServerSetup
+            .RunStdioAsync(McpBackendSelection.Resolve(smoke), McpBackendSelection.Start)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

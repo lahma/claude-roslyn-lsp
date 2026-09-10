@@ -74,7 +74,8 @@ internal sealed class WorkspaceTools
                 state.LoadErrors is { Count: > 0 }
                     ? "Some projects did not load. Symbols in them will be missing from every answer; "
                         + "a `dotnet restore` or a build often fixes it."
-                    : null);
+                    : null,
+                state.Engine);
         }).ConfigureAwait(false);
     }
 }

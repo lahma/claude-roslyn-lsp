@@ -90,11 +90,26 @@ internal sealed partial class ConfigurationResponder
     internal const string CompilerDiagnosticsScopeSection =
         "csharp|background_analysis.dotnet_compiler_diagnostics_scope";
 
+    /// <summary>
+    /// Its analyzer twin, which is what a closed file's IDE and CA diagnostics need (C14, D82).
+    /// </summary>
+    /// <remarks>
+    /// Never raised by the <c>lsp</c> verb: D54's workspace mode reports compile errors only, and
+    /// raising this as well is what turns a hundred-project solution into a machine that is busy for
+    /// minutes. The MCP half raises it per call, and only when the caller asked for analyzers.
+    /// </remarks>
+    internal const string AnalyzerDiagnosticsScopeSection =
+        "csharp|background_analysis.dotnet_analyzer_diagnostics_scope";
+
     private static readonly byte[] FullSolutionValue = "\"fullSolution\""u8.ToArray();
+
+    /// <summary>The section <c>formatCode</c>'s <c>organizeUsings</c> argument moves.</summary>
+    internal const string OrganizeImportsOnFormatSection = "csharp|formatting.dotnet_organize_imports_on_format";
 
     private readonly Lock _lock = new();
     private readonly ILogger _logger;
     private readonly Dictionary<string, byte[]> _fromEnvironment;
+    private readonly Dictionary<string, byte[]> _overrides = new(StringComparer.Ordinal);
     private readonly bool _fullSolutionCompilerScope;
 
     private JsonElement _clientSettings;
@@ -129,6 +144,58 @@ internal sealed partial class ConfigurationResponder
 
     /// <summary>How many sections the environment override supplies.</summary>
     internal int EnvironmentSectionCount => _fromEnvironment.Count;
+
+    /// <summary>
+    /// Raised with the sections of every <c>workspace/configuration</c> request as it is answered.
+    /// </summary>
+    /// <remarks>
+    /// The MCP half's half of a round trip it has to wait for (D77). Changing a setting is a
+    /// <c>workspace/didChangeConfiguration</c> notification, which Roslyn answers by asking for the
+    /// sections again — so "the new value is in effect" is observable only as "the pull that carried
+    /// it has been answered". Without waiting for that, a solution-wide diagnostic pull races the
+    /// scope change it depends on and reports nothing, which reads exactly like a clean solution.
+    /// </remarks>
+    internal event Action<IReadOnlyList<string>>? Answered;
+
+    /// <summary>
+    /// Sets, or clears, a runtime answer for one section.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Highest precedence, ahead of the client's own settings, and deliberately (D77).</b> Every
+    /// other layer here is a standing preference: what the editor configured, what the environment
+    /// says, what this adapter thinks an agent wants. An override is set for the duration of one tool
+    /// call that cannot work without it — <c>getDiagnostics scope: "solution"</c> reports closed
+    /// files only under a <c>fullSolution</c> compiler scope (C14), and <c>formatCode
+    /// organizeUsings: true</c> sorts usings only when the format option is on. Losing to a static
+    /// setting would make those calls answer emptily and successfully, which is the failure mode this
+    /// product exists to remove.
+    /// </para>
+    /// <para>
+    /// It is never used by the <c>lsp</c> verb, where the standing answers are the whole point; the
+    /// dictionary is empty there and the lookup costs one miss.
+    /// </para>
+    /// </remarks>
+    /// <param name="section">The exact section name.</param>
+    /// <param name="rawJson">The raw JSON value, or <see langword="null"/> to drop the override.</param>
+    internal void SetOverride(string section, ReadOnlySpan<byte> rawJson)
+    {
+        ArgumentNullException.ThrowIfNull(section);
+
+        lock (_lock)
+        {
+            if (rawJson.IsEmpty)
+            {
+                _overrides.Remove(section);
+            }
+            else
+            {
+                _overrides[section] = rawJson.ToArray();
+            }
+        }
+
+        Log.Overridden(_logger, section);
+    }
 
     /// <summary>
     /// Records the client's <c>settings.roslyn</c> object, from <c>initializationOptions</c> or from
@@ -183,6 +250,13 @@ internal sealed partial class ConfigurationResponder
 
         lock (_lock)
         {
+            // Runtime overrides first: they are set per call by a tool that cannot work without
+            // them, where everything below is a standing preference. See SetOverride.
+            if (_overrides.TryGetValue(section, out var overridden))
+            {
+                return overridden;
+            }
+
             if (_clientSettings.ValueKind == JsonValueKind.Object
                 && _clientSettings.TryGetProperty(section, out var fromClient))
             {
@@ -238,6 +312,11 @@ internal sealed partial class ConfigurationResponder
         }
 
         Log.Answered(_logger, items.Count);
+
+        if (Answered is { } handler)
+        {
+            handler([.. items.Select(item => item.Section ?? string.Empty)]);
+        }
 
         return JsonRpcErrors.RawResult(idToken, buffer.WrittenSpan);
     }
@@ -306,6 +385,13 @@ internal sealed partial class ConfigurationResponder
             Message = "CLAUDE_ROSLYN_LSP_OPTIONS is a JSON {Kind}, not an object of section names, and is " +
                       "being ignored.")]
         internal static partial void OptionsNotAnObject(ILogger logger, string kind);
+
+        [LoggerMessage(
+            EventId = 705,
+            Level = LogLevel.Debug,
+            Message = "The section {Section} now has a runtime override, which outranks every standing " +
+                      "answer until it is cleared (D77).")]
+        internal static partial void Overridden(ILogger logger, string section);
 
         [LoggerMessage(
             EventId = 704,

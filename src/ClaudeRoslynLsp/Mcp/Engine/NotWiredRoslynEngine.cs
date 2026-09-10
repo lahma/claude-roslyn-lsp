@@ -100,6 +100,10 @@ internal sealed class NotWiredRoslynEngine : IRoslynEngine
         throw NotWired();
 
     /// <inheritdoc />
+    public Task SetAnalyzerDiagnosticsScopeAsync(CompilerDiagnosticsScope scope, CancellationToken cancellationToken) =>
+        throw NotWired();
+
+    /// <inheritdoc />
     public Task SetOrganizeImportsOnFormatAsync(bool enabled, CancellationToken cancellationToken) =>
         throw NotWired();
 

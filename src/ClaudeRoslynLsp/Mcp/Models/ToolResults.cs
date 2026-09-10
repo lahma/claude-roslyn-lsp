@@ -13,6 +13,12 @@ namespace ClaudeRoslynLsp.Mcp.Models;
 /// <param name="ProcessId">The process that holds the workspace (C45).</param>
 /// <param name="MemoryMegabytes">That process's working set.</param>
 /// <param name="Note">What to do next, when the answer is not a real one.</param>
+/// <param name="Engine">
+/// How this server got its Roslyn: <c>owned</c> when it launched one of its own. The plan reserves
+/// <c>attached</c> for the shared engine (D23), and until that lands the value is worth reporting
+/// precisely because it is always <c>owned</c> — a repository running both servers has two Roslyn
+/// processes and this is where that becomes visible rather than merely documented.
+/// </param>
 internal sealed record WorkspaceStatusResult(
     string Status,
     string? Solution = null,
@@ -23,7 +29,8 @@ internal sealed record WorkspaceStatusResult(
     string? RoslynVersion = null,
     int? ProcessId = null,
     int? MemoryMegabytes = null,
-    string? Note = null);
+    string? Note = null,
+    string? Engine = null);
 
 /// <summary>One project of the loaded workspace.</summary>
 /// <param name="Name">The project's name.</param>
@@ -289,7 +296,8 @@ internal static class NotReadyResults
             state.RoslynVersion,
             state.ProcessId,
             state.WorkingSetBytes is { } bytes ? (int) (bytes / 1024 / 1024) : null,
-            ToolStatus.NoteFor(state));
+            ToolStatus.NoteFor(state),
+            state.Engine);
 
     /// <inheritdoc cref="Workspace" />
     /// <param name="state">The workspace state.</param>

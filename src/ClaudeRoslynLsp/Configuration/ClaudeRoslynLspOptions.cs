@@ -176,6 +176,21 @@ internal sealed record ClaudeRoslynLspOptions
     /// </summary>
     internal bool FileWatcher { get; init; } = true;
 
+    /// <summary>
+    /// <c>CLAUDE_ROSLYN_LSP_GC</c> — which garbage collector the Roslyn child runs with:
+    /// <c>workstation</c> (the default) or <c>server</c>.
+    /// </summary>
+    /// <remarks>
+    /// C54 measured the trade on OrchardCore's 239 projects: server GC — which is what Roslyn's own
+    /// <c>runtimeconfig.json</c> asks for — peaks at 1,931-2,089 MB of working set and loads in
+    /// 20.4 s; workstation GC peaks at <b>577 MB</b> and loads in 28.2 s. This adapter defaults to
+    /// workstation and says so in <c>doctor</c> (D79): 8 seconds once per session is a cost a user
+    /// notices and forgives, and 1.5 GB is a cost their whole machine pays for as long as the session
+    /// lasts. A <c>DOTNET_gcServer</c> already in the environment is left exactly as it is, because
+    /// somebody who set it meant it.
+    /// </remarks>
+    internal string? GarbageCollector { get; init; }
+
     /// <summary><c>CLAUDE_ROSLYN_LSP_LOG_LEVEL</c> — minimum level for this adapter's stderr logger.</summary>
     internal LogLevel LogLevel { get; init; } = DefaultLogLevel;
 
@@ -235,6 +250,7 @@ internal sealed record ClaudeRoslynLspOptions
             DiagnosticMinSeverity = ReadConfigured(read, "CLAUDE_ROSLYN_LSP_DIAGNOSTIC_MIN_SEVERITY"),
             WorkspaceDiagnostics = ReadConfigured(read, "CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS"),
             FileWatcher = ReadBoolean(read, "CLAUDE_ROSLYN_LSP_FILE_WATCHER", defaultValue: true),
+            GarbageCollector = ReadConfigured(read, "CLAUDE_ROSLYN_LSP_GC"),
             LogLevel = ReadLogLevel(read, "CLAUDE_ROSLYN_LSP_LOG_LEVEL") ?? DefaultLogLevel,
             RoslynLogLevel = ReadLogLevel(read, "CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL"),
 

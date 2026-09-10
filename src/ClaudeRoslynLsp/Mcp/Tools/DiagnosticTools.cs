@@ -99,8 +99,15 @@ internal sealed class DiagnosticTools
                     ? ProjectDirectory(context, state, project, path)
                     : null;
 
+                // An explicit `ids` list overrides includeAnalyzers (D67), so it also decides whether
+                // the analyzer scope has to be raised: `ids: ["IDE0005"]` is a caller asking for an
+                // analyzer diagnostic by name, and D82 is what makes a closed file answer for one.
                 pulled = await DiagnosticQuery
-                    .ForWorkspaceAsync(context, directory, cancellationToken)
+                    .ForWorkspaceAsync(
+                        context,
+                        directory,
+                        includeAnalyzers || ids is { Length: > 0 },
+                        cancellationToken)
                     .ConfigureAwait(false);
 
                 note = DiagnosticQuery.DesignTimeNote + DiagnosticQuery.OpenDocumentsNote;

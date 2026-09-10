@@ -275,12 +275,24 @@ partial class Build : FalloutBuild,
                 ["CLAUDE_ROSLYN_LSP_FAKE_BACKEND"] = "child",
             }, arguments: "lsp");
 
-            // Leg 3: the MCP verb, same binary, different argument.
-            var toolNames = Handshake(environment: null, ExpectedToolNames, arguments: "mcp");
+            // Leg 3: the MCP verb with NO backend wired in at all (D69). The handshake and
+            // tools/list must not depend on one - that is what lets a client render the tool surface
+            // in the seconds before anything has been launched, and what keeps this leg free of a
+            // 70 MB download on five release runners.
+            var toolNames = Handshake(
+                new Dictionary<string, string> { ["CLAUDE_ROSLYN_LSP_FAKE_BACKEND"] = "none" },
+                ExpectedToolNames,
+                arguments: "mcp");
+
+            // Leg 4: the MCP verb with the scripted backend and the eager start (D76) actually
+            // running. It proves the one thing leg 3 cannot: that launching a backend from the
+            // initialized notification does not put a byte on stdout, which is the protocol channel.
+            Handshake(environment: null, ExpectedToolNames, arguments: "mcp --smoke");
 
             ReportSummary(_ => _
                 .AddPair("Runtime", Runtime)
                 .AddPair("LSP legs", "2")
+                .AddPair("MCP legs", "2")
                 .AddPair("Tools", toolNames.Length.ToString()));
         });
 

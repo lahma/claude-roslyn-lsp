@@ -43,7 +43,15 @@ internal static class McpServerSetup
     /// Builds the Roslyn session the tools run against. <see langword="null"/> registers
     /// <see cref="NotWiredRoslynEngine"/>.
     /// </param>
-    internal static async Task<int> RunStdioAsync(Func<IServiceProvider, IRoslynEngine>? engineFactory = null)
+    /// <param name="start">
+    /// Called once the client has sent <c>notifications/initialized</c>, with the resolved engine.
+    /// This is where the backend is launched (D76): every MCP client starts its servers when the
+    /// session starts and calls a tool minutes later, so the 3-45 s solution load (C31, C53) is paid
+    /// during time the user is already spending rather than by the first question.
+    /// </param>
+    internal static async Task<int> RunStdioAsync(
+        Func<IServiceProvider, IRoslynEngine>? engineFactory = null,
+        Action<IRoslynEngine>? start = null)
     {
         using var shutdown = new CancellationTokenSource();
 
@@ -74,6 +82,10 @@ internal static class McpServerSetup
 
         var jsonOptions = CreateToolSerializerOptions();
 
+        // Resolved before the container is built so the notification handler can close over it: the
+        // handler collection is enumerated once, when the server is constructed.
+        IRoslynEngine? engine = null;
+
         var builder = services
             .AddMcpServer(serverOptions =>
             {
@@ -91,12 +103,38 @@ internal static class McpServerSetup
                 // nothing to answer `tools/list` with. WithTools<T> fills this collection in, so the
                 // `??=` is now only a guard against a future registration path that does not.
                 serverOptions.ToolCollection ??= new McpServerPrimitiveCollection<McpServerTool>();
+
+                if (start is null)
+                {
+                    return;
+                }
+
+                // The eager start (D76). `notifications/initialized` is the first moment there is a
+                // client, and launching from here rather than from the first tool call is the whole
+                // point: the client sends it seconds after spawning the process and may not call a
+                // tool for minutes.
+                serverOptions.Handlers.NotificationHandlers =
+                [
+                    new KeyValuePair<string, Func<JsonRpcNotification, CancellationToken, ValueTask>>(
+                        NotificationMethods.InitializedNotification,
+                        (_, _) =>
+                        {
+                            if (engine is { } resolved)
+                            {
+                                start(resolved);
+                            }
+
+                            return ValueTask.CompletedTask;
+                        }),
+                ];
             })
             .WithStdioServerTransport();
 
         RegisterTools(builder, jsonOptions);
 
         await using var provider = services.BuildServiceProvider();
+
+        engine = provider.GetRequiredService<IRoslynEngine>();
 
         // The error funnel's one dependency. Resolved here rather than passed into every tool method,
         // so that no tool signature carries a parameter the schema then has to exclude.
@@ -113,6 +151,16 @@ internal static class McpServerSetup
         catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
         {
             // Signalled shutdown is a normal exit.
+        }
+        finally
+        {
+            // The child is told to shut down rather than being left for the process to take with it:
+            // Roslyn watches this pid and would exit anyway (D35), but an orderly `shutdown`/`exit`
+            // lets it flush its own logs and closes the pipe on both sides.
+            if (engine is IAsyncDisposable disposable)
+            {
+                await disposable.DisposeAsync().ConfigureAwait(false);
+            }
         }
 
         return CliDispatcher.ExitSuccess;

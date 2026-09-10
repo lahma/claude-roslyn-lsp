@@ -163,7 +163,7 @@ internal interface IRoslynEngine
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Changes the compiler and analyzer diagnostic scopes Roslyn runs with.
+    /// Changes the <b>compiler</b> diagnostic scope Roslyn runs with.
     /// </summary>
     /// <remarks>
     /// Implemented as a <c>workspace/didChangeConfiguration</c> notification followed by answering
@@ -175,6 +175,28 @@ internal interface IRoslynEngine
     /// <param name="scope">The scope to run with.</param>
     /// <param name="cancellationToken">The client's cancellation.</param>
     Task SetCompilerDiagnosticsScopeAsync(CompilerDiagnosticsScope scope, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Changes the <b>analyzer</b> diagnostic scope, which is a separate setting from the compiler's.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// C14's second sentence, and a live run paid to learn it (D82): raising the compiler scope makes
+    /// <c>workspace/diagnostic</c> report closed files' <em>compiler</em> errors, and analyzer
+    /// diagnostics for those same files need <c>dotnet_analyzer_diagnostics_scope</c> raised too.
+    /// Without this <c>fixDiagnostics IDE0005 scope: "solution"</c> finds no site at all, which reads
+    /// as "there is nothing to fix" and is the exact class of confidently-wrong answer this product
+    /// exists to remove.
+    /// </para>
+    /// <para>
+    /// Deliberately separate rather than folded into the call above: it is the more expensive of the
+    /// two — every analyzer over every file — so it is raised only when the caller asked for analyzer
+    /// diagnostics, and the adapter's standing answer stays <c>openFiles</c> (D48, D54).
+    /// </para>
+    /// </remarks>
+    /// <param name="scope">The scope to run with.</param>
+    /// <param name="cancellationToken">The client's cancellation.</param>
+    Task SetAnalyzerDiagnosticsScopeAsync(CompilerDiagnosticsScope scope, CancellationToken cancellationToken);
 
     /// <summary>
     /// Sets <c>csharp|formatting.dotnet_organize_imports_on_format</c>, which is what makes

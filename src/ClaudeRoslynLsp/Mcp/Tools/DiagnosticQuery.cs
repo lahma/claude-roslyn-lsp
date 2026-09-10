@@ -132,10 +132,17 @@ internal static class DiagnosticQuery
     /// </summary>
     /// <param name="context">The tool context.</param>
     /// <param name="projectDirectory">When set, only files under this directory are kept.</param>
+    /// <param name="includeAnalyzers">
+    /// Whether the caller wants IDE/CA rules as well. C14 has two halves and this is the second
+    /// (D82): the compiler scope makes a closed file's <em>compiler</em> errors reachable, and its
+    /// analyzer diagnostics need the analyzer scope raised too. Raised only when asked for, because
+    /// running every analyzer over every file is the expensive half.
+    /// </param>
     /// <param name="cancellationToken">The client's cancellation.</param>
     internal static async Task<IReadOnlyList<(string Path, RawDiagnostic Diagnostic)>> ForWorkspaceAsync(
         RoslynToolContext context,
         string? projectDirectory,
+        bool includeAnalyzers,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -143,6 +150,13 @@ internal static class DiagnosticQuery
         await context.Engine
             .SetCompilerDiagnosticsScopeAsync(CompilerDiagnosticsScope.FullSolution, cancellationToken)
             .ConfigureAwait(false);
+
+        if (includeAnalyzers)
+        {
+            await context.Engine
+                .SetAnalyzerDiagnosticsScopeAsync(CompilerDiagnosticsScope.FullSolution, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         var report = await context.Engine.WorkspaceDiagnosticAsync([], cancellationToken).ConfigureAwait(false);
 

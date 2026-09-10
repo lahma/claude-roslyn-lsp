@@ -179,7 +179,7 @@ internal sealed class EditTools
                     .ConfigureAwait(false);
 
                 var edits = await context.Engine
-                    .FormattingAsync(session.Uri, new LspFormattingOptions(), cancellationToken)
+                    .FormattingAsync(session.Uri, LspFormattingOptions.Default, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (edits.Count == 0)

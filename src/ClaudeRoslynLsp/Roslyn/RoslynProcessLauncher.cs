@@ -18,6 +18,16 @@ internal enum RoslynTransport
     Stdio,
 }
 
+/// <summary>Which garbage collector the Roslyn child runs with (D79, C54).</summary>
+internal enum RoslynGarbageCollector
+{
+    /// <summary>Workstation GC: ~577 MB on a 239-project solution, 8 s slower to load. The default.</summary>
+    Workstation,
+
+    /// <summary>Server GC: what Roslyn's own runtimeconfig asks for, and ~2 GB at that size.</summary>
+    Server,
+}
+
 /// <summary>Everything one launch needs. A record so a relaunch (WP4) is one <c>with</c> away.</summary>
 internal sealed record RoslynLaunchRequest
 {
@@ -44,6 +54,9 @@ internal sealed record RoslynLaunchRequest
 
     /// <summary>The child's working directory; the adapter's own if unset.</summary>
     internal string? WorkingDirectory { get; init; }
+
+    /// <summary>Which garbage collector the child runs with (D79).</summary>
+    internal RoslynGarbageCollector GarbageCollector { get; init; } = RoslynGarbageCollector.Workstation;
 
     /// <summary>
     /// The default level for the child, which is deliberately quieter than the adapter's own.
@@ -80,7 +93,52 @@ internal sealed record RoslynLaunchRequest
             Transport = RoslynProcessLauncher.ParseTransport(options.Transport, logger),
             RoslynLogLevel = options.RoslynLogLevel ?? DefaultRoslynLogLevel,
             ExtraArguments = RoslynProcessLauncher.SplitArguments(options.RoslynArguments),
+            GarbageCollector = ParseGarbageCollector(options.GarbageCollector, logger),
         };
+    }
+
+    /// <summary>
+    /// Decides which garbage collector the child runs with (D79).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Workstation by default, against Roslyn's own runtimeconfig.</b> The payload ships
+    /// <c>System.GC.Server: true</c> (C44), and on OrchardCore that is 1,931-2,089 MB of working set
+    /// against <b>577 MB</b> for workstation, for a load that is 20.4 s instead of 28.2 s (C54). The
+    /// eight seconds are paid once, by somebody who is waiting for a language server to start and
+    /// expects to; the one and a half gigabytes are paid by every other process on the machine, for
+    /// as long as the session lasts — and this adapter's whole reason for existing is that a Claude
+    /// session is already running a model's tool calls on the same box. Server GC is one variable
+    /// away for anyone whose machine has the memory to spare and wants the seconds back.
+    /// </para>
+    /// <para>
+    /// An explicit <c>DOTNET_gcServer</c> in this process's environment wins outright and is not
+    /// overwritten: the variable reaches the child because the adapter passes its environment
+    /// through, which is exactly how C54 was measured, and silently overriding it would break the
+    /// measurement that produced this decision.
+    /// </para>
+    /// </remarks>
+    /// <param name="value">The <c>CLAUDE_ROSLYN_LSP_GC</c> value, or null.</param>
+    /// <param name="logger">Where an unrecognised value is reported.</param>
+    internal static RoslynGarbageCollector ParseGarbageCollector(string? value, ILogger logger)
+    {
+        ArgumentNullException.ThrowIfNull(logger);
+
+        switch (value?.ToUpperInvariant())
+        {
+            case null or "":
+                return RoslynGarbageCollector.Workstation;
+
+            case "SERVER":
+                return RoslynGarbageCollector.Server;
+
+            case "WORKSTATION":
+                return RoslynGarbageCollector.Workstation;
+
+            default:
+                RoslynProcessLauncher.LogUnknownGarbageCollector(logger, value);
+                return RoslynGarbageCollector.Workstation;
+        }
     }
 }
 
@@ -487,6 +545,16 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
         // once per repository; this buys the load completing.
         startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
 
+        // D79/C54. The environment this process was started with is already copied into
+        // startInfo.Environment, so a DOTNET_gcServer the user set is present here and is left
+        // exactly as it is — that is how C54 was measured, and overriding it would break the escape
+        // hatch the measurement documents.
+        if (!startInfo.Environment.ContainsKey("DOTNET_gcServer"))
+        {
+            startInfo.Environment["DOTNET_gcServer"] =
+                request.GarbageCollector == RoslynGarbageCollector.Server ? "1" : "0";
+        }
+
         var process = Process.Start(startInfo)
             ?? throw new RoslynAcquisitionException($"Could not start '{program}'.");
 
@@ -575,5 +643,18 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
             Level = LogLevel.Warning,
             Message = "CLAUDE_ROSLYN_LSP_TRANSPORT='{Value}' is not 'pipe' or 'stdio'; using the named pipe.")]
         internal static partial void UnknownTransport(ILogger logger, string value);
+
+        [LoggerMessage(
+            EventId = 143,
+            Level = LogLevel.Warning,
+            Message = "CLAUDE_ROSLYN_LSP_GC='{Value}' is not 'workstation' or 'server'; using workstation, " +
+                      "which is this adapter's default (D79).")]
+        internal static partial void UnknownGarbageCollector(ILogger logger, string value);
     }
+
+    /// <summary>Reports an unrecognised <c>CLAUDE_ROSLYN_LSP_GC</c> from the request builder.</summary>
+    /// <param name="logger">The stderr log.</param>
+    /// <param name="value">What was set.</param>
+    internal static void LogUnknownGarbageCollector(ILogger logger, string value) =>
+        Log.UnknownGarbageCollector(logger, value);
 }

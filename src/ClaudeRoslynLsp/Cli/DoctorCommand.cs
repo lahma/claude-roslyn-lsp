@@ -6,6 +6,7 @@ using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Roslyn;
 
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ClaudeRoslynLsp.Cli;
 
@@ -212,6 +213,7 @@ internal static class DoctorCommand
         }
 
         Item(text, "cache", report.Paths.RoslynCacheRoot + FormatFreeSpace(report.FreeBytes));
+        Item(text, "garbage collector", DescribeGarbageCollector(report.Options));
         text.AppendLine();
 
         Section(text, "Solution");
@@ -359,6 +361,7 @@ internal static class DoctorCommand
             WriteNullableString(writer, "directory", report.Resolution.Directory);
             WriteNullableString(writer, "launchTarget", report.Resolution.LaunchTarget);
             writer.WriteBoolean("verified", report.Resolution.Verified);
+            writer.WriteString("garbageCollector", DescribeGarbageCollector(report.Options));
             WriteNullableString(writer, "failure", report.Resolution.Failure);
             writer.WriteStartArray("chain");
 
@@ -478,6 +481,30 @@ internal static class DoctorCommand
 
     private static void Item(StringBuilder text, string label, string value) =>
         text.Append("  ").Append(label.PadRight(28)).Append(' ').AppendLine(value);
+
+    /// <summary>
+    /// Says which garbage collector the child will actually run with, and why (D79).
+    /// </summary>
+    /// <remarks>
+    /// Worth a line of its own because it is the difference between 577 MB and 2 GB on a large
+    /// solution (C54) and because there are three ways to arrive at it — this adapter's default, the
+    /// <c>CLAUDE_ROSLYN_LSP_GC</c> variable, and a <c>DOTNET_gcServer</c> already in the environment,
+    /// which wins over both. "Which one did I get" is the first question of any report about memory.
+    /// </remarks>
+    /// <param name="options">The resolved configuration.</param>
+    private static string DescribeGarbageCollector(ClaudeRoslynLspOptions options)
+    {
+        if (Environment.GetEnvironmentVariable("DOTNET_gcServer") is { Length: > 0 } inherited)
+        {
+            return (inherited is "0" ? "workstation" : "server")
+                   + "  (DOTNET_gcServer=" + inherited + " in this environment overrides CLAUDE_ROSLYN_LSP_GC)";
+        }
+
+        return RoslynLaunchRequest.ParseGarbageCollector(options.GarbageCollector, NullLogger.Instance)
+               == RoslynGarbageCollector.Server
+            ? "server  (CLAUDE_ROSLYN_LSP_GC=server; ~2 GB on a 239-project solution, 8 s faster to load - C54)"
+            : "workstation  (the default; ~577 MB on a 239-project solution, 8 s slower to load - C54, D79)";
+    }
 
     private static string Mark(RoslynResolutionStepOutcome outcome) => outcome switch
     {

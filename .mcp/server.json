@@ -1,0 +1,53 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "name": "io.github.lahma/claude-roslyn-lsp",
+  "description": "C# refactoring over MCP, backed by Microsoft's Roslyn language server: semantic rename, code actions, fix-all, formatting, symbol lookup and design-time diagnostics.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/lahma/claude-roslyn-lsp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "nuget",
+      "registryBaseUrl": "https://api.nuget.org",
+      "identifier": "claude-roslyn-lsp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "CLAUDE_ROSLYN_LSP_SOLUTION",
+          "description": "Path to the .slnx, .sln or .csproj to load. Optional: the adapter discovers one from the working directory. Set it in a monorepo, where discovery picks a solution that is often not the one being worked in.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_ROSLYN_VERSION",
+          "description": "Overrides the pinned roslyn-language-server version the adapter downloads from nuget.org. Optional; the pin is the only version this release is tested against.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_ROSLYN_PATH",
+          "description": "Directory holding an already-installed Microsoft.CodeAnalysis.LanguageServer.dll, used instead of downloading one. Optional; set it to run air-gapped or against a locally built server.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_LOG_LEVEL",
+          "description": "Trace, Debug, Information, Warning, Error, Critical or None (default Information). Logs go to stderr only - stdout is the JSON-RPC channel.",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

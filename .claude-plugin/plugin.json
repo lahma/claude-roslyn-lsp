@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "claude-roslyn-lsp",
+  "displayName": "Roslyn C# for Claude Code",
+  "version": "0.1.0",
+  "description": "Microsoft's Roslyn language server, mediated for Claude Code: navigation and edit-time diagnostics over LSP, plus an MCP refactoring surface (rename, code actions, fix-all, format, diagnostics on demand).",
+  "author": {
+    "name": "lahma",
+    "url": "https://github.com/lahma"
+  },
+  "homepage": "https://github.com/lahma/claude-roslyn-lsp#readme",
+  "repository": "https://github.com/lahma/claude-roslyn-lsp",
+  "license": "MIT",
+  "keywords": ["csharp", "dotnet", "roslyn", "lsp", "refactoring", "mcp"],
+  "skills": ["./.claude/skills/claude-roslyn-lsp"],
+  "lspServers": {
+    "roslyn": {
+      "command": "dnx",
+      "args": ["claude-roslyn-lsp@0.1.0", "--yes", "lsp"],
+      "extensionToLanguage": {
+        ".cs": "csharp"
+      },
+      "startupTimeout": 120000,
+      "shutdownTimeout": 10000,
+      "restartOnCrash": true,
+      "maxRestarts": 3,
+      "diagnostics": true,
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_SOLUTION": "${user_config.solution}",
+        "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_ROSLYN_VERSION": "${user_config.roslyn_version}",
+        "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_ROSLYN_PATH": "${user_config.roslyn_path}",
+        "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_LOG_LEVEL": "${user_config.log_level}",
+        "CLAUDE_ROSLYN_LSP_HOME": "${CLAUDE_PLUGIN_DATA}"
+      }
+    }
+  },
+  "mcpServers": {
+    "roslyn": {
+      "command": "dnx",
+      "args": ["claude-roslyn-lsp@0.1.0", "--yes", "mcp"],
+      "env": {
+        "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_SOLUTION": "${user_config.solution}",
+        "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_ROSLYN_VERSION": "${user_config.roslyn_version}",
+        "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_ROSLYN_PATH": "${user_config.roslyn_path}",
+        "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_LOG_LEVEL": "${user_config.log_level}",
+        "CLAUDE_ROSLYN_LSP_HOME": "${CLAUDE_PLUGIN_DATA}"
+      }
+    }
+  },
+  "userConfig": {
+    "solution": {
+      "type": "string",
+      "title": "Solution or project file",
+      "description": "Absolute or repository-relative path to the .slnx, .sln or .csproj to load. Leave blank and the adapter discovers one; set it in a monorepo, where the discovered solution is often not the one you are working in.",
+      "default": ""
+    },
+    "roslyn_version": {
+      "type": "string",
+      "title": "Roslyn language server version",
+      "description": "Overrides the pinned roslyn-language-server version the adapter downloads. Blank uses the version this release was tested against; anything else is unsupported and may not speak the same protocol.",
+      "default": ""
+    },
+    "roslyn_path": {
+      "type": "string",
+      "title": "Roslyn language server path",
+      "description": "Directory holding an already-installed Microsoft.CodeAnalysis.LanguageServer.dll. Set it to run air-gapped or to test a locally built server; blank downloads the pinned version into the plugin's data directory.",
+      "default": ""
+    },
+    "log_level": {
+      "type": "string",
+      "title": "Log level",
+      "description": "Trace, Debug, Information, Warning, Error, Critical or None (default Information). Logs go to stderr, which Claude Code shows with --debug; stdout is the protocol channel and never carries anything else.",
+      "default": ""
+    }
+  }
+}

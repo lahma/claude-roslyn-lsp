@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-marketplace.json",
+  "name": "claude-roslyn-lsp",
+  "description": "The claude-roslyn-lsp adapter — Roslyn over LSP plus an MCP refactoring surface — and its C# workflow skill, published from the project's own repository.",
+  "owner": {
+    "name": "lahma",
+    "url": "https://github.com/lahma"
+  },
+  "plugins": [
+    {
+      "name": "claude-roslyn-lsp",
+      "source": "./",
+      "category": "language-support",
+      "tags": ["csharp", "dotnet", "roslyn", "lsp", "refactoring", "mcp"]
+    }
+  ]
+}

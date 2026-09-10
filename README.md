@@ -77,7 +77,40 @@ directly to `${CLAUDE_PLUGIN_DATA}`, which is a real directory Claude Code owns.
 
 ## What the MCP tools do
 
-_To be written: the tool table, with the read/write and preview conventions._
+The `mcp` verb exposes ten tools. Six answer questions; four change files. They exist because Claude
+Code's built-in `LSP` tool is read-only and needs a file, a line and a character for every call —
+which a model does not have until it has searched for one, and searching for one is the grep habit
+this project is trying to replace.
+
+| Tool | What it does |
+|---|---|
+| `getWorkspaceStatus` | Which solution is open, how far it has loaded, load errors, projects and their target frameworks, the Roslyn build in use, and the language server's process id and memory. |
+| `resolveSymbol` | Finds where a symbol is declared, semantically. Reports positions you can hand straight to the `LSP` tool. |
+| `getTypeMembers` | Lists a type's members and their signatures without reading the file. |
+| `findReferences` | Every semantic reference across the solution, with the source line beside each one and a per-file summary. Paged. |
+| `getDiagnostics` | Compiler errors and warnings — and, on request, IDE/CA analyzer diagnostics — for a file, a project or the solution, in about a second. |
+| `getCodeActions` | The quick fixes and refactorings Roslyn offers at a position, each with a short id and the scopes its fix-all accepts. |
+| `applyCodeAction` | Applies one of them, optionally across the document, the project or the whole solution. |
+| `renameSymbol` | A solution-wide semantic rename: overrides, interface implementations, other projects. Not a search and replace. |
+| `fixDiagnostics` | Fixes every occurrence of one diagnostic id (IDE0005, CA1822, …) across a file, a project or the solution. |
+| `formatCode` | Formats files with Roslyn, honouring `.editorconfig`, and optionally organises using directives. Never shells out to `dotnet format`. |
+
+Four conventions run through all of them:
+
+- **Lines and columns are 1-based**, in and out, and paths are relative to the workspace root with
+  forward slashes.
+- **Anything taking a `symbol` accepts a name or a position** — `IScheduler.Start` (matched as a
+  dot-segment suffix) or `src/Core/Calculator.cs:7:15`.
+- **The four mutating tools take `preview: true`**, which writes nothing and returns the diff.
+  Calling the same tool again with `preview: false` applies exactly that edit. They write to disk
+  immediately otherwise, and say so — re-read a file before editing it yourself.
+- **`getDiagnostics` is a design-time pass, not a build.** It is about a second where a build is ten
+  to sixty, and it is what an IDE shows you; it does not run source generators the way a build does,
+  has no MSBuild errors in it and runs no tests.
+
+The solution takes a few seconds to load and can take up to two minutes on a large one. Until it has,
+every tool answers with `status: "loading"` rather than hanging, and `getWorkspaceStatus` says how far
+it has got.
 
 ## Other clients
 

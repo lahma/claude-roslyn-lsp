@@ -59,13 +59,26 @@ partial class Build : FalloutBuild,
     /// The tool names <c>tools/list</c> must return, verbatim and complete.
     /// </summary>
     /// <remarks>
-    /// Empty, and asserted as empty: this scaffold registers no tools, and "the MCP server answers
-    /// tools/list with nothing in it" is a true and useful statement about it. The moment WP5 adds a
-    /// tool, this array is where its name goes - alongside AGENTS.md's tool table, the inventory tests
-    /// and SKILL.md - and until then the empty comparison fails loudly if a tool appears without
-    /// being declared here.
+    /// The complete set, compared verbatim on a published Native AOT binary. This is the one place
+    /// the inventory is asserted outside the test assembly, which is what makes it a check on the
+    /// *shipped* server rather than on a reflected type list: an AOT publish that dropped a tool
+    /// class, or a serializer context that could not describe a result type, fails here and nowhere
+    /// else. Adding a tool means editing this array, AGENTS.md's tool table, the README table,
+    /// ToolInventoryTests, ToolSchemaTests and SKILL.md.
     /// </remarks>
-    static readonly string[] ExpectedToolNames = [];
+    static readonly string[] ExpectedToolNames =
+    [
+        "applyCodeAction",
+        "findReferences",
+        "fixDiagnostics",
+        "formatCode",
+        "getCodeActions",
+        "getDiagnostics",
+        "getTypeMembers",
+        "getWorkspaceStatus",
+        "renameSymbol",
+        "resolveSymbol",
+    ];
 
     /// <summary>How long SmokeTest waits for the MCP responses before giving up.</summary>
     static readonly TimeSpan SmokeTestTimeout = TimeSpan.FromSeconds(30);

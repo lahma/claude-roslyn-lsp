@@ -58,7 +58,8 @@ scaffold's own choices, most of them inherited from the sibling repositories `bi
 that later work packages have a number to fill in rather than a decision to invent; a row that says
 **TBD** is a decision that has not been made, not one that has been forgotten. D14 and D24-D29 were
 settled by the protocol work package (WP2) against the wire facts in
-[`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md).
+[`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md). D20, D21 and D60-D69 were settled
+by the MCP work package (WP5a), which also froze the tool table below.
 
 | # | Decision |
 |---|---|
@@ -81,8 +82,8 @@ settled by the protocol work package (WP2) against the wire facts in
 | D17 | **Workspace-wide diagnostics for files that are not open are opt-in.** — **TBD in WP4.** They need a full-solution compiler scope, which is the expensive setting, and most of the output would be cut by the client's own delivery cap. |
 | D18 | **File watching is on by default, with an opt-out.** — **TBD in WP4.** Without it a file created by Bash or by git never joins its project and every later answer is silently stale, which is the single worst failure mode available. |
 | D19 | **A Roslyn crash is absorbed, not forwarded.** — **TBD in WP4.** In-flight requests answered, the process relaunched with a rate limit, the document mirror replayed, the solution re-opened — so the client's own restart budget is preserved for failures that are actually ours. |
-| D20 | **The MCP tool table and its annotations.** — **TBD in WP5.** camelCase verb-noun names, 1-based positions, workspace-relative paths, structured content, and a `preview` flag on every mutating tool. |
-| D21 | **The MCP server applies its own edits.** — **TBD in WP5.** It is the LSP *client* in that direction, so it writes files itself, preserving BOM and line endings, and then tells Roslyn what changed. |
+| D20 | **The MCP tool table and its annotations are frozen** — ten tools, listed in *The MCP tool surface* below. camelCase verb-noun names, 1-based lines and columns in and out, workspace-relative forward-slashed paths, `UseStructuredContent` everywhere, and `preview` on all four mutating tools. Every one of them declares `openWorldHint: false`, unlike the sibling repositories: nothing here leaves the machine, let alone the workspace. The two judgement calls are written down where a reviewer will meet them — `applyCodeAction` and `fixDiagnostics` are destructive because a code action can delete a file and a fix-all rewrites a solution, while `renameSymbol` and `formatCode` are not, because putting a confirmation prompt in front of the two operations this product most wants a model to reach for is how a user learns to click through the prompts that matter. |
+| D21 | **The MCP server applies its own edits, and `Edits/` is the only place in the product that writes a source file.** It is the LSP *client* in that direction: nothing else is going to apply the edit Roslyn just resolved, the adapter deliberately never declares `workspace.applyEdit` (D14), and the v1 LSP half writes nothing at all. `WorkspaceEditApplier` honours `documentChanges` in order (C21's create-then-edit-into-the-new-file is not reorderable), applies each document's edits in reverse range order against UTF-16 offsets, refuses overlaps rather than merging them, preserves the byte order mark and the dominant line ending while normalising incoming `newText` to it (C22), writes through a temporary file beside the target, and refuses any URI the `WorkspacePathGuard` does not place inside the workspace root. Then it tells Roslyn what changed, because a workspace answering from the state before the edit is the worst failure mode this product has. |
 | D22 | **NuGet is the plugin's launch channel; the AOT archives are everything else's.** The plugin runs `dnx claude-roslyn-lsp@{version}` for both servers — no download step, and an SDK is required for C# work anyway — while file-based clients point at a Native AOT binary from GitHub Releases. The package is pushed by **trusted publishing**: the workflow exchanges its GitHub OIDC token for an API key that lives minutes, so no NuGet API key exists in this repository or in its secrets. The exchange is C# inside the build (`build/Build.Publish.cs`), not a marketplace action. |
 | D23 | **One Roslyn per solution, shared by whichever verb started first.** — **TBD in WP9.** Until it lands, running both servers against one solution loads the solution twice; `README.md` says so plainly rather than letting it be discovered. |
 | D24 | **Eight runtime identifiers, and a host outside them is named rather than corrected.** `roslyn-language-server` is a 33 KB shim; the payload is `roslyn-language-server.<rid>`, and Microsoft publishes eight of them — `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `linux-musl-x64`, `linux-musl-arm64`, `osx-x64`, `osx-arm64` (C5, from the shim's own `DotnetToolSettings.xml`). That list is deliberately longer than this repository's five-RID release matrix, because the framework-dependent NuGet tool (D22) reaches platforms no archive is built for. musl is detected from `RuntimeInformation.RuntimeIdentifier` **and** from `/lib/ld-musl-*`, because a portable build on Alpine reports the RID it was *built* for. `win-x86` and `linux-arm` resolve to themselves and are reported unsupported: downloading the 64-bit payload for a 32-bit host produces a child that dies about an image format, which is nobody's idea of a diagnosis. |
@@ -111,6 +112,16 @@ settled by the protocol work package (WP2) against the wire facts in
 | D47 | **Pass-through is a three-segment id rewrite of the original bytes, and every outbound request is renumbered.** `LspMessageScanner` makes one depth-1 `Utf8JsonReader` pass to find the message's own `id` token — never a nested one, which matters because Roslyn puts `id` members inside `data`, `item` and `TextDocument` payloads (C18, C24) — and forwarding copies everything before the token, the new token, and everything after. Reserialising would reorder members, renormalise numbers and re-escape strings whose exact shape the peer has already been told, and it would put this repository in the business of modelling every result Roslyn returns. Renumbering is not optional: two peers that have never met both count from one, so an unrewritten id lets a client request and an adapter request collide, and one answer is then delivered as the other's — a *wrong answer*, not an error. One counter serves both kinds of outbound request, which makes the collision structurally impossible rather than merely unlikely; there is one `IdMap` per direction, because Roslyn asks the client questions too. |
 | D48 | **The adapter answers `workspace/configuration` itself, with agent-tuned defaults.** The section names contain a pipe (`csharp\|background_analysis...`), which Claude Code's dotted settings lookup cannot address at all, and it only answers the request when a `settings` block happens to be present in the plugin configuration. Precedence is client settings → `CLAUDE_ROSLYN_LSP_OPTIONS` → these defaults → `null`. The defaults assume an agent rather than a human with a screen: both diagnostic scopes at `openFiles`, because `fullSolution` is what makes a large solution unusable and WP4's opt-in mode raises it deliberately (C14); automatic restore **on**, because Roslyn restores server-side and never asks (C30) and a freshly cloned repository would otherwise load with no references; decompiled-source navigation **on**, so definition into a BCL symbol reaches real source (C25); and reference-assembly symbol search, every `csharp\|inlay_hints.*`, every `csharp\|code_lens.*` and auto-insert **off**, because the adapter advertises none of those (D45) and the work would be discarded. The two families are matched by prefix rather than enumerated, so a Roslyn that adds a hint kind cannot quietly switch it back on. |
 | D49 | **The scripted fake Roslyn backend ships inside the product binary, behind a hidden verb.** `Testing/FakeRoslynServer` reproduces a real 5.12 startup from the WP0 wire logs — the registration batches with their real diagnostic identifiers and their shuffled order (C11), both configuration batches (C41), the watcher shapes that make collapsing non-trivial (C32), the progress stream, the log lines, `projectInitializationComplete` — and, crucially, answers navigation **empty until the workspace loads**, exactly as the real server does (C27). Keeping it in the product rather than in the test project is what lets `SmokeTest` prove the mediation against a published Native AOT binary on every release RID with no download: `lsp --smoke` runs it in-process, and `CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child` spawns `<self> fake-roslyn` and speaks to it over stdio, which is the only leg that proves the process plumbing (C7 is a real banner on a real stdout). The cost is a few kilobytes of fixtures in the shipped binary; the alternative is release RIDs whose mediation nobody has ever run. |
+| D60 | **The tool layer talks to an interface, and the fake lives in the test project.** `Mcp/Engine/IRoslynEngine` is the whole of what the MCP half needs from a running Roslyn, expressed at the LSP level: seventeen members, zero-based positions, `data` blobs passed through as `JsonElement`. Almost all of this product's judgement — symbol addressing, per-TFM de-duplication, code-action ids, diagnostic filtering, the edit applier, the preview cache — lives *above* that line, and none of it needs a quarter-gigabyte child process to be exercised; `FakeRoslynEngine` answers with payloads transcribed from the WP0 spikes and the whole tool suite runs in two seconds. The seam is at the LSP level rather than at a domain level on purpose: a `FindReferences(symbol)` method would put the interesting decisions on the far side of it, where no test can reach them. Its shapes are a **third** source-generated context, `Mcp/Engine/RoslynEngineJsonContext`, chained with neither of the other two — D7's rule is about chaining, not about counting, and merging this into `Protocol/LspJsonContext` would give the mediation and the MCP half one file to fight over. |
+| D61 | **Reading and writing a source file is a component, not two `File` calls.** `Edits/TextFileCodec` decodes bytes to a string and reports how to write them back; `Edits/TextOffsets` turns LSP positions into UTF-16 offsets; `Edits/WorkspacePathGuard` decides what may be written at all. A round trip through `File.ReadAllText`/`WriteAllText` silently drops a UTF-8 mark and re-encodes a UTF-16 file, which turns a one-word refactoring into a diff that touches every line — invisibly, because the code still compiles. The guard is the other half: an edit is an instruction from another process, and Roslyn hands out URIs outside the workspace as a matter of course (C25's `MetadataAsSource` temp files), so the rule is `file:` scheme plus a *resolved* path under the root, compared case-insensitively on Windows and macOS and case-sensitively elsewhere, the way the file systems themselves do. |
+| D62 | **`preview` runs the identical planning pass and simply never writes; the apply that follows reuses what was previewed.** Planning and applying are separate methods over one `WorkspaceEditPlan`, so a preview's diff is not a description of a different operation. `Edits/EditCache` then remembers the resolved edit under a key of tool plus answer-changing arguments — `preview` itself deliberately excluded, or the two calls would never meet — stamped with every read file's last write time and length. If any of them moved, the entry is dropped and the apply re-resolves: that turns "silently applied a different edit than the one that was approved" into "slightly slower", which is the right way round. The diff is budgeted (`maxDiffLines`, 200) because a solution-wide fix-all can rewrite two hundred files, and what is cut is **named** — "… 14 more hunks" is information, silence is not. Every applied result carries one fixed sentence, *Files were changed on disk; re-read a file before editing it.*, because Claude Code's own `Edit` tool refuses a file that changed since its last `Read` and the refusal is undiagnosable from its message. |
+| D63 | **Symbols are addressed by name or by `path:line:col`, and every number a model sees is 1-based.** The name form is what fixes the behaviour this product exists to fix — a name survives an edit that moves the declaration, and a model that can write `resolveSymbol("IScheduler.Start")` never greps for a line number first. The position form is what makes these tools compose with Claude Code's own `LSP` tool, which reports and consumes positions. `Mcp/SymbolAddress` parses the position form from the **right**, because a Windows drive letter is a colon too. A dotted name matches as a dot-segment suffix, so `IScheduler.Start` matches `Quartz.IScheduler.Start` and `Scheduler.Start` does not; the qualifier is checked against Roslyn's container text (`in IScheduler (project …)`), because `workspace/symbol` searches simple names and reports no namespace. LSP counts from zero and every editor, compiler error and stack trace in the C# world counts from one, so the conversion happens here and in the result mapping, and nowhere else. |
+| D64 | **A code action's id is derived, and the `Fix All:` entries are folded away.** An action has no identity on the wire — opaque `data`, a title in a natural language, a list regenerated per request — but `getCodeActions` and `applyCodeAction` have to be two calls about the same thing. So the id is eight hex characters over `UniqueIdentifier` and `CodeActionPath` (C18), the two members that say *which fix* rather than *where*: stable across calls and processes, distinct between siblings that differ only in path, short enough for a model to retype. Roslyn also offers `Fix All: <title>` as a *separate* action carrying `FixAllFlavors`, so three real choices arrive as five rows; since `codeAction/resolveFixAll` accepts the plain action's own `data` (C20, S4b), the fix-all entry becomes `fixAllScopes` on the plain action and disappears. An orphan `Fix All:` entry with no plain twin is kept, so nothing is ever silently dropped. Nested actions are read out of `command.arguments[0].NestedCodeActions`, not out of `data`, and each child gets its own id. |
+| D65 | **Fix-all goes through `codeAction/resolveFixAll`, never through the marker command.** `executeCommandProvider.commands` is empty (C19) — `roslyn.client.fixAllCodeAction` is a client-side marker, not something to execute — and `codeAction/resolve` on a `Fix All:` entry returns no `edit` at all (C20). The scope is mandatory and case-sensitive: a lowercase spelling fails with "Sequence contains no elements" and an omitted one with an `InvalidCastException` (S4b), so the enum is `Document\|Project\|Solution` and the tool argument that maps onto it is validated rather than forwarded. |
+| D66 | **A workspace that is not ready produces a `status`, never a hang and never an error.** Every result record carries `status` and `note` in the same place, so "is this a real answer" is one property lookup across ten tools. Three behaviours were available: block, which is what the LSP half does because a language client has nowhere else to be (D46); fail, which teaches a model the server is broken; or answer with a status. An MCP call is a turn of a conversation — a model told "still loading, 3 of 8 projects" can do something else and come back, and a model told nothing for two minutes cannot. Every tool gates on `EnsureReadyAsync(CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS)` first and asks Roslyn nothing until it passes, because a question asked early comes back empty rather than wrong-looking (C27). |
+| D67 | **`getDiagnostics` is two completely different requests wearing one name, and it corrects what comes back.** File scope goes through `textDocument/diagnostic` with no `identifier` (C9), which needs the document *open* — a closed file answers zero items whatever the scope (C13) — so it opens it with the bytes on disk and closes it again **unless it was already open**, because closing a document the LSP half is mirroring would revert Roslyn's view to disk. Project and solution scope go through `workspace/diagnostic`, which reports closed files only under a `fullSolution` compiler scope (C14), so the scope is raised for the call and the answer is then cleaned of the three things C15 says arrive uninvited: `obj/**` and `bin/**` sources, `.csproj` entries, and one copy per target framework. Analyzer diagnostics are opt-in and the floor is `warning`, so the default answer is "what stops this compiling" rather than everything an IDE would underline; an explicit `ids` list is the caller being specific and overrides that. Every answer carries the design-time caveat, and a workspace-scoped one also says that open files were skipped. |
+| D68 | **The workspace root is the process's working directory.** Every MCP client — Claude Code, Codex, Gemini CLI, Cursor — launches a stdio server with the workspace as its current directory, and no protocol field carries a root. That directory bounds *writes*, not analysis: a solution configured elsewhere still loads, and `getWorkspaceStatus` reports its real path so the discrepancy is visible rather than mysterious. |
+| D69 | **A build with no backend registers `NotWiredRoslynEngine`, which fails with one sentence.** The MCP handshake and `tools/list` must work with no Roslyn in the picture — that is the leg `SmokeTest` drives against a published Native AOT binary on every release RID, and it is also what a client sees in the seconds before anything is launched. Registering nothing would make the container throw at the first call with the SDK's generic "An error occurred"; this names the problem and the command that diagnoses it. `EnsureReadyAsync` is the one member that does not throw — it answers `Failed`, a state every tool already handles, so the nine gated tools return a status object and `getWorkspaceStatus` answers correctly instead of failing. WP5b replaces the factory, and nothing above the seam changes. |
 
 ### The plugin-option rule
 
@@ -144,6 +155,44 @@ The plan names three things twice. Resolved once, here, so nobody re-resolves th
   manifest's `startupTimeout`, so the client and the server give up at the same moment.
 - **`CLAUDE_ROSLYN_SOLUTION`**, in the skill sketch, is a typo for `CLAUDE_ROSLYN_LSP_SOLUTION`. Every
   variable this product reads begins `CLAUDE_ROSLYN_LSP_`.
+
+### The MCP tool surface
+
+Ten tools, frozen by D20. Names are camelCase verb-noun; lines and columns are **1-based** in and
+out; paths are workspace-relative with forward slashes; every tool sets `UseStructuredContent` and
+every result carries `status` (`ok` / `loading` / `failed`) and an optional `note` in the same place
+(D66). Every `symbol`-shaped argument accepts a name or a `path:line:col` address (D63).
+
+| Tool | Annotations | What it does |
+|---|---|---|
+| `getWorkspaceStatus` | readOnly, idempotent | The solution, how far it has loaded, load errors, projects with their target frameworks, the Roslyn build, and the language server's pid and working set (C45, C38). The tool every `loading` note points at. |
+| `resolveSymbol` | readOnly, idempotent | `symbol`, `kind?`, `maxResults?` → declarations with 1-based positions and hover signatures. The replacement for grepping a declaration, and the feeder for Claude Code's own `LSP` tool. Ambiguity returns every candidate. |
+| `getTypeMembers` | readOnly, idempotent | `type`, `maxResults?` → a type's members without reading the file. |
+| `findReferences` | readOnly, idempotent | `symbol`, `includeDeclaration?`, `maxResults?`, `offset?` → semantic references with the source line beside each, a `byFile` summary, de-duplicated across target frameworks (C24), paged. |
+| `getDiagnostics` | readOnly, idempotent | `scope?`, `path?`, `project?`, `minSeverity?`, `includeAnalyzers?`, `ids?`, `maxResults?` → compiler and (opt-in) analyzer diagnostics for a file, a project or the solution, in about a second (D67). Carries the design-time caveat. |
+| `getCodeActions` | readOnly, idempotent | `path`, `line`, `col`, `endLine?`, `endCol?`, `kind?` → the lightbulb list, with a stable `id`, `diagnosticIds` and `fixAllScopes` per entry (D64). |
+| `applyCodeAction` | **destructive**, not idempotent | `path`, `line`, `col`, `id?`, `title?`, `endLine?`, `endCol?`, `fixAllScope?`, `preview` → resolves and applies one action, optionally across the document, project or solution. |
+| `renameSymbol` | mutating, not destructive, idempotent | `symbol`, `newName`, `preview` → a solution-wide semantic rename. Does not rename the file. |
+| `fixDiagnostics` | **destructive**, idempotent | `diagnosticId`, `scope?`, `path?`, `project?`, `preview` → finds a site of the diagnostic, then Roslyn's own fix-all across that scope (D65). |
+| `formatCode` | mutating, not destructive, idempotent | `paths?`, `project?`, `organizeUsings?`, `preview` → `textDocument/formatting`, honouring `.editorconfig`, never shelling out to `dotnet format`. |
+
+All ten declare `openWorldHint: false`. The four mutating tools all take `preview` (default `false`),
+return the same `EditResult` shape, and answer an applied edit with one fixed sentence (D62).
+
+**Adding a tool means editing seven places**, and the tests fail if any of them is missed:
+
+1. the tool method itself, in one of the five classes under `src/ClaudeRoslynLsp/Mcp/Tools/`;
+2. its result record in `Mcp/Models/ToolResults.cs`, **and** a `[JsonSerializable]` line for it in
+   `Mcp/Models/RoslynToolJsonContext.cs` — without which the schema exporter cannot describe it and
+   `dotnet test` fails rather than the AOT publish (D6);
+3. `McpServerSetup.RegisterTools` and `McpServerSetup.ToolTypes`, if it is a new class;
+4. the table above;
+5. `ExpectedToolNames` in `build/Build.cs`, which is the only assertion made against the *published*
+   binary;
+6. `ToolInventoryTests.ExpectedToolNames` and its annotation rows, plus a row in
+   `ToolSchemaTests`'s frozen schema table;
+7. `.claude/skills/claude-roslyn-lsp/SKILL.md`, once that skill exists — `AgentSkillTests` requires
+   every tool to be named there as soon as the skill names any of them.
 
 ### Protocol gotchas
 
@@ -224,11 +273,22 @@ src/ClaudeRoslynLsp/        One production project; AssemblyName claude-roslyn-l
                             NuGetPayloadDownloader, RoslynServerLocator, DotnetHostLocator,
                             RoslynProcessLauncher + DuplexStream + ChildProcessGuard +
                             RoslynStderrPump, RoslynHandshakeProbe, SolutionDiscovery
-  Mcp/                      McpServerSetup (D5), ServerInstructions, and later Tools/
+  Mcp/                      McpServerSetup (D5), ServerInstructions, SymbolAddress (D63) and
+                            CodeActionCatalog (D64)
+  Mcp/Engine/               IRoslynEngine — the LSP-level seam the tools run against (D60) — its
+                            wire shapes, RoslynEngineJsonContext, and NotWiredRoslynEngine (D69).
+                            WP5b implements the interface on the real launcher
+  Mcp/Tools/                The five tool classes behind the ten tools (D20), the RoslynToolContext
+                            they all take, ToolLookup, DiagnosticQuery, DocumentSession, ToolErrors
   Mcp/Models/               Result records and RoslynToolJsonContext (camelCase, D7)
+  Edits/                    The only place in the product that writes a source file (D21):
+                            WorkspacePathGuard, TextFileCodec, TextOffsets, WorkspaceEditApplier +
+                            WorkspaceEditPlan, UnifiedDiff, EditCache
 tests/ClaudeRoslynLsp.Tests/  The single test project; internals visible via InternalsVisibleTo.
                             Http/ holds the hand-rolled StubHttpMessageHandler, Roslyn/ the
-                            acquisition and discovery tests, Live/ the opt-in real-Roslyn tests
+                            acquisition and discovery tests, Live/ the opt-in real-Roslyn tests,
+                            Mcp/ the FakeRoslynEngine and the spike-derived payloads, Edits/ the
+                            applier and codec tests, Tools/ the inventory, schema and behaviour tests
 build/                      The Fallout orchestrator (Build.cs, Build.Publish.cs, Build.Roslyn.cs,
                             Build.CI.GitHubActions.cs, ReleaseNotesParser.cs, SemVersion.cs) —
                             `build/` is a resolver convention, and `.gitignore` must never
@@ -237,8 +297,7 @@ docs/                       roslyn-protocol-facts.md — the C-numbered findings
 ```
 
 Directories the plan reserves and the repository has not created, so that nobody invents a second
-home for them: `src/ClaudeRoslynLsp/Edits/` (the workspace-edit applier and its guards, WP5),
-`tests/fixtures/HelloSolution/` (WP7) and `docs/clients/` (WP6).
+home for them: `tests/fixtures/HelloSolution/` (WP7) and `docs/clients/` (WP6).
 
 ## Build
 
@@ -303,10 +362,14 @@ by scanning the repository. Do not delete one to make a change pass:
   version — or tell every client to run the binary with no verb, which exits 2.
 - **`AgentSkillTests`** checks the skill's frontmatter against the Agent Skills spec (`name` equals
   the directory name, `description` within 1024 characters) and cross-checks every backticked
-  tool-shaped identifier against the reflected tool inventory in both directions. The inventory is
-  empty until WP5, so the "every tool is named" direction is vacuous today and becomes real with the
-  first tool; the "names a tool that exists" direction is sharp already, because the verb set it
-  scans with includes the designed tool table's verbs.
+  tool-shaped identifier against the reflected tool inventory in both directions. The "names a tool
+  that exists" direction is sharp, because the verb set it scans with is the union of the live
+  inventory and the designed table's verbs. The "every tool is named" direction skips while the skill
+  names **no** tool at all — WP5 landed ten tools and the skill is WP6's work package, and it still
+  says outright that this release answers the protocol handshakes and nothing else. That is the same
+  vacuity rule the scaffold's builder wrote, stated from the side that has not landed yet: the moment
+  the skill names one tool it has to name them all, so a playbook cannot quietly drop half the
+  surface.
 - **`ConfigurationTests`** asserts that every documented variable reaches a property, under its plain
   name *and* under the plugin prefix. A knob that is written down and never read is the one
   configuration bug with no symptom to search for.
@@ -324,7 +387,12 @@ spawns it, and drives **three** real exchanges. Two of them are LSP sessions —
 been answered, `shutdown` and `exit` with the exit code asserted — one against the scripted backend
 running *inside* the server process (`lsp --smoke`) and one against the same script in a *child*
 process (`CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child`, which spawns `<self> fake-roslyn`). The third is the
-MCP handshake (`initialize`, `initialized`, `tools/list`).
+MCP handshake (`initialize`, `initialized`, `tools/list`), whose answer is compared against
+`ExpectedToolNames` verbatim — the only assertion this repository makes about the tool inventory of
+the *published* binary rather than of a reflected type list, and therefore the only thing that would
+catch an AOT publish which dropped a tool class or a serializer context that could not describe a
+result type. It runs with no Roslyn wired in at all (D69), which is exactly the point: the handshake
+and `tools/list` must not depend on a backend.
 
 Each leg proves something the others cannot. The LSP legs read stdout as *frames*, so any byte that
 is not part of one fails the test: that is what proves the "nothing else writes to stdout" rule on a

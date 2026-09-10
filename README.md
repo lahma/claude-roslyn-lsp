@@ -17,14 +17,16 @@ actions, fix-all by diagnostic id, formatting and on-demand diagnostics, address
 rather than by a line number the model had to grep for first. One binary also serves GitHub Copilot
 CLI and OpenCode over LSP, and Codex, Gemini CLI, Cursor and VS Code over MCP.
 
-> **Status: under construction.** The `lsp` verb answers the LSP handshake and refuses everything
-> else; the `mcp` verb completes the MCP handshake and registers no tools; `fake-roslyn` reports that
-> it is not implemented yet. What *does* work end to end is acquisition: `claude-roslyn-lsp install`
+> **Status: under construction.** The `lsp` verb is the real adapter — it answers the handshake from
+> its own capability document, holds requests until the workspace reports itself loaded, answers
+> Roslyn's registrations, configuration and progress on the client's behalf, and forwards everything
+> else with only the JSON-RPC id rewritten. Acquisition works end to end: `claude-roslyn-lsp install`
 > downloads and hash-verifies the pinned Roslyn server, and `claude-roslyn-lsp doctor` reports the
-> whole resolution chain and then starts the real server and completes a handshake with it. The
-> mediation between the two — which is the point of the project — is the next work package. This file
-> is still partly a placeholder, so that the NuGet package and the release archives ship with the
-> README they reference.
+> whole resolution chain and then starts the real server and completes a handshake with it. The two
+> halves are not yet wired together, so the only backend the adapter talks to is the scripted one
+> behind `lsp --smoke`; the `mcp` verb completes the MCP handshake and registers no tools. This file
+> is a placeholder so that the NuGet package and the release archives ship with the README they
+> reference — the full document is written against the frozen tool surface.
 
 ## Installing
 

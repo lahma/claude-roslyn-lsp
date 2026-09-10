@@ -56,7 +56,9 @@ D1–D4 were confirmed with the user on 2026-09-10 and are the shape of the prod
 scaffold's own choices, most of them inherited from the sibling repositories `bitbucket-mcp` and
 `sonarqube-mcp` and restated here with the argument that applies *here*. D14 and beyond are named so
 that later work packages have a number to fill in rather than a decision to invent; a row that says
-**TBD** is a decision that has not been made, not one that has been forgotten.
+**TBD** is a decision that has not been made, not one that has been forgotten. D14 and D24-D29 were
+settled by the protocol work package (WP2) against the wire facts in
+[`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md).
 
 | # | Decision |
 |---|---|
@@ -73,7 +75,7 @@ that later work packages have a number to fill in rather than a decision to inve
 | D11 | **`Cli/CliRuntime.cs` owns the console, and the protocol streams are raw `Stream`s.** stdin and stdout are opened once, as bytes. Never `Console.In`/`Console.Out`: a `TextWriter` applies an encoding and, on Windows, rewrites `\n` as `\r\n`, which would put a `Content-Length` header out of step with the body it measured — a corruption that produces no error, only a client that stops answering. |
 | D12 | **Framing is ours, bounded, and strict.** `Protocol/LspFrameReader` accepts only `Content-Length` and `Content-Type`, requires CRLF, caps the header section at 64 KiB and the body at 32 MiB, and treats anything else as an unrecoverable protocol error. Strictness here is not pedantry: this reader sits *between* two peers that both claim to speak LSP, so accepting something Roslyn would reject only moves the failure somewhere harder to see. `LspFrameWriter` writes each frame in a single `WriteAsync` behind a gate, because a header separated from its body can be interleaved with another frame's. |
 | D13 | **Full document synchronisation (`change: 1`), not incremental.** Roslyn accepts full-text `didChange`, and the adapter has to keep a document mirror anyway so it can replay state after a Roslyn crash. A mirror rebuilt from a range-edit history that was interrupted halfway is wrong in a way that shows up as wrong *answers*, not as an error; the bytes incremental sync saves are not worth that. |
-| D14 | **The `initialize` document the adapter sends Roslyn is authored, not derived from the client's.** — **TBD in WP4.** The shape is sketched in the plan (configuration, workspaceFolders, dynamic watched files, dynamic diagnostics with refresh, work-done progress, the navigation and edit capabilities, `workspaceEdit` with `documentChanges` and `resourceOperations`, UTF-16) and deliberately omits semantic tokens, inlay hints and code lens so Roslyn never registers or refreshes them. |
+| D14 | **The `initialize` document the adapter sends Roslyn is authored, not derived from the client's.** Claude Code's own document is wrong in both directions: it declares things the adapter has to do itself (it refuses `client/registerCapability` with `-32601`, and answers `workspace/configuration` only when a `settings` block happens to be present) and omits everything the adapter needs Roslyn to do — dynamic diagnostics, watched files, work-done progress. Forwarding it would switch off exactly the machinery this project exists to supply. So `RoslynInitializeParams` is written here: configuration, workspaceFolders, dynamic `didChangeConfiguration` and `didChangeWatchedFiles` with relative patterns (without which Roslyn registers no watchers at all and has no in-process fallback, C34), symbol, diagnostics refresh, `workspaceEdit` with `documentChanges` and create/rename/delete (C21), synchronisation with `didSave`, hover in markdown, definition/typeDefinition/implementation with **`linkSupport: false`** — a `LocationLink` renders as nothing in a client that only knows `Location`, and navigation crosses verbatim — references, hierarchical documentSymbol, callHierarchy, rename with prepare, codeAction with `dataSupport` and `resolveSupport: ["edit"]`, formatting, rangeFormatting, dynamic `diagnostic` with `relatedDocumentSupport`, `window.workDoneProgress`, and `general.positionEncodings: ["utf-16"]`. Semantic tokens, inlay hints and code lens are **absent**, so Roslyn never registers or refreshes them. Two additions to the plan's sketch: `signatureHelp` and `completion`, because the adapter advertises both providers to its own client (D25) and a provider promised in one direction but never declared in the other is the exact asymmetry that produces empty answers with no error anywhere. `workspace.applyEdit` is deliberately **not** declared — the v1 adapter writes no files, D21 puts that in the MCP half — and Roslyn's `workspace/applyEdit` is handled defensively rather than invited. |
 | D15 | **How the adapter talks to Roslyn — a named pipe by default, stdio as the fallback.** Roslyn *connects* to a pipe the adapter created (C8), so the `NamedPipeServerStream` (`InOut`, one instance, byte mode, `Asynchronous \| CurrentUserOnly`) has to exist before the process is started; the name is `claude-roslyn-lsp-<pid>-<8 hex>` and the connect budget is 30 s. The pipe is preferred because on it the protocol is a channel nothing else holds a handle to — the pinned build writes a 646-byte banner to its stdout in pipe mode (C7), which under `--stdio` would have been protocol corruption. `CLAUDE_ROSLYN_LSP_TRANSPORT=stdio` exists for environments with no usable named pipe. Details in D37 and D38. |
 | D16 | **The diagnostics bridge: pull from Roslyn, push to the client.** — **TBD in WP4.** Debounce, the per-uri in-flight rule, `previousResultId` handling, the severity floor and the per-file cap all land there. |
 | D17 | **Workspace-wide diagnostics for files that are not open are opt-in.** — **TBD in WP4.** They need a full-solution compiler scope, which is the expensive setting, and most of the output would be cut by the client's own delivery cap. |
@@ -103,6 +105,12 @@ that later work packages have a number to fill in rather than a decision to inve
 | D41 | **Solutions are scored, not taken in the order the walk found them.** Name equal to the root folder +100, `.slnx` over `.sln` +10, +1 per project (`.sln`: lines beginning `Project("{`; `.slnx`: `<Project Path=` elements — counted by text, because the package budget has no room for `Microsoft.Build` and the number is only ever a tie-break). Ties go to the shallower file, then to ordinal path order. Depth-3 breadth-first walk, skipping `bin obj .git node_modules .vs artifacts TestResults`. |
 | D42 | **The project fallback keeps every candidate, tests included, capped at 500.** An earlier sketch trimmed test projects to save load time; that is backwards for this product, because an agent asked to fix a failing test needs the test project loaded, and a symbol that resolves everywhere except in tests is worse than a slower load. The cap is a guard against opening a monorepo by accident, not a curation policy. |
 | D43 | **`doctor` never downloads; `install` is the same command with the download allowed.** A diagnostic that quietly spends 70 MB of somebody's tethered connection is a diagnostic they will not run again, so the two verbs are one implementation and one flag (`doctor --fix` ≡ `install`). `doctor`'s exit code means exactly one thing: 0 iff Roslyn is runnable *right now*, which is established by launching it and completing a real `initialize`/`shutdown`/`exit` — every static check it prints can pass on a machine where the server still does not start. `--json` renders the same gathered record, so the two forms cannot disagree. |
+| D44 | **The adapter terminates both sessions; it is not a relay with patches.** It is a *server* to Claude and a *client* to Roslyn, with two independent handshakes and state of its own. A byte relay cannot answer Claude's `initialize` before Roslyn has answered its own, cannot answer the ~140 registrations and 80 configuration sections that Claude refuses, and has nowhere to keep a document mirror or a readiness queue. Two read loops, one `OutboundQueue` per side (a channel, because a semaphore serialises writes but does not order them), and every shared structure owns its own `System.Threading.Lock`. |
+| D45 | **The capability document the adapter advertises is authored and static, and `initialize` is answered immediately.** Claude Code holds `initialize` open indefinitely if it is not answered, and Roslyn takes the better part of a second to answer its own (C31) — so deriving one from the other would make the client's startup wait on the backend's. Worse, Roslyn advertises `semanticTokensProvider`, `codeLensProvider`, `inlayHintProvider` and `_vs_onAutoInsertProvider` statically whether or not anyone asked (C26), and advertising a capability is a promise to answer the requests it enables. The list is therefore exactly what the mediation carries: hover, definition, typeDefinition, implementation, references, documentSymbol, workspaceSymbol, callHierarchy, rename (prepare), codeAction (resolve; quickfix + refactor), formatting, rangeFormatting, signatureHelp, completion, and `textDocumentSync` `{openClose, change: 1 (D13), save.includeText: false}`. `SmokeTest` asserts the three absent providers on a published binary talking to a backend that advertises all three. |
+| D46 | **The readiness gate blocks; it does not bounce.** A request issued before `workspace/projectInitializationComplete` is answered by Roslyn with an *empty successful result*, never an error (C27) — so an ungated client silently reports "no definition found" for the first several seconds of every session, which is indistinguishable from a correct answer and teaches the agent that the server is useless. The obvious alternative, `-32801 ContentModified` plus a client retry, does not survive contact with Claude Code: it retries about three times inside three and a half seconds, and a load takes 2.5-9 s (C31). So requests queue in arrival order and are released **synchronously, in that order** — continuation scheduling gives no ordering guarantee — with `CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS` as a floor rather than a promise: after it the gate passes everything through, because a partially loaded workspace answering some questions beats a server that has stopped answering. A `$/cancelRequest` for a held request dequeues it and answers `-32800`; a failed backend answers `-32603` naming `doctor`; a client that is holding requests is told every ten seconds through `window/logMessage`, which is the only channel it renders. Notifications flow from `RoslynInitialized`, not from `ProjectsLoaded`. |
+| D47 | **Pass-through is a three-segment id rewrite of the original bytes, and every outbound request is renumbered.** `LspMessageScanner` makes one depth-1 `Utf8JsonReader` pass to find the message's own `id` token — never a nested one, which matters because Roslyn puts `id` members inside `data`, `item` and `TextDocument` payloads (C18, C24) — and forwarding copies everything before the token, the new token, and everything after. Reserialising would reorder members, renormalise numbers and re-escape strings whose exact shape the peer has already been told, and it would put this repository in the business of modelling every result Roslyn returns. Renumbering is not optional: two peers that have never met both count from one, so an unrewritten id lets a client request and an adapter request collide, and one answer is then delivered as the other's — a *wrong answer*, not an error. One counter serves both kinds of outbound request, which makes the collision structurally impossible rather than merely unlikely; there is one `IdMap` per direction, because Roslyn asks the client questions too. |
+| D48 | **The adapter answers `workspace/configuration` itself, with agent-tuned defaults.** The section names contain a pipe (`csharp\|background_analysis...`), which Claude Code's dotted settings lookup cannot address at all, and it only answers the request when a `settings` block happens to be present in the plugin configuration. Precedence is client settings → `CLAUDE_ROSLYN_LSP_OPTIONS` → these defaults → `null`. The defaults assume an agent rather than a human with a screen: both diagnostic scopes at `openFiles`, because `fullSolution` is what makes a large solution unusable and WP4's opt-in mode raises it deliberately (C14); automatic restore **on**, because Roslyn restores server-side and never asks (C30) and a freshly cloned repository would otherwise load with no references; decompiled-source navigation **on**, so definition into a BCL symbol reaches real source (C25); and reference-assembly symbol search, every `csharp\|inlay_hints.*`, every `csharp\|code_lens.*` and auto-insert **off**, because the adapter advertises none of those (D45) and the work would be discarded. The two families are matched by prefix rather than enumerated, so a Roslyn that adds a hint kind cannot quietly switch it back on. |
+| D49 | **The scripted fake Roslyn backend ships inside the product binary, behind a hidden verb.** `Testing/FakeRoslynServer` reproduces a real 5.12 startup from the WP0 wire logs — the registration batches with their real diagnostic identifiers and their shuffled order (C11), both configuration batches (C41), the watcher shapes that make collapsing non-trivial (C32), the progress stream, the log lines, `projectInitializationComplete` — and, crucially, answers navigation **empty until the workspace loads**, exactly as the real server does (C27). Keeping it in the product rather than in the test project is what lets `SmokeTest` prove the mediation against a published Native AOT binary on every release RID with no download: `lsp --smoke` runs it in-process, and `CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child` spawns `<self> fake-roslyn` and speaks to it over stdio, which is the only leg that proves the process plumbing (C7 is a real banner on a real stdout). The cost is a few kilobytes of fixtures in the shipped binary; the alternative is release RIDs whose mediation nobody has ever run. |
 
 ### The plugin-option rule
 
@@ -197,12 +205,20 @@ src/ClaudeRoslynLsp/        One production project; AssemblyName claude-roslyn-l
   Program.cs                Entry point — hands argv straight to the CLI dispatcher
   ServerVersion.cs          Product name + version, read from the assembly (the build stamps it)
   Cli/                      The verb dispatch, and the ONLY place the console is touched (D11).
-                            CliDispatcher, CliRuntime, DoctorCommand, FakeRoslynCommand
+                            CliDispatcher, CliRuntime, CliVerbs, DoctorCommand, FakeRoslynCommand
   Configuration/            ClaudeRoslynLspOptions.FromEnvironment() — the complete env-var surface,
                             the plugin-option precedence, and it never throws (D10)
-  Protocol/                 Content-Length framing (D12), the JSON-RPC message shapes the adapter
-                            understands, and LspJsonContext (D7)
-  Lsp/                      The LSP server. Today a correct stub; WP2/WP4 grow the mediation here
+  Protocol/                 Content-Length framing (D12), the depth-1 message scanner and id rewrite
+                            (D47), JsonRpcId/JsonRpcErrors, the wire shapes the adapter understands,
+                            and LspJsonContext (D7)
+  Adapter/                  The mediation (D44): AdapterSession, ClientEndpoint, ServerEndpoint,
+                            OutboundQueue, IdMap, ReadinessGate, DocumentMirror, RegistrationTracker,
+                            ConfigurationResponder, ProgressTracker, ServerRequestHandler,
+                            RequestRouter, WorkspaceOpener, IRoslynConnectionFactory, and
+                            LspAdapterServer (the `lsp` verb's stdio entry point). WP4 grows the
+                            diagnostics, watching and recovery bridges here
+  Testing/                  The scripted fake Roslyn server (D49), shared by the tests, `lsp --smoke`
+                            and the hidden `fake-roslyn` verb
   Roslyn/                   Everything about the child process (D24–D43): RuntimeIdentifier,
                             RoslynServerManifest (the generated pin), AdapterPaths,
                             NuGetPayloadDownloader, RoslynServerLocator, DotnetHostLocator,
@@ -220,10 +236,9 @@ build/                      The Fallout orchestrator (Build.cs, Build.Publish.cs
 docs/                       roslyn-protocol-facts.md — the C-numbered findings (see above)
 ```
 
-Directories the plan reserves and the scaffold has not created, so that nobody invents a second home
-for them: `src/ClaudeRoslynLsp/Edits/` (the workspace-edit applier and its guards, WP5),
-`src/ClaudeRoslynLsp/Testing/` (the scripted fake Roslyn server, shared by the tests and the hidden
-verb, WP2), `tests/fixtures/HelloSolution/` (WP7) and `docs/clients/` (WP6).
+Directories the plan reserves and the repository has not created, so that nobody invents a second
+home for them: `src/ClaudeRoslynLsp/Edits/` (the workspace-edit applier and its guards, WP5),
+`tests/fixtures/HelloSolution/` (WP7) and `docs/clients/` (WP6).
 
 ## Build
 
@@ -258,10 +273,14 @@ dotnet test tests\ClaudeRoslynLsp.Tests           # the same tests, without a pu
 dotnet test tests\ClaudeRoslynLsp.Tests --filter "FullyQualifiedName~Framing"
 ```
 
-xunit.v3 with the VSTest bridge (D9). No mocking or assertion libraries: the framing tests drive a
-hand-rolled stream that returns one byte at a time, and the LSP server is driven over in-memory
-streams. Because `JsonSerializerIsReflectionEnabledByDefault=false` is set in the test csproj as well
-(D6), a type missing from a `JsonSerializerContext` fails here rather than only after an AOT publish.
+xunit.v3 with the VSTest bridge (D9). No mocking or assertion libraries, and no
+`Microsoft.Extensions.TimeProvider.Testing` either — the framing tests drive a hand-rolled stream
+that returns one byte at a time, the adapter is driven over `System.IO.Pipelines` pipe pairs against
+the scripted backend (D29), and the readiness gate's timeout and its ten-second notice run on a
+hand-rolled `TimeProvider` the test moves by hand, because a test that waits two minutes for a
+timeout is a test nobody runs. Because `JsonSerializerIsReflectionEnabledByDefault=false` is set in
+the test csproj as well (D6), a type missing from a `JsonSerializerContext` fails here rather than
+only after an AOT publish.
 
 Some rules are too easy to break silently to be left to review, so tests enforce them by reflection or
 by scanning the repository. Do not delete one to make a change pass:
@@ -300,11 +319,26 @@ by scanning the repository. Do not delete one to make a change pass:
   here.
 
 `SmokeTest` is the end-to-end check the unit tests cannot be: it publishes the Native AOT binary,
-spawns it, and drives **two** real exchanges — one `Content-Length`-framed LSP handshake
-(`initialize`, `initialized`, `shutdown`, `exit`, with the exit code asserted) and one MCP handshake
-(`initialize`, `initialized`, `tools/list`). The LSP leg reads stdout as *frames*, so any byte that is
-not part of one fails the test: that is what proves the "nothing else writes to stdout" rule on a real
-binary rather than in a source scan. CI runs `Test` and `SmokeTest` on every push and pull request.
+spawns it, and drives **three** real exchanges. Two of them are LSP sessions —
+`initialize`, `initialized`, a `didOpen`, a `textDocument/definition`, then, once that definition has
+been answered, `shutdown` and `exit` with the exit code asserted — one against the scripted backend
+running *inside* the server process (`lsp --smoke`) and one against the same script in a *child*
+process (`CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child`, which spawns `<self> fake-roslyn`). The third is the
+MCP handshake (`initialize`, `initialized`, `tools/list`).
+
+Each leg proves something the others cannot. The LSP legs read stdout as *frames*, so any byte that
+is not part of one fails the test: that is what proves the "nothing else writes to stdout" rule on a
+real binary rather than in a source scan. They also assert that the capability document is this
+repository's own and not the backend's (D45) — the scripted backend answers with Roslyn's real one,
+which advertises three providers the adapter must not carry (C26). And because that backend answers
+navigation with an *empty successful result* until it reports the workspace loaded, exactly as the
+real server does (C27), a **non-empty** definition answer is the proof that the readiness gate held
+the request and released it (D46); `shutdown` is deliberately not sent until that answer arrives,
+because a server that shut down with the request still held would otherwise pass. The child-process
+leg is the only one that proves the plumbing: that this RID can spawn a child at all, that its three
+redirected handles are wired the right way round, and that nothing the child writes at startup lands
+on what is now a protocol channel — which the real server does do in one of its transports (C7). CI
+runs `Test` and `SmokeTest` on every push and pull request.
 
 `tests/ClaudeRoslynLsp.Tests/Live/` holds the tests that acquire and launch the **real** pinned
 Roslyn. They are opt-in through `CLAUDE_ROSLYN_LSP_LIVE_TESTS=1` (and are reported as skipped

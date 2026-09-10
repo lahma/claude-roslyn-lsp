@@ -95,7 +95,7 @@ internal static class RequestRouter
         {
             // The handshake and the lifecycle are the adapter's own. Answering initialize without
             // waiting for Roslyn is the point: Claude Code holds it open forever otherwise, and the
-            // capability document is authored here anyway (D25).
+            // capability document is authored here anyway (D45).
             case "initialize":
             case "shutdown":
             case "initialized":

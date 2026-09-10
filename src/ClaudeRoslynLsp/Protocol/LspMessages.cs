@@ -58,7 +58,7 @@ internal sealed record InitializeResult
 
 /// <summary>
 /// The capability document the adapter advertises to its client — authored here, never derived from
-/// what Roslyn happens to answer with (D25).
+/// what Roslyn happens to answer with (D45).
 /// </summary>
 /// <remarks>
 /// <para>

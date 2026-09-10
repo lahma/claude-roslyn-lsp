@@ -1,7 +1,7 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C39 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C47 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
 ## Acquisition and launch
@@ -61,6 +61,12 @@ from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) o
   --stdio --autoLoadProjects [max] --sourceGeneratorExecutionPreference <Automatic|Balanced>
   --clientProcessId <pid> --daemon --daemonKeepAlive <s>`. `--stdio` and `--pipe` are mutually
   exclusive and one is required.
+- **C45** The `initialize` result carries a non-standard `_roslyn_processId` naming the process
+  that actually holds the workspace. With the thin client in the picture (C29) that is a different
+  pid from the one launched, so it is the only number worth reporting for memory or for a kill.
+- **C47** `window/logMessage` is sent with `"type": 5`, which LSP 3.17 does not define (it is
+  3.18's `Debug`). A client that switches over 1-4 drops or mishandles roughly a third of Roslyn's
+  startup output.
 
 ## Configuration
 
@@ -72,6 +78,9 @@ from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) o
   `projects.dotnet_enable_automatic_restore`, `navigation.dotnet_navigate_to_decompiled_sources`,
   `csharp|formatting.dotnet_organize_imports_on_format`,
   `csharp|symbol_search.dotnet_search_reference_assemblies`.
+- **C46** The two `workspace/configuration` requests are 75 sections and then 5, and the second
+  arrives from the Razor subsystem after its cohost registrations — a client that answers only the
+  first leaves a request outstanding in a subsystem that is on the startup path.
 
 ## Diagnostics
 

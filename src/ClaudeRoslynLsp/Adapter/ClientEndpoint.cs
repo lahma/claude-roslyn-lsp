@@ -144,7 +144,7 @@ internal sealed class ClientEndpoint : IAsyncDisposable
             LspJsonContext.Default.InitializeResponse);
     }
 
-    /// <summary>The capability document this adapter advertises. Authored, never forwarded (D25).</summary>
+    /// <summary>The capability document this adapter advertises. Authored, never forwarded (D45).</summary>
     internal static ServerCapabilities BuildCapabilities() =>
         new()
         {

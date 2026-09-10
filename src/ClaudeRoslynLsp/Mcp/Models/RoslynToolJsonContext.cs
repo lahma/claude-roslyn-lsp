@@ -24,7 +24,12 @@ namespace ClaudeRoslynLsp.Mcp.Models;
 /// <c>JsonSerializerIsReflectionEnabledByDefault=false</c> the schema exporter can only describe a
 /// parameter whose type some resolver in the chain knows, so every type used as a tool parameter has
 /// to be resolvable — including the nullable value types, which no other context in the chain
-/// declares. The result records arrive with the tools in WP5.
+/// declares.
+/// </para>
+/// <para>
+/// The engine's LSP shapes are in a third context, <c>Mcp/Engine/RoslynEngineJsonContext</c>, which
+/// is chained with neither of the other two (D60). Nothing from that vocabulary appears here: what a
+/// model reads is this repository's own words, not Roslyn's.
 /// </para>
 /// </remarks>
 [JsonSourceGenerationOptions(
@@ -39,4 +44,13 @@ namespace ClaudeRoslynLsp.Mcp.Models;
 [JsonSerializable(typeof(int?))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(bool?))]
+
+// Tool result types, for structured content and output schemas.
+[JsonSerializable(typeof(WorkspaceStatusResult))]
+[JsonSerializable(typeof(SymbolResolveResult))]
+[JsonSerializable(typeof(TypeMembersResult))]
+[JsonSerializable(typeof(ReferencesResult))]
+[JsonSerializable(typeof(DiagnosticsResult))]
+[JsonSerializable(typeof(CodeActionsResult))]
+[JsonSerializable(typeof(EditResult))]
 internal sealed partial class RoslynToolJsonContext : JsonSerializerContext;

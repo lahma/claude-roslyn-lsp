@@ -3,7 +3,10 @@ using System.Text.Json;
 
 using ClaudeRoslynLsp.Cli;
 using ClaudeRoslynLsp.Configuration;
+using ClaudeRoslynLsp.Edits;
+using ClaudeRoslynLsp.Mcp.Engine;
 using ClaudeRoslynLsp.Mcp.Models;
+using ClaudeRoslynLsp.Mcp.Tools;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -24,9 +27,10 @@ namespace ClaudeRoslynLsp.Mcp;
 /// <see cref="CliRuntime"/> owns.
 /// </para>
 /// <para>
-/// This work package's version completes a handshake and registers no tools. WP5 adds the refactoring
-/// surface: the shared Roslyn session in the graph below, and one
-/// <c>WithTools&lt;T&gt;(jsonOptions)</c> call per tool class in <see cref="RegisterTools"/>.
+/// The Roslyn session reaches the tool layer through an <c>engineFactory</c> seam, not a
+/// hard reference (D60). A build with no backend registers <see cref="NotWiredRoslynEngine"/>, which
+/// keeps the handshake and <c>tools/list</c> working and gives every tool one clear sentence to fail
+/// with (D69); that is the shape <c>SmokeTest</c>'s MCP leg drives on every release RID.
 /// </para>
 /// </remarks>
 internal static class McpServerSetup
@@ -35,7 +39,11 @@ internal static class McpServerSetup
     /// Runs the server until stdin closes or the process is asked to shut down, then returns the
     /// process exit code.
     /// </summary>
-    internal static async Task<int> RunStdioAsync()
+    /// <param name="engineFactory">
+    /// Builds the Roslyn session the tools run against. <see langword="null"/> registers
+    /// <see cref="NotWiredRoslynEngine"/>.
+    /// </param>
+    internal static async Task<int> RunStdioAsync(Func<IServiceProvider, IRoslynEngine>? engineFactory = null)
     {
         using var shutdown = new CancellationTokenSource();
 
@@ -62,6 +70,7 @@ internal static class McpServerSetup
         });
 
         services.AddSingleton(options);
+        RegisterToolServices(services, options, engineFactory);
 
         var jsonOptions = CreateToolSerializerOptions();
 
@@ -79,10 +88,8 @@ internal static class McpServerSetup
                 serverOptions.ServerInstructions = ServerInstructions.Text;
 
                 // A server with no tool registered at all advertises no `tools` capability and has
-                // nothing to answer `tools/list` with, which would make the SmokeTest handshake fail
-                // for a reason that has nothing to do with the transport. An empty collection is the
-                // honest answer - "tools are supported, there are none yet" - and `??=` keeps the
-                // line correct once WithTools<T> fills the collection in.
+                // nothing to answer `tools/list` with. WithTools<T> fills this collection in, so the
+                // `??=` is now only a guard against a future registration path that does not.
                 serverOptions.ToolCollection ??= new McpServerPrimitiveCollection<McpServerTool>();
             })
             .WithStdioServerTransport();
@@ -90,6 +97,10 @@ internal static class McpServerSetup
         RegisterTools(builder, jsonOptions);
 
         await using var provider = services.BuildServiceProvider();
+
+        // The error funnel's one dependency. Resolved here rather than passed into every tool method,
+        // so that no tool signature carries a parameter the schema then has to exclude.
+        ToolErrors.UseLoggerFactory(provider.GetRequiredService<ILoggerFactory>());
 
         // The SDK registers McpServer as a singleton; running it directly is the SDK's own AOT
         // test-app shape (D5).
@@ -108,7 +119,20 @@ internal static class McpServerSetup
     }
 
     /// <summary>
-    /// Registers the tool classes. Empty in this work package, and the one place WP5 adds to.
+    /// The five classes the ten tools live in, in the order they are registered. Shared with the
+    /// tests so the inventory they assert against is the inventory the server publishes.
+    /// </summary>
+    internal static IReadOnlyList<Type> ToolTypes { get; } =
+    [
+        typeof(WorkspaceTools),
+        typeof(SymbolTools),
+        typeof(DiagnosticTools),
+        typeof(CodeActionTools),
+        typeof(EditTools),
+    ];
+
+    /// <summary>
+    /// Registers the tool classes.
     /// </summary>
     /// <remarks>
     /// Never <c>WithToolsFromAssembly()</c> — it is not AOT-safe (IL2026) and would be a build error
@@ -122,7 +146,67 @@ internal static class McpServerSetup
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(jsonOptions);
+
+        builder.WithTools<WorkspaceTools>(jsonOptions);
+        builder.WithTools<SymbolTools>(jsonOptions);
+        builder.WithTools<DiagnosticTools>(jsonOptions);
+        builder.WithTools<CodeActionTools>(jsonOptions);
+        builder.WithTools<EditTools>(jsonOptions);
     }
+
+    /// <summary>
+    /// Registers the one collaborator every tool method takes, and the Roslyn session behind it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every registration is an explicit factory rather than <c>AddSingleton&lt;T&gt;()</c>: the
+    /// constructors are internal, which the container's reflection-based selection does not see, and
+    /// writing the graph out by hand keeps it reflection-free for AOT and readable as the wiring
+    /// diagram it is.
+    /// </para>
+    /// <para>
+    /// Nothing here runs at startup. <see cref="RoslynToolContext"/> is constructed on the first tool
+    /// call, and constructing it touches neither disk nor network — the engine decides for itself
+    /// when to launch Roslyn, because a session that never asks a C# question should never pay for
+    /// one.
+    /// </para>
+    /// </remarks>
+    /// <param name="services">The service collection.</param>
+    /// <param name="options">The resolved configuration.</param>
+    /// <param name="engineFactory">Builds the Roslyn session, or <see langword="null"/> for the not-wired default.</param>
+    internal static void RegisterToolServices(
+        IServiceCollection services,
+        ClaudeRoslynLspOptions options,
+        Func<IServiceProvider, IRoslynEngine>? engineFactory)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+
+        services.AddSingleton(_ => new WorkspacePathGuard(ResolveWorkspaceRoot()));
+        services.AddSingleton(sp => new WorkspaceEditApplier(sp.GetRequiredService<WorkspacePathGuard>()));
+        services.AddSingleton(_ => new EditCache());
+        services.AddSingleton<IRoslynEngine>(engineFactory ?? (static _ => new NotWiredRoslynEngine()));
+
+        services.AddSingleton(sp => new RoslynToolContext(
+            sp.GetRequiredService<IRoslynEngine>(),
+            sp.GetRequiredService<ClaudeRoslynLspOptions>(),
+            sp.GetRequiredService<WorkspacePathGuard>(),
+            sp.GetRequiredService<WorkspaceEditApplier>(),
+            sp.GetRequiredService<EditCache>()));
+    }
+
+    /// <summary>
+    /// The directory every path a tool reports is relative to, and outside which nothing is written.
+    /// </summary>
+    /// <remarks>
+    /// The process's working directory, because that is what every MCP client sets it to: Claude
+    /// Code, Codex, Gemini CLI and Cursor all launch a stdio server with the workspace as its
+    /// current directory, and there is no protocol field that carries a root. A solution configured
+    /// outside that directory still loads — the guard bounds <em>writes</em>, not analysis — and
+    /// <c>getWorkspaceStatus</c> reports its real path so the discrepancy is visible rather than
+    /// mysterious.
+    /// </remarks>
+    internal static string ResolveWorkspaceRoot() => Environment.CurrentDirectory;
 
     /// <summary>
     /// Builds the tool-facing serializer options that every <c>WithTools&lt;T&gt;</c> registration —

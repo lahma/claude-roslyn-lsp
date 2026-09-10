@@ -465,7 +465,9 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
             return;
         }
 
-        var outboundId = _serverBound.Forward(info.Id, info.IdToken(body), info.Method!);
+        // The body is kept with the pending entry: a backend that dies while this is in flight is
+        // relaunched, and the request is then sent again under a fresh id rather than refused (D74).
+        var outboundId = _serverBound.Forward(info.Id, info.IdToken(body), info.Method!, body);
         server.Post(LspMessageScanner.RewriteId(body, info, IdMap.TokenFor(outboundId)));
     }
 
@@ -937,7 +939,31 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
         _client.Post(LspMessageScanner.RewriteId(body, info, IdMap.TokenFor(outboundId)));
     }
 
-    /// <summary>The backend is gone: fail everything that was waiting on it.</summary>
+    /// <summary>
+    /// The backend is gone: re-hold what can be replayed, fail what cannot, and decide about a
+    /// relaunch.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A client request that was in flight is re-held, not refused (D74).</b> The gate is closed
+    /// <em>before</em> the drain, and every forwarded request that still has its original bytes goes
+    /// back into it in arrival order — so a relaunch that succeeds answers them from the reloaded
+    /// workspace under the ids the client is still waiting on, and the client never learns that
+    /// anything happened. Refusing them with <c>-32603</c>, which is what this did, made a crash
+    /// visible to the model as a failed tool call for no reason: the adapter was about to have a
+    /// working backend again, and every request it forwards is a read.
+    /// </para>
+    /// <para>
+    /// Adapter-originated requests still fail. Each of them — a diagnostic pull, a handshake — is
+    /// re-issued on the adapter's own schedule once the workspace is back, and a pull replayed
+    /// against a reloaded server would be answered from a result id that died with the old one.
+    /// </para>
+    /// <para>
+    /// When the supervisor gives up there is nothing to replay into, so the held requests are
+    /// released as <see cref="GateOutcome.Failed"/> — <c>-32603</c> with a <c>doctor</c> hint, which
+    /// is the state a user can act on.
+    /// </para>
+    /// </remarks>
     private void OnBackendGone()
     {
         bool stopping;
@@ -956,23 +982,51 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
             generation = stopping ? _generation : ++_generation;
         }
 
+        var attempt = 0;
+
+        var decision = stopping
+            ? RestartDecision.Expected
+            : _supervisor.Decide(stopping: false, out attempt);
+
+        if (decision == RestartDecision.Restart)
+        {
+            // Closed before anything is drained. A request re-held into an open gate would be
+            // forwarded straight back into the backend that has just died, and a request arriving
+            // in the gap must not reach one that has not loaded the solution either — that answer
+            // would be empty and successful (C27), which is the failure the gate exists to prevent.
+            _gate.MarkRestarting();
+            _diagnostics?.Reset();
+        }
+
         var pending = _serverBound.DrainAll();
+        var replayed = 0;
 
         foreach (var request in pending)
         {
             if (request.Completion is { } completion)
             {
                 completion.TrySetException(new IOException("The Roslyn backend closed the connection."));
+                continue;
             }
-            else if (request.OriginalIdToken is { } token && !stopping)
+
+            if (request.OriginalIdToken is not { } token || stopping)
             {
-                // A request the client is still waiting on. Silence would leave it outstanding
-                // forever; an answer, even a refusal, lets the client move on.
-                _client.Post(JsonRpcErrors.Error(
-                    token,
-                    JsonRpcErrors.InternalError,
-                    $"The Roslyn backend exited while '{request.Method}' was in flight."));
+                continue;
             }
+
+            if (decision == RestartDecision.Restart && request.Body is { } body)
+            {
+                HoldOrForward(body, LspMessageScanner.Scan(body));
+                replayed++;
+                continue;
+            }
+
+            // Nothing is coming back for this one. Silence would leave the client waiting forever;
+            // an answer, even a refusal, lets it move on.
+            _client.Post(JsonRpcErrors.Error(
+                token,
+                JsonRpcErrors.InternalError,
+                $"The Roslyn backend exited while '{request.Method}' was in flight."));
         }
 
         if (stopping)
@@ -980,17 +1034,11 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
             return;
         }
 
-        Log.BackendGone(_logger, pending.Count);
+        Log.BackendGone(_logger, pending.Count, replayed);
 
-        switch (_supervisor.Decide(stopping: false, out var attempt))
+        switch (decision)
         {
             case RestartDecision.Restart:
-                // Held first, relaunched second. A request that arrives in the gap must not reach a
-                // backend that has not loaded the solution, because that answer would be empty and
-                // successful (C27) — the exact failure the gate exists to prevent, arriving late.
-                _gate.MarkRestarting();
-                _diagnostics?.Reset();
-
                 _client.Log(
                     LogMessageType.Info,
                     $"{ServerVersion.Name}: the Roslyn backend exited; relaunching it "
@@ -1348,8 +1396,9 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
         [LoggerMessage(
             EventId = 107,
             Level = LogLevel.Warning,
-            Message = "The Roslyn backend went away; {Count} in-flight request(s) were answered with an error.")]
-        internal static partial void BackendGone(ILogger logger, int count);
+            Message = "The Roslyn backend went away with {Count} request(s) in flight; {Replayed} of them " +
+                      "were re-held for the relaunch (D74) and the rest were answered with an error.")]
+        internal static partial void BackendGone(ILogger logger, int count, int replayed);
 
         [LoggerMessage(EventId = 108, Level = LogLevel.Debug, Message = "Reading from Roslyn stopped.")]
         internal static partial void BackendStreamFailed(ILogger logger, Exception exception);

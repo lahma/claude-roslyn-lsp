@@ -1,7 +1,7 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C54 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C56 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
 C48-C54 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
@@ -281,6 +281,32 @@ three orders of magnitude faster than everything else.
 | `callHierarchy/incomingCalls` (225 calls) | 3.6 s |
 | `textDocument/references` (278 references over 135 files) | 11.2 s |
 | `shutdown` | 15-26 ms |
+
+## Host and platform findings (WP5b, 2026-09-10)
+
+Not facts about Roslyn — facts about the host this adapter runs on — but they were found while
+verifying Roslyn's behaviour, they are cited from the same code, and there is nowhere else they
+would be re-verified from, so they share the numbering.
+
+- **C55** **`Path.GetFileName` does not split on `\` outside Windows, and it silently broke the one
+  exception in the watcher's exclusion list.** On Linux a backslash is an ordinary filename
+  character, so `Path.GetFileName(@"...\obj\project.assets.json")` returns the whole of
+  `obj\project.assets.json`. `FileWatchBridge.IsExcluded` used it to spot the restore result, so on
+  Linux the restore result was excluded along with the rest of `obj` — which is C48's failure
+  exactly: a load that never finishes, with nothing in the log about why. The paths reaching that
+  class are not all the host's own (a registration's `baseUri` and its globs come from Roslyn), so
+  the file name is now taken from the last segment after splitting on **both** separators, which is
+  what the exclusion walk beside it always did. The test data drives both spellings on both
+  platforms.
+- **C56** **A backend killed mid-request is ordered differently on Linux and on Windows.** The live
+  recovery phase kills Roslyn and asks a question. On Windows the process exit is observed before
+  the next request is forwarded almost every time, so the request is held by the readiness gate and
+  the relaunch answers it. On the Ubuntu CI runner the same sequence forwarded the request first and
+  *then* saw the exit — `3 in-flight request(s) were answered with an error`, followed by
+  `relaunching (attempt 1 of 2)`. The adapter now re-holds a forwarded request whose backend died
+  and replays it after the relaunch (D74), so both orderings produce the same answer; the ordering
+  itself is a property of how the two operating systems report a dead pipe and must not be relied
+  on in either direction.
 
 ## Claude Code 2.1.267 client (spike S3, 2026-09-10)
 

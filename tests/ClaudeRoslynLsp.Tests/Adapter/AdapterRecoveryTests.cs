@@ -160,6 +160,64 @@ public class AdapterRecoveryTests
     }
 
     /// <summary>
+    /// A request that was <em>already in flight</em> when the backend died is re-held and answered
+    /// from the relaunched one, under the id the client is still waiting on (D74).
+    /// </summary>
+    /// <remarks>
+    /// The case the sibling test above cannot reach: there, the request arrives during the gap and
+    /// the gate is already shut. Here it was forwarded to a live backend, which then died holding it
+    /// — the ordering CI reproduced on Linux and this machine almost never does (C56). Refusing it
+    /// with <c>-32603</c> was a crash made visible to the model for no reason: every request the
+    /// adapter forwards is a read, and the backend was about to be back.
+    /// </remarks>
+    [Fact]
+    public async Task ARequestInFlightWhenTheBackendDiesIsReplayedRatherThanRefused()
+    {
+        using var reached = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+
+        var connections = 0;
+
+        var factory = new RestartableFakeRoslynFactory(
+            () => Interlocked.Increment(ref connections) == 1
+                ? ScriptWithHangingDefinition(reached, release)
+                : FakeRoslynScript.Roslyn512Startup(projectLoadDelay: null));
+
+        await using var harness = new RecoveryHarness(factory);
+
+        await harness.HandshakeAsync(Cancellation);
+        await WaitAsync(() => factory.Latest is not null, Cancellation);
+
+        var first = factory.Latest!;
+        first.CompleteProjectInitialization();
+        await WaitAsync(() => harness.Session.Gate.IsOpen, Cancellation);
+
+        await harness.SendAsync(Definition(77, ProgramUri), Cancellation);
+
+        // The request is genuinely at the backend, not merely sent: the responder has it and is
+        // holding it, which is the only way to make "died mid-request" deterministic.
+        await WaitAsync(() => reached.IsSet, Cancellation);
+
+        factory.Kill();
+
+        await WaitAsync(() => factory.ConnectCount == 2, Cancellation);
+
+        // Let the first backend's blocked responder unwind; its answer goes to a closed stream.
+        release.Set();
+
+        // Re-held rather than refused: the gate has it, and nothing has been sent to the client.
+        await WaitAsync(() => harness.Session.Gate.HeldCount > 0, Cancellation);
+        Assert.Null(harness.TryFindResponse(77));
+
+        factory.Latest!.CompleteProjectInitialization();
+
+        var response = await harness.AwaitResponseAsync(77, Cancellation);
+
+        Assert.False(response.TryGetProperty("error", out _));
+        Assert.True(response.GetProperty("result").GetArrayLength() > 0);
+    }
+
+    /// <summary>
     /// Three deaths inside the window and the session gives up: every request is refused with a
     /// <c>doctor</c> hint, and the client is shown one message rather than a silence.
     /// </summary>
@@ -242,6 +300,41 @@ public class AdapterRecoveryTests
         }
 
         Assert.Fail("The session did not reach the expected state within 30 s.");
+    }
+
+    /// <summary>
+    /// The standard startup script with one responder that never answers until the test says so.
+    /// </summary>
+    /// <remarks>
+    /// Blocking the fake's read loop is deliberate: it is the closest thing to a real server that
+    /// accepted a request and then died with it, and killing the connection does not depend on that
+    /// loop being free — <c>Kill</c> completes the <em>writer</em>, which the adapter sees as end of
+    /// stream regardless.
+    /// </remarks>
+    /// <param name="reached">Set once the responder has the request.</param>
+    /// <param name="release">Waited on before the responder returns.</param>
+    private static FakeRoslynScript ScriptWithHangingDefinition(
+        ManualResetEventSlim reached,
+        ManualResetEventSlim release)
+    {
+        var script = FakeRoslynScript.Roslyn512Startup(projectLoadDelay: null);
+
+        return new FakeRoslynScript
+        {
+            InitializeResult = script.InitializeResult,
+            Steps = script.Steps,
+            ProjectLoadDelay = script.ProjectLoadDelay,
+            Responders = new Dictionary<string, FakeRoslynResponder>(script.Responders, StringComparer.Ordinal)
+            {
+                ["textDocument/definition"] = (_, _) =>
+                {
+                    reached.Set();
+                    release.Wait(TimeSpan.FromSeconds(30));
+
+                    return "[]"u8.ToArray();
+                },
+            },
+        };
     }
 
     private static string DidOpen(string uri, int version) => $$$"""

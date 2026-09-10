@@ -32,8 +32,11 @@ public class FileWatchBridgeTests
     /// <summary>Build output and machine state are never reported.</summary>
     [Theory]
     [InlineData(@"C:\w\src\A.cs", false)]
+    [InlineData("/w/src/A.cs", false)]
     [InlineData(@"C:\w\src\bin\Debug\A.dll", true)]
+    [InlineData("/w/src/bin/Debug/A.dll", true)]
     [InlineData(@"C:\w\src\obj\Debug\A.g.cs", true)]
+    [InlineData("/w/src/obj/Debug/A.g.cs", true)]
     [InlineData(@"C:\w\.git\HEAD", true)]
     [InlineData(@"C:\w\node_modules\x\index.js", true)]
     [InlineData(@"C:\w\artifacts\publish\A.exe", true)]
@@ -46,12 +49,35 @@ public class FileWatchBridgeTests
     /// The one exception: <c>project.assets.json</c> lives under <c>obj</c> and <em>is</em> the
     /// restore result, so Roslyn reloads a project's references when it changes.
     /// </summary>
-    [Fact]
-    public void TheRestoreResultSurvivesTheObjExclusion()
-    {
-        Assert.False(FileWatchBridge.IsExcluded(@"C:\w\src\Hello.Core\obj\project.assets.json"));
-        Assert.True(FileWatchBridge.IsExcluded(@"C:\w\src\Hello.Core\obj\project.nuget.cache"));
-    }
+    /// <remarks>
+    /// <b>Both separators, on every host, and CI paid for the omission (C55).</b> This assertion used
+    /// to be written with backslashes only, which passed on Windows and failed on Linux — where
+    /// <c>Path.GetFileName</c> treats a backslash as an ordinary character and reported the file's
+    /// name as <c>obj\project.assets.json</c>, so the exception never matched and the restore result
+    /// was dropped. That is C48's failure exactly: a load that never finishes, with nothing to read.
+    /// The paths reaching this predicate are not all the host's own — a watcher's <c>baseUri</c> and
+    /// glob come from Roslyn — so the theory drives both spellings on both platforms deliberately.
+    /// </remarks>
+    /// <param name="path">The path under test.</param>
+    /// <param name="excluded">Whether it should be dropped.</param>
+    [Theory]
+    [InlineData(@"C:\w\src\Hello.Core\obj\project.assets.json", false)]
+    [InlineData("/w/src/Hello.Core/obj/project.assets.json", false)]
+    [InlineData(@"C:\w\src\Hello.Core\obj\project.nuget.cache", true)]
+    [InlineData("/w/src/Hello.Core/obj/project.nuget.cache", true)]
+    public void TheRestoreResultSurvivesTheObjExclusion(string path, bool excluded) =>
+        Assert.Equal(excluded, FileWatchBridge.IsExcluded(path));
+
+    /// <summary>The file name is the last segment whichever separator the path was written with.</summary>
+    /// <param name="path">The path under test.</param>
+    /// <param name="expected">Its last segment.</param>
+    [Theory]
+    [InlineData(@"C:\w\src\obj\project.assets.json", "project.assets.json")]
+    [InlineData("/w/src/obj/project.assets.json", "project.assets.json")]
+    [InlineData(@"src/mixed\Calculator.cs", "Calculator.cs")]
+    [InlineData("Calculator.cs", "Calculator.cs")]
+    public void TheFileNameIsTheLastSegmentUnderEitherSeparator(string path, string expected) =>
+        Assert.Equal(expected, FileWatchBridge.FileNameOf(path));
 
     /// <summary>
     /// C33: only an appearance or a disappearance needs the synthetic project event. A plain edit of

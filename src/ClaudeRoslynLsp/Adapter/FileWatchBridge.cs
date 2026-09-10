@@ -304,7 +304,7 @@ internal sealed partial class FileWatchBridge : IDisposable
     {
         ArgumentNullException.ThrowIfNull(path);
 
-        if (string.Equals(Path.GetFileName(path), RestoreResultFile, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(FileNameOf(path), RestoreResultFile, StringComparison.OrdinalIgnoreCase))
         {
             // The restore result, which is exactly what a consumer of obj/ wants to hear about.
             return false;
@@ -322,6 +322,37 @@ internal sealed partial class FileWatchBridge : IDisposable
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The last segment of a path, treating <c>/</c> <b>and</b> <c>\</c> as separators whatever the
+    /// host does.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Not <see cref="Path.GetFileName(string)"/>, and CI paid to find out why (C55).</b> On Linux
+    /// a backslash is an ordinary filename character, so <c>Path.GetFileName</c> reports the whole of
+    /// <c>obj\project.assets.json</c> as the name — which made
+    /// <see cref="IsExcluded"/> miss the one file that must survive the <c>obj</c> exclusion and drop
+    /// the restore result that C48 shows the first load is waiting for. The paths that reach this
+    /// class are not all the host's own: a watcher registration's <c>baseUri</c> and glob come from
+    /// Roslyn, and a test writes both spellings.
+    /// </para>
+    /// <para>
+    /// Splitting on both is also the only spelling that agrees with the exclusion walk directly
+    /// below, which has always split on both: a file genuinely named <c>obj\x</c> on Linux was
+    /// already excluded by that loop, so reading its name the same way removes an inconsistency
+    /// rather than adding one.
+    /// </para>
+    /// </remarks>
+    /// <param name="path">The path.</param>
+    internal static string FileNameOf(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+
+        var separator = path.AsSpan().LastIndexOfAny('/', '\\');
+
+        return separator < 0 ? path : path[(separator + 1)..];
     }
 
     /// <summary>Whether a change to this file needs the C33 synthetic project-file event.</summary>
@@ -725,8 +756,8 @@ internal sealed partial class FileWatchBridge : IDisposable
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    var file = Path.GetFileName(fullPath);
-                    var name = Path.GetFileName(project);
+                    var file = FileNameOf(fullPath);
+                    var name = FileNameOf(project);
                     Log.Nudging(_logger, file, name);
                 }
 
@@ -854,7 +885,7 @@ internal sealed partial class FileWatchBridge : IDisposable
     /// <summary>Whether a path is a build file whose change re-evaluates a project.</summary>
     private static bool IsProjectFile(string path)
     {
-        var name = Path.GetFileName(path);
+        var name = FileNameOf(path);
 
         return string.Equals(name, RestoreResultFile, StringComparison.OrdinalIgnoreCase)
                || path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)

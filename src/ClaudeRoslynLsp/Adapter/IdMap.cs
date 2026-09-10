@@ -23,6 +23,19 @@ internal sealed class PendingRequest
     /// <summary>The originating peer's id as a value, for cancellation lookup.</summary>
     internal JsonRpcId OriginalId { get; init; }
 
+    /// <summary>
+    /// The peer's message exactly as it arrived, kept so the request can be sent again under a fresh
+    /// id after the backend was relaunched (D74).
+    /// </summary>
+    /// <remarks>
+    /// Only forwarded, peer-originated requests carry one. An adapter-originated request has a
+    /// <see cref="Completion"/> instead and simply fails: every one of them — a diagnostic pull, a
+    /// handshake — is something the adapter re-issues on its own schedule once the workspace is back,
+    /// whereas a peer request has a client waiting on it that will wait forever if it is not answered
+    /// and will get a wrong answer if it is answered <c>-32603</c> for a backend that came back.
+    /// </remarks>
+    internal byte[]? Body { get; init; }
+
     /// <summary>Where an adapter-originated request's answer goes, or null for a forwarded one.</summary>
     internal TaskCompletionSource<JsonElement>? Completion { get; init; }
 }
@@ -75,7 +88,16 @@ internal sealed class IdMap
     /// <param name="originalId">The peer's id, as a value.</param>
     /// <param name="originalIdToken">The peer's id, as the bytes it wrote.</param>
     /// <param name="method">The method being forwarded.</param>
-    internal int Forward(JsonRpcId originalId, ReadOnlySpan<byte> originalIdToken, string method)
+    /// <param name="body">
+    /// The peer's message as it arrived, so a backend that dies mid-request can be relaunched and the
+    /// request replayed rather than refused (D74). Null keeps the entry un-replayable, which is what
+    /// the client-bound direction wants: a client that has gone away is the end of the session.
+    /// </param>
+    internal int Forward(
+        JsonRpcId originalId,
+        ReadOnlySpan<byte> originalIdToken,
+        string method,
+        byte[]? body = null)
     {
         ArgumentNullException.ThrowIfNull(method);
 
@@ -84,6 +106,7 @@ internal sealed class IdMap
             Method = method,
             OriginalIdToken = originalIdToken.ToArray(),
             OriginalId = originalId,
+            Body = body,
         };
 
         lock (_lock)

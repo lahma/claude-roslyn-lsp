@@ -32,7 +32,8 @@
         "PublishAot",
         "Restore",
         "SmokeTest",
-        "Test"
+        "Test",
+        "UpdateRoslynPin"
       ]
     },
     "Verbosity": {
@@ -131,6 +132,10 @@
         "NuGetUser": {
           "type": "string",
           "description": "nuget.org profile name of the account that owns the trusted publishing policy (env: NUGET_USER). Public information, not a secret"
+        },
+        "RoslynVersion": {
+          "type": "string",
+          "description": "The roslyn-language-server version to pin - defaults to the version currently pinned"
         },
         "Runtime": {
           "type": "string",

@@ -48,27 +48,28 @@ internal static class CliDispatcher
          {ServerVersion.Name} {ServerVersion.Value} - Roslyn C# language server adapter (LSP + MCP).
 
          Usage:
-           {ServerVersion.Name} lsp          Run the LSP server over stdio, mediating Microsoft's
-                                             roslyn-language-server. This is what an editor or an
-                                             agent's LSP client launches.
-           {ServerVersion.Name} mcp          Run the MCP server over stdio: semantic refactoring
-                                             tools for a model that would otherwise use grep and sed.
-           {ServerVersion.Name} doctor       Report the Roslyn resolution chain, the .NET host, the
-                                             solution candidates and the client integration state.
+           {ServerVersion.Name} lsp                Run the LSP server over stdio, mediating Microsoft's
+                                                roslyn-language-server. This is what an editor or an
+                                                agent's LSP client launches.
+           {ServerVersion.Name} mcp                Run the MCP server over stdio: semantic refactoring
+                                                tools for a model that would otherwise use grep and
+                                                sed.
+           {ServerVersion.Name} doctor             Report the Roslyn resolution chain, the .NET host,
+                                                the solution candidates and the integration state.
 
          Options:
-           -h, --help                        Show this help text.
-           -v, --version                     Show the version.
+           -h, --help                           Show this help text.
+           -v, --version                        Show the version.
 
          There is no default verb: one of the above is required, because the two servers speak
          different protocols on the same stdout and a client connected to the wrong one hangs.
 
          Configuration is environment variables only. The client-facing ones:
-           CLAUDE_ROSLYN_LSP_SOLUTION        The .slnx/.sln/.csproj to open (default: discovered).
-           CLAUDE_ROSLYN_LSP_ROSLYN_PATH     A directory holding an installed Roslyn language server.
-           CLAUDE_ROSLYN_LSP_ROSLYN_VERSION  Override the pinned roslyn-language-server version.
-           CLAUDE_ROSLYN_LSP_LOG_LEVEL       Trace|Debug|Information|Warning|Error|Critical|None
-                                             (default Information). Logs go to stderr.
+           CLAUDE_ROSLYN_LSP_SOLUTION           The .slnx/.sln/.csproj to open (default: discovered).
+           CLAUDE_ROSLYN_LSP_ROSLYN_PATH        A directory holding an installed Roslyn server.
+           CLAUDE_ROSLYN_LSP_ROSLYN_VERSION     Override the pinned roslyn-language-server version.
+           CLAUDE_ROSLYN_LSP_LOG_LEVEL          Trace|Debug|Information|Warning|Error|Critical|None
+                                                (default Information). Logs go to stderr.
 
          Run `{ServerVersion.Name} doctor` to see which of these are in effect; the README documents
          the full set.

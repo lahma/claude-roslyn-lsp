@@ -122,7 +122,7 @@ public class FileWatchBridgeTests
         var projectFilesChanged = 0;
 
         using var bridge = new FileWatchBridge(
-            workspace.Root, new DocumentMirror(NullLogger.Instance), channel, time, NullLogger.Instance);
+            () => workspace.Root, new DocumentMirror(NullLogger.Instance), channel, time, NullLogger.Instance);
 
         bridge.ProjectFilesChanged += () => projectFilesChanged++;
         bridge.Resynchronise();
@@ -161,7 +161,7 @@ public class FileWatchBridgeTests
         // The system clock here, not a hand-driven one: what this case proves is that a real
         // FileSystemWatcher delivers, and a fake clock would only prove the batching again.
         using var bridge = new FileWatchBridge(
-            workspace.Root,
+            () => workspace.Root,
             new DocumentMirror(NullLogger.Instance),
             channel,
             TimeProvider.System,
@@ -218,7 +218,7 @@ public class FileWatchBridgeTests
         var channel = new StubAdapterChannel { WorkspaceRoot = workspace.Root };
 
         using var bridge = new FileWatchBridge(
-            workspace.Root, mirror, channel, TimeProvider.System, NullLogger.Instance);
+            () => workspace.Root, mirror, channel, TimeProvider.System, NullLogger.Instance);
 
         bridge.Schedule([new CollapsedWatcher(
             new Uri(Path.Combine(workspace.Root, "Hello.Core") + Path.DirectorySeparatorChar).AbsoluteUri,
@@ -250,7 +250,7 @@ public class FileWatchBridgeTests
         var channel = new StubAdapterChannel { WorkspaceRoot = workspace.Root };
 
         using var bridge = new FileWatchBridge(
-            workspace.Root,
+            () => workspace.Root,
             new DocumentMirror(NullLogger.Instance),
             channel,
             TimeProvider.System,
@@ -279,7 +279,7 @@ public class FileWatchBridgeTests
         var time = new Testing.TestTimeProvider();
 
         using var bridge = new FileWatchBridge(
-            null, new DocumentMirror(NullLogger.Instance), channel, time, NullLogger.Instance);
+            static () => null, new DocumentMirror(NullLogger.Instance), channel, time, NullLogger.Instance);
 
         bridge.Schedule([new CollapsedWatcher("file:///nowhere/", ["**/*.cs"])]);
         time.Advance(FileWatchBridge.RebuildDelay);

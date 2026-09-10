@@ -158,7 +158,9 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
 
         if (_watchFiles)
         {
-            _watching = new FileWatchBridge(WorkspaceRootPath, _mirror, this, time, logger);
+            // The root is passed as a delegate: this constructor runs before the client has sent
+            // initialize, so there is no root yet (and reading one here watches nothing, silently).
+            _watching = new FileWatchBridge(() => WorkspaceRootPath, _mirror, this, time, logger);
             _watching.ProjectFilesChanged += () => _diagnostics?.OnProjectFilesChanged();
             _registrations.Changed += () => _watching.Schedule(_registrations.Watchers);
         }

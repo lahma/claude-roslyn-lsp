@@ -98,11 +98,12 @@ internal sealed partial class FileWatchBridge : IDisposable
         ["*.csproj", "*.vbproj", "*.fsproj", "*.props", "*.targets", RestoreResultFile];
 
     private readonly Lock _lock = new();
+    private readonly Lock _rootLock = new();
     private readonly List<FileSystemWatcher> _watchers = [];
     private readonly List<FileChange> _pending = [];
     private readonly HashSet<string> _pendingKeys = new(StringComparer.OrdinalIgnoreCase);
 
-    private readonly string? _root;
+    private readonly Func<string?> _rootSource;
     private readonly DocumentMirror _mirror;
     private readonly IAdapterChannel _channel;
     private readonly TimeProvider _time;
@@ -111,31 +112,57 @@ internal sealed partial class FileWatchBridge : IDisposable
     private ITimer? _batchTimer;
     private ITimer? _rebuildTimer;
     private IReadOnlyList<CollapsedWatcher> _registered = [];
+    private string? _root;
     private bool _disposed;
 
     /// <summary>Creates the bridge. Nothing is watched until <see cref="Schedule"/> runs.</summary>
-    /// <param name="workspaceRoot">The workspace root as a local path, or null when there is none.</param>
+    /// <param name="workspaceRoot">
+    /// Returns the workspace root as a local path, or null when there is not one yet.
+    /// </param>
     /// <param name="mirror">The open documents, which are excluded from every batch.</param>
     /// <param name="channel">Where the notification goes.</param>
     /// <param name="time">The clock, so the batch window is testable.</param>
     /// <param name="logger">The stderr log.</param>
     internal FileWatchBridge(
-        string? workspaceRoot,
+        Func<string?> workspaceRoot,
         DocumentMirror mirror,
         IAdapterChannel channel,
         TimeProvider time,
         ILogger logger)
     {
+        ArgumentNullException.ThrowIfNull(workspaceRoot);
         ArgumentNullException.ThrowIfNull(mirror);
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(time);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _root = NormaliseRoot(workspaceRoot);
+        _rootSource = workspaceRoot;
         _mirror = mirror;
         _channel = channel;
         _time = time;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// The workspace root, resolved on first use and remembered.
+    /// </summary>
+    /// <remarks>
+    /// <b>A delegate, not a value, and the reason cost a live test.</b> The bridge is built with the
+    /// rest of the session, which happens before the client has sent <c>initialize</c> — so the root
+    /// does not exist yet. Reading it in the constructor produced a bridge that watched nothing at
+    /// all, silently, for the whole session: no error, no warning, and every answer about a file
+    /// created outside the editor quietly stale, which is precisely the failure this class exists to
+    /// remove.
+    /// </remarks>
+    private string? Root
+    {
+        get
+        {
+            lock (_rootLock)
+            {
+                return _root ??= NormaliseRoot(_rootSource());
+            }
+        }
     }
 
     /// <summary>Raised when a project, props or targets file changed, so diagnostics can be re-pulled.</summary>
@@ -191,7 +218,7 @@ internal sealed partial class FileWatchBridge : IDisposable
     /// </remarks>
     internal void Resynchronise()
     {
-        if (_root is null)
+        if (Root is not { } root)
         {
             return;
         }
@@ -200,7 +227,7 @@ internal sealed partial class FileWatchBridge : IDisposable
 
         foreach (var pattern in ResyncPatterns)
         {
-            foreach (var path in EnumerateWorkspace(pattern))
+            foreach (var path in EnumerateWorkspace(root, pattern))
             {
                 Enqueue(path, Changed, syntheticFor: null);
                 count++;
@@ -302,7 +329,7 @@ internal sealed partial class FileWatchBridge : IDisposable
     /// <summary>Rebuilds the watcher set from the registrations recorded so far.</summary>
     private void Rebuild()
     {
-        if (_root is null)
+        if (Root is not { } root)
         {
             Log.NoRoot(_logger);
             return;
@@ -325,9 +352,9 @@ internal sealed partial class FileWatchBridge : IDisposable
 
         foreach (var watcher in registered)
         {
-            var directory = BaseDirectoryOf(watcher.BaseUri) ?? _root;
+            var directory = BaseDirectoryOf(watcher.BaseUri) ?? root;
 
-            if (!IsUnderRoot(directory))
+            if (!IsUnderRoot(root, directory))
             {
                 outside++;
                 continue;
@@ -506,7 +533,7 @@ internal sealed partial class FileWatchBridge : IDisposable
         if (syntheticFor is null && NeedsProjectNudge(fullPath, changeType))
         {
             // C33: the only thing that makes Roslyn notice a .cs file that appeared or vanished.
-            if (NearestProjectFile(fullPath, _root) is { } project)
+            if (NearestProjectFile(fullPath, Root) is { } project)
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
@@ -589,7 +616,7 @@ internal sealed partial class FileWatchBridge : IDisposable
     /// mid-walk would throw at the <c>foreach</c> in the caller rather than here, and the caller is
     /// a recovery path that must not be able to fail.
     /// </remarks>
-    private List<string> EnumerateWorkspace(string pattern)
+    private static List<string> EnumerateWorkspace(string root, string pattern)
     {
         var options = new EnumerationOptions
         {
@@ -603,7 +630,7 @@ internal sealed partial class FileWatchBridge : IDisposable
 
         try
         {
-            foreach (var path in Directory.EnumerateFiles(_root!, pattern, options))
+            foreach (var path in Directory.EnumerateFiles(root, pattern, options))
             {
                 if (!IsExcluded(path))
                 {
@@ -689,9 +716,8 @@ internal sealed partial class FileWatchBridge : IDisposable
     }
 
     /// <summary>Whether a directory is the workspace root or below it.</summary>
-    private bool IsUnderRoot(string directory) =>
-        _root is not null
-        && directory.StartsWith(_root, StringComparison.OrdinalIgnoreCase);
+    private static bool IsUnderRoot(string root, string directory) =>
+        directory.StartsWith(root, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Expands the workspace root once, tolerating a client that sent nothing usable.</summary>
     private static string? NormaliseRoot(string? root)

@@ -54,13 +54,35 @@ internal sealed partial class FileWatchBridge : IDisposable
     /// </remarks>
     internal static readonly TimeSpan BatchWindow = TimeSpan.FromMilliseconds(200);
 
-    /// <summary>How long registrations settle before the watcher set is rebuilt.</summary>
+    /// <summary>
+    /// How long after the <em>first</em> pending registration change the watcher set is rebuilt.
+    /// </summary>
     /// <remarks>
+    /// <para>
     /// Roslyn sends its ~140 registrations as ~140 separate <c>client/registerCapability</c>
-    /// requests during startup. Rebuilding on each one would create and tear down the same watchers
-    /// a hundred times over.
+    /// requests during startup, so rebuilding on each one would create and tear down the same
+    /// watchers a hundred times over. But the delay is measured from the first pending change and
+    /// <b>not extended</b> by the ones that follow, which is the whole point: registrations keep
+    /// arriving for as long as the session lives (C51), so a trailing debounce postpones the first
+    /// rebuild indefinitely — and the events lost while nothing is watching include the restore that
+    /// the very first load is waiting for (C48).
+    /// </para>
     /// </remarks>
     internal static readonly TimeSpan RebuildDelay = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>
+    /// How long after the watchers come up a workspace that still has not loaded is re-synchronised.
+    /// </summary>
+    /// <remarks>
+    /// The belt to the debounce's braces, and the cheapest insurance against C48 there is. Anything
+    /// that happened on disk before the first watcher existed is simply gone — and on a repository
+    /// that has never been restored, the thing that happened is Roslyn writing
+    /// <c>project.assets.json</c> and then waiting to be told about it. Five seconds after the
+    /// watchers are up, a workspace that still has not reported itself loaded gets one synthetic
+    /// change for every project file, which is exactly what unblocks it. A workspace that loaded
+    /// normally pays nothing, because the check is skipped.
+    /// </remarks>
+    internal static readonly TimeSpan CatchUpDelay = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// The point at which per-directory watching is abandoned for one recursive watcher on the
@@ -118,8 +140,11 @@ internal sealed partial class FileWatchBridge : IDisposable
 
     private ITimer? _batchTimer;
     private ITimer? _rebuildTimer;
+    private ITimer? _catchUpTimer;
     private IReadOnlyList<CollapsedWatcher> _registered = [];
     private string? _root;
+    private bool _rebuildPending;
+    private bool _caughtUp;
     private bool _disposed;
 
     /// <summary>Creates the bridge. Nothing is watched until <see cref="Schedule"/> runs.</summary>
@@ -202,6 +227,14 @@ internal sealed partial class FileWatchBridge : IDisposable
 
             _registered = watchers;
 
+            if (_rebuildPending)
+            {
+                // Already armed. Deliberately not re-armed: see RebuildDelay.
+                return;
+            }
+
+            _rebuildPending = true;
+
             _rebuildTimer ??= _time.CreateTimer(
                 static x => ((FileWatchBridge) x!).Rebuild(),
                 this,
@@ -256,8 +289,10 @@ internal sealed partial class FileWatchBridge : IDisposable
             DisposeWatchers();
             _batchTimer?.Dispose();
             _rebuildTimer?.Dispose();
+            _catchUpTimer?.Dispose();
             _batchTimer = null;
             _rebuildTimer = null;
+            _catchUpTimer = null;
         }
     }
 
@@ -336,6 +371,11 @@ internal sealed partial class FileWatchBridge : IDisposable
     /// <summary>Rebuilds the watcher set from the registrations recorded so far.</summary>
     private void Rebuild()
     {
+        lock (_lock)
+        {
+            _rebuildPending = false;
+        }
+
         if (Root is not { } root)
         {
             Log.NoRoot(_logger);
@@ -414,7 +454,49 @@ internal sealed partial class FileWatchBridge : IDisposable
             }
 
             Log.Watching(_logger, _watchers.Count, outside);
+            ArmCatchUp();
         }
+    }
+
+    /// <summary>Arms the one-shot catch-up, the first time there is anything to catch up from.</summary>
+    /// <remarks>Called under the lock.</remarks>
+    private void ArmCatchUp()
+    {
+        if (_caughtUp || _watchers.Count == 0)
+        {
+            return;
+        }
+
+        _catchUpTimer ??= _time.CreateTimer(
+            static x => ((FileWatchBridge) x!).CatchUp(),
+            this,
+            Timeout.InfiniteTimeSpan,
+            Timeout.InfiniteTimeSpan);
+
+        _catchUpTimer.Change(CatchUpDelay, Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>Re-synchronises a workspace that has not managed to finish loading (C48).</summary>
+    private void CatchUp()
+    {
+        lock (_lock)
+        {
+            if (_caughtUp || _disposed)
+            {
+                return;
+            }
+
+            _caughtUp = true;
+        }
+
+        if (_channel.Readiness is ReadinessState.ProjectsLoaded or ReadinessState.LoadTimedOut)
+        {
+            // It loaded on its own. Nothing to do, and nothing paid.
+            return;
+        }
+
+        Log.CatchingUp(_logger, CatchUpDelay.TotalSeconds);
+        Resynchronise();
     }
 
     /// <summary>
@@ -836,6 +918,15 @@ internal sealed partial class FileWatchBridge : IDisposable
             Message = "The client sent no workspace root, so nothing can be watched; a file created " +
                       "outside the editor will not join its project.")]
         internal static partial void NoRoot(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 1409,
+            Level = LogLevel.Information,
+            Message = "The workspace still had not finished loading {Seconds:0} s after the watchers " +
+                      "came up; reporting every project file as changed, because anything that " +
+                      "happened on disk before then - a server-side restore, most likely - was never " +
+                      "delivered to Roslyn and it may be waiting for exactly that (C48).")]
+        internal static partial void CatchingUp(ILogger logger, double seconds);
 
         [LoggerMessage(
             EventId = 1408,

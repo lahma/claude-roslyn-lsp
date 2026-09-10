@@ -6,8 +6,6 @@ using ClaudeRoslynLsp.Protocol;
 using ClaudeRoslynLsp.Roslyn;
 using ClaudeRoslynLsp.Testing;
 
-using Microsoft.Extensions.Logging.Abstractions;
-
 using Xunit;
 
 namespace ClaudeRoslynLsp.Tests.Live;
@@ -63,7 +61,12 @@ internal sealed class LiveAdapterSession : IAsyncDisposable
         _testEnd = testEnd;
         _writer = new LspFrameWriter(testEnd.Output);
 
-        _factory = new LaunchedRoslynFactory(fixture.Options, fixture.Paths!, NullLogger.Instance);
+        // The adapter's own log goes into the test output, not into a NullLogger. A live test that
+        // fails gets one attempt at explaining itself, and "the workspace was still LoadTimedOut"
+        // without the watcher and acquisition lines beside it is a mystery rather than a diagnosis.
+        var logger = new TestOutputLogger(output);
+
+        _factory = new LaunchedRoslynFactory(fixture.Options, fixture.Paths!, logger);
 
         Session = new AdapterSession(
             sessionEnd.Input,
@@ -72,7 +75,7 @@ internal sealed class LiveAdapterSession : IAsyncDisposable
             fixture.Options,
             () => fixture.SolutionPath,
             TimeProvider.System,
-            NullLogger.Instance);
+            logger);
 
         RunTask = Task.Run(() => Session.RunAsync(_stopping.Token));
         _reading = Task.Run(ReadLoopAsync);

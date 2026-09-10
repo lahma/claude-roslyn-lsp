@@ -477,6 +477,16 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
         startInfo.Environment["DOTNET_NOLOGO"] = "1";
         startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
 
+        // C52, and it is not a tuning knob. Roslyn restores a solution server-side by running
+        // `dotnet restore` and waiting for that child to finish; with node reuse on, the restore
+        // leaves a persistent MSBuild node behind that inherits the child's output handle, so the
+        // pipe never reaches end of stream, Roslyn never logs `Restore complete`, and the load never
+        // finishes at all. The symptom is a workspace that reports every project "successfully
+        // loaded", a restore that visibly restored every project, and then silence until the
+        // readiness budget runs out. Reuse buys a fraction of a second on a restore that happens
+        // once per repository; this buys the load completing.
+        startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+
         var process = Process.Start(startInfo)
             ?? throw new RoslynAcquisitionException($"Could not start '{program}'.");
 

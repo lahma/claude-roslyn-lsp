@@ -211,12 +211,17 @@ return the same `EditResult` shape, and answer an applied edit with one fixed se
 
 The **C-numbered** findings live in [`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md):
 C1-C47 were observed on the wire against the pinned server on 2026-09-10 (WP0 spikes, WP3) and
-C48-C51 by WP4 against the fixture solution and against a real 30-project Quartz.NET session through
+C48-C52 by WP4 against the fixture solution and against a real 30-project Quartz.NET session through
 Claude Code 2.1.267. They are cited from code comments and tests by number. Add to that file, never
 restate a fact here; a finding that changes on a pin bump gets re-verified there with the new date.
-**C48 is the one to read first** if anything about loading a solution ever looks wrong: without
-watched-file events a repository that needs a restore never finishes loading at all, and says
-nothing about why.
+
+**If a solution ever stops finishing its load, read C52 and then C48**, in that order. They are two
+independent causes of the same silence — every project reported "successfully loaded", a restore
+that visibly restored everything, and then no `projectInitializationComplete` until the readiness
+budget runs out. C52 is MSBuild node reuse holding the restore child's output pipe open, and its fix
+is one environment variable on the child; C48 is the restore's `project.assets.json` write never
+reaching Roslyn because nothing was watching for it. Both were found by the live tests, and neither
+would ever have been found by a scripted backend.
 
 ## Agent skill
 

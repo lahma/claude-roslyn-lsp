@@ -1,10 +1,10 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C51 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C52 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
-C48-C51 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
+C48-C52 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
 multi-targeted) and against **Quartz.NET** (`Quartz.slnx`, 30 projects) through a real Claude Code
 2.1.267 session.
 
@@ -188,7 +188,9 @@ multi-targeted) and against **Quartz.NET** (`Quartz.slnx`, 30 projects) through 
   all.** Roslyn restores server-side when `obj/` is missing (C30) and logs `Restore complete`, and
   then stops: all three projects say "Successfully completed load", and
   `workspace/projectInitializationComplete` never arrives — observed for the full 120 s budget.
-  What unblocks it is the restore's own `project.assets.json` write coming back as a
+  (Note: C52 is a *second*, independent way to produce the same symptom — check it first, because
+  its fix is one environment variable.) What unblocks the watcher case is the restore's own
+  `project.assets.json` write coming back as a
   `workspace/didChangeWatchedFiles` event, after which Roslyn logs
   `[workspace/didChangeWatchedFiles] ... Completed (re)load of all projects` and reports
   initialization complete. So the `obj/` exception in the watcher's exclusion list is not a nicety
@@ -206,6 +208,16 @@ multi-targeted) and against **Quartz.NET** (`Quartz.slnx`, 30 projects) through 
   the Edit tool wrote it. So the trigger that actually produces the diagnostics an agent sees is
   `didOpen`, not `didChange`: the debounce on `didChange` is for editors, and a `didOpen`-only
   client would get nothing at all from a bridge that only pulled on change.
+- **C52** **MSBuild node reuse stalls the server-side restore, and therefore the whole load.**
+  Roslyn restores by running `dotnet restore` and waiting for that child to finish. With node reuse
+  on (the default), the restore leaves a persistent MSBuild node behind that inherits the child's
+  output handle, so the pipe never reaches end of stream: every project logs `Restored ... (in
+  90 ms)`, `Restore complete` never appears, no reload happens and
+  `projectInitializationComplete` never arrives. Setting **`MSBUILDDISABLENODEREUSE=1` in the Roslyn
+  child's environment** fixes it outright — the same solution then loads in 4.3 s. The failure is
+  intermittent in the worst way, because it depends on whether a reusable node happens to be alive
+  on the machine: the identical fixture loaded in 3.9 s an hour earlier and then failed six runs in
+  a row. Anything that reproduces C48's symptom should check this first.
 - **C51** Roslyn keeps registering capabilities for a long time after the workspace is loaded —
   516 live registrations were recorded on Quartz.NET, still arriving as `shutdown` was sent, and a
   session that ends early leaves a `$/progress` stream ending in `Cancelled`. A registration count

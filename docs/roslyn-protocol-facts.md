@@ -150,3 +150,17 @@ from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) o
   `--ignore-failed-sources`, `--no-http-cache`, `--interactive`, `-?`, `-h`, `--help` from the
   tool and prints its own usage to stdout on a parse error. Documentation must never suggest
   `dnx claude-roslyn-lsp@x --version`; use `doctor`.
+
+## Claude Code 2.1.267 client (spike S3, 2026-09-10)
+
+- **C40** A plugin-provided `lspServers` entry for `.cs` loaded via `claude --plugin-dir <dir>`
+  is launched, the `LSP` tool is exposed, and a server-side `-32601` error is relayed verbatim
+  to the model ("LSP request 'textDocument/documentSymbol' failed for server
+  'plugin:roslyn-smoke:roslyn': ..."). No binary patch (tweakcc) is needed; the user settings
+  had `ENABLE_LSP_TOOL=1`, so whether that variable is still required was not isolated.
+- **C41** With the official `csharp-lsp@claude-plugins-official` plugin enabled, it won the
+  `.cs` extension over the `--plugin-dir` plugin ("Command 'csharp-ls' not found"): marketplace
+  plugins register first. For a single run it can be sidelined without touching user settings:
+  `claude --settings '{"enabledPlugins":{"csharp-lsp@claude-plugins-official":false}}'`.
+- **C42** The plugin manifest is JSON: a Windows `command` path must use forward slashes or
+  escaped backslashes; with `D:\Work\...` unescaped the manifest failed to load silently.

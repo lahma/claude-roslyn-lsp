@@ -27,6 +27,7 @@
         "Clean",
         "Compile",
         "CreateGitHubRelease",
+        "LiveTest",
         "Pack",
         "Publish",
         "PublishAot",

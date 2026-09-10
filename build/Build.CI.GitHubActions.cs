@@ -8,6 +8,17 @@ using Fallout.Components;
 // full history. SmokeTest implies PublishAot, so CI publishes a real linux-x64 Native AOT binary
 // and speaks JSON-RPC to it on every push and pull request.
 //
+// CLAUDE_ROSLYN_LSP_LIVE_TESTS is set for the whole job, which turns on both halves of the live
+// path: the opt-in xunit tests in tests/**/Live/ and the LiveTest target, which drives the
+// published binary against the fixture solution and a real downloaded Roslyn. That download is
+// about 70 MB per run and is worth it here and nowhere else - it is the only check in CI that
+// Microsoft's server still answers what this adapter believes it answers, and the WP4 run that
+// added it found a bug (C48) that every scripted test had passed.
+//
+// RoslynServerManifest.cs joins the cache key because it carries the pinned version and its
+// hashes: a pin bump has to miss the cache, or the job would test the new pin against the old
+// payload.
+//
 // PublishArtifacts = false: the per-RID archives that PublishAot .Produces() belong to the
 // hand-written release workflow (the generator has no matrix support), not to the PR gate.
 [GitHubActions(
@@ -18,7 +29,15 @@ using Fallout.Components;
     OnPullRequestBranches = ["main"],
     ConcurrencyGroup = "${{ github.workflow }}-${{ github.ref }}",
     ConcurrencyCancelInProgress = true,
-    InvokedTargets = [nameof(ITest.Test), nameof(SmokeTest)],
+    InvokedTargets = [nameof(ITest.Test), nameof(SmokeTest), nameof(LiveTest)],
+    CacheKeyFiles =
+    [
+        "**/global.json",
+        "**/*.csproj",
+        "**/Directory.Packages.props",
+        "src/ClaudeRoslynLsp/Roslyn/RoslynServerManifest.cs",
+    ],
+    Env = ["CLAUDE_ROSLYN_LSP_LIVE_TESTS: 1"],
     PublishArtifacts = false)]
 // .github/workflows/publish.yml is generated from this second attribute (same hard rule 4 - never
 // hand-edit the YAML).

@@ -24,6 +24,9 @@ on:
     branches:
       - main
 
+env:
+  CLAUDE_ROSLYN_LSP_LIVE_TESTS: 1
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -42,12 +45,12 @@ jobs:
           path: |
             .fallout/temp
             ~/.nuget/packages
-          key: ${{ runner.os }}-${{ hashFiles('**/global.json', '**/*.csproj', '**/Directory.Packages.props') }}
+          key: ${{ runner.os }}-${{ hashFiles('**/global.json', '**/*.csproj', '**/Directory.Packages.props', 'src/ClaudeRoslynLsp/Roslyn/RoslynServerManifest.cs') }}
       - name: 'Setup: .NET SDK'
         uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
       - name: 'Restore: dotnet tools'
         run: dotnet tool restore
-      - name: 'Run: Test, SmokeTest'
-        run: dotnet fallout Test SmokeTest
+      - name: 'Run: Test, SmokeTest, LiveTest'
+        run: dotnet fallout Test SmokeTest LiveTest

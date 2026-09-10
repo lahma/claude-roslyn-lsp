@@ -249,6 +249,13 @@ partial class Build : FalloutBuild,
         .DependsOn(PublishAot)
         .Executes(() =>
         {
+            // Written so it resolves. Solution discovery treats an explicit setting that names
+            // nothing as a hard failure rather than a fall-through (D39), and a failed selection
+            // opens the readiness gate at once - which would let the definition request through
+            // before the backend reported the workspace loaded and quietly turn the gate assertion
+            // below into a test of nothing.
+            File.WriteAllText(SmokeSolutionPath, "<Solution />");
+
             // Leg 1: the LSP verb against the scripted backend running INSIDE the server process.
             // This is the leg that proves the mediation itself survived Native AOT compilation on
             // this architecture - framing, the readiness gate, the id map, shutdown ordering.
@@ -277,6 +284,60 @@ partial class Build : FalloutBuild,
                 .AddPair("Tools", toolNames.Length.ToString()));
         });
 
+    /// <summary>
+    /// Drives the published binary against the fixture solution and a <b>real</b> Roslyn.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The gap SmokeTest cannot close. Every smoke leg speaks to a scripted backend, which proves
+    /// the mediation and proves nothing at all about whether Microsoft's server still answers what
+    /// this adapter believes it answers. This target acquires the pinned server for real, opens a
+    /// three-project solution that has never been restored, and asserts on the one thing the product
+    /// exists for: a compile error arriving as a <c>publishDiagnostics</c> at a client that never
+    /// asked for one.
+    /// </para>
+    /// <para>
+    /// Opt-in through <c>CLAUDE_ROSLYN_LSP_LIVE_TESTS=1</c>, and <c>OnlyWhenStatic</c> rather than a
+    /// runtime check so that a run without it says "skipped" instead of quietly passing. The
+    /// download lands in <c>artifacts/roslyn-home</c>, which is inside the directory CI already
+    /// caches and <c>Clean</c> already empties.
+    /// </para>
+    /// </remarks>
+    Target LiveTest => _ => _
+        .Description("Drives the published binary against the fixture solution and a real Roslyn")
+        .DependsOn(PublishAot)
+        .OnlyWhenStatic(() => Environment.GetEnvironmentVariable("CLAUDE_ROSLYN_LSP_LIVE_TESTS") == "1")
+        .Executes(() =>
+        {
+            var fixture = RootDirectory / "tests" / "fixtures" / "HelloSolution";
+            var solution = fixture / "HelloSolution.slnx";
+            var program = fixture / "Hello.App" / "Program.cs";
+
+            Assert.True(solution.FileExists(), $"The fixture solution is missing: {solution}");
+            Assert.True(program.FileExists(), $"The fixture's Program.cs is missing: {program}");
+
+            RunLspHandshake(
+                "real Roslyn against the fixture solution",
+                new Dictionary<string, string>
+                {
+                    ["CLAUDE_ROSLYN_LSP_SOLUTION"] = solution.ToString(),
+                    ["CLAUDE_ROSLYN_LSP_HOME"] = (ArtifactsDirectory / "roslyn-home").ToString(),
+
+                    // Not inherited: the smoke legs set it, and a leftover value would put the
+                    // scripted backend in front of the test that exists to avoid one.
+                    ["CLAUDE_ROSLYN_LSP_FAKE_BACKEND"] = string.Empty,
+                },
+                arguments: "lsp",
+                rootUri: UriOf(fixture),
+                document: program,
+                expectedDiagnosticCode: "CS0029",
+                answerTimeout: LiveAnswerTimeout);
+
+            ReportSummary(_ => _
+                .AddPair("Runtime", Runtime)
+                .AddPair("Solution", solution.Name));
+        });
+
     // ---------------------------------------------------------------------------------------
     // The LSP leg
     // ---------------------------------------------------------------------------------------
@@ -284,6 +345,17 @@ partial class Build : FalloutBuild,
     const int LspInitializeId = 1;
     const int LspDefinitionId = 2;
     const int LspShutdownId = 3;
+
+    /// <summary>
+    /// How long the live leg allows for the whole exchange.
+    /// </summary>
+    /// <remarks>
+    /// Four minutes, and almost all of it is budget for the first run on a cold machine: about
+    /// 70 MB of Roslyn to download, 140 MB to extract, a solution to restore server-side and three
+    /// projects to load. A warm run finishes in seconds - the local measurement is 24 s including
+    /// a kill and a relaunch - so this is a deadlock detector, not a target.
+    /// </remarks>
+    static readonly TimeSpan LiveAnswerTimeout = TimeSpan.FromMinutes(4);
 
     /// <summary>How long the LSP leg waits for a request that the readiness gate is holding.</summary>
     /// <remarks>
@@ -298,10 +370,12 @@ partial class Build : FalloutBuild,
     /// scripted backend starts its load timeline.
     /// </summary>
     /// <remarks>
-    /// It deliberately does not exist. Nothing here opens a real solution - the fake answers
-    /// <c>solution/open</c> from a script - and what the path is for is to take the adapter down the
-    /// configured branch rather than the misc-files one (C28), so that the readiness gate is actually
-    /// exercised instead of opening immediately.
+    /// It is an empty <c>.slnx</c> written into the publish directory, and it has to exist: nothing
+    /// here opens a real solution - the fake answers <c>solution/open</c> from a script - but
+    /// discovery refuses to fall through when an explicit setting names something that is not there
+    /// (D39), and a refused selection opens the readiness gate immediately. What the path is for is
+    /// to take the adapter down the configured branch rather than the misc-files one (C28), so that
+    /// the gate is actually exercised.
     /// </remarks>
     string SmokeSolutionPath => (PublishDirectory / "SmokeTest.slnx").ToString();
 
@@ -339,16 +413,49 @@ partial class Build : FalloutBuild,
     /// <param name="legName">What this leg is called in the log and in failure messages.</param>
     /// <param name="environment">Extra environment variables that select the backend.</param>
     /// <param name="arguments">The verb and its flags.</param>
-    void RunLspHandshake(string legName, IReadOnlyDictionary<string, string> environment, string arguments)
+    /// <param name="rootUri">The workspace root the client declares; the fake legs use a made-up one.</param>
+    /// <param name="document">
+    /// A real file to open and ask about, for the live leg. Null uses the one-line document the fake
+    /// legs need, which exists only to give the definition request something to name.
+    /// </param>
+    /// <param name="expectedDiagnosticCode">
+    /// A diagnostic the leg waits for on <c>publishDiagnostics</c> before shutting down. Only the
+    /// live leg sets it: the scripted backend has no semantic model and publishes nothing.
+    /// </param>
+    /// <param name="answerTimeout">How long a held request may take. Null uses the smoke budget.</param>
+    void RunLspHandshake(
+        string legName,
+        IReadOnlyDictionary<string, string> environment,
+        string arguments,
+        string rootUri = "file:///smoke",
+        AbsolutePath document = null,
+        string expectedDiagnosticCode = null,
+        TimeSpan? answerTimeout = null)
     {
-        // Written out verbatim rather than interpolated so each one reads exactly as it goes on the
-        // wire. The ids must stay in step with the Lsp*Id constants.
+        var budget = answerTimeout ?? LspAnswerTimeout;
+        var documentUri = document == null ? "file:///smoke/Program.cs" : UriOf(document);
+        var documentText = document == null ? "class Program { }" : File.ReadAllText(document);
+
+        // The fake legs ask about the only identifier in their one-line document; the live leg asks
+        // about a real call site, found by text so that editing the fixture's comments cannot
+        // silently move it.
+        var position = document == null
+            ? (Line: 0, Character: 6)
+            : FindPosition(documentText, "calculator.Compute()", "Compute");
+
+        // Written out whole rather than assembled, so each one reads exactly as it goes on the wire.
+        // The ids must stay in step with the Lsp*Id constants.
+        //
+        // The $$$ and the spaces before the trailing braces are not style: in a raw interpolated
+        // string a run of N braces is the interpolation delimiter, and JSON ends in runs of them.
+        // Three dollars moves the delimiter to {{{ }}}, and one space between the last closing
+        // braces keeps any literal run below it. JSON does not care about the space.
         var session = new[]
         {
-            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"file:///smoke","capabilities":{}}}""",
+            $$$"""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"{{{rootUri}}}","capabilities":{} } }""",
             """{"jsonrpc":"2.0","method":"initialized","params":{}}""",
-            """{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///smoke/Program.cs","languageId":"csharp","version":1,"text":"class Program { }"}}}""",
-            """{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///smoke/Program.cs"},"position":{"line":0,"character":6}}}""",
+            $$$"""{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"{{{documentUri}}}","languageId":"csharp","version":1,"text":{{{JsonEncode(documentText)}}} } } }""",
+            $$$"""{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"{{{documentUri}}}"},"position":{"line":{{{position.Line}}},"character":{{{position.Character}}} } } }""",
         };
 
         var goodbye = new[]
@@ -376,7 +483,7 @@ partial class Build : FalloutBuild,
             WriteLspFrame(process.StandardInput.BaseStream, request);
         }
 
-        var answered = collector.WaitForId(LspDefinitionId, LspAnswerTimeout);
+        var answered = collector.WaitForId(LspDefinitionId, budget);
 
         if (!answered)
         {
@@ -385,8 +492,29 @@ partial class Build : FalloutBuild,
 
             Assert.Fail(
                 $"[{legName}] textDocument/definition (id {LspDefinitionId}) was never answered within " +
-                $"{LspAnswerTimeout.TotalSeconds:0} s. A request the readiness gate holds must still be " +
+                $"{budget.TotalSeconds:0} s. A request the readiness gate holds must still be " +
                 $"answered once the workspace loads.{FormatDiagnostics(diagnostics)}");
+        }
+
+        if (expectedDiagnosticCode != null)
+        {
+            // The whole point of the live leg. Roslyn reports diagnostics by pull and Claude Code
+            // consumes only push, so a published set arriving here - unasked for, at a client that
+            // declared nothing - is the one thing no scripted backend can prove.
+            var published = collector.WaitForDiagnostic(documentUri, expectedDiagnosticCode, budget);
+
+            if (!published)
+            {
+                process.Kill(entireProcessTree: true);
+                collector.Join();
+
+                Assert.Fail(
+                    $"[{legName}] no publishDiagnostics carrying {expectedDiagnosticCode} arrived for " +
+                    $"{documentUri} within {budget.TotalSeconds:0} s. The diagnostics bridge is what turns " +
+                    $"Roslyn's pull into the push this client only understands.{FormatDiagnostics(diagnostics)}");
+            }
+
+            Log.Information("[{Leg}] {Code} was published for {Document}", legName, expectedDiagnosticCode, documentUri);
         }
 
         foreach (var request in goodbye)
@@ -501,6 +629,7 @@ partial class Build : FalloutBuild,
     {
         readonly MemoryStream _buffer = new();
         readonly HashSet<int> _answered = [];
+        readonly List<string> _notifications = [];
         readonly Thread _thread;
         readonly object _gate = new();
 
@@ -539,6 +668,46 @@ partial class Build : FalloutBuild,
                     if (_answered.Contains(id))
                     {
                         return true;
+                    }
+
+                    if (Failure != null || !_thread.IsAlive)
+                    {
+                        return false;
+                    }
+                }
+
+                Thread.Sleep(20);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Blocks until a <c>publishDiagnostics</c> for one document carries a diagnostic code.
+        /// </summary>
+        /// <remarks>
+        /// Matched as substrings of the raw message rather than by parsing. The body is one
+        /// notification whose URI and codes are both distinctive strings, and a JSON walk here would
+        /// only be a second implementation of what <c>ParseLspFrames</c> already does at the end.
+        /// </remarks>
+        /// <param name="uri">The document URI.</param>
+        /// <param name="code">The diagnostic id, e.g. <c>CS0029</c>.</param>
+        /// <param name="timeout">How long to wait.</param>
+        internal bool WaitForDiagnostic(string uri, string code, TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+
+            while (DateTime.UtcNow < deadline)
+            {
+                lock (_gate)
+                {
+                    foreach (var notification in _notifications)
+                    {
+                        if (notification.Contains(uri, StringComparison.Ordinal)
+                            && notification.Contains(code, StringComparison.Ordinal))
+                        {
+                            return true;
+                        }
                     }
 
                     if (Failure != null || !_thread.IsAlive)
@@ -626,9 +795,19 @@ partial class Build : FalloutBuild,
                 {
                     using var document = JsonDocument.Parse(wire.AsMemory(start, length));
 
-                    if (document.RootElement.TryGetProperty("id", out var id)
-                        && id.TryGetInt32(out var value)
-                        && !document.RootElement.TryGetProperty("method", out _))
+                    if (document.RootElement.TryGetProperty("method", out var method))
+                    {
+                        if (method.GetString() == "textDocument/publishDiagnostics")
+                        {
+                            var text = Encoding.UTF8.GetString(wire, start, length);
+
+                            lock (_gate)
+                            {
+                                _notifications.Add(text);
+                            }
+                        }
+                    }
+                    else if (document.RootElement.TryGetProperty("id", out var id) && id.TryGetInt32(out var value))
                     {
                         lock (_gate)
                         {
@@ -645,6 +824,56 @@ partial class Build : FalloutBuild,
                 pending.RemoveRange(0, start + length);
             }
         }
+    }
+
+    /// <summary>The <c>file:</c> URI of a path, which is what an LSP client sends.</summary>
+    static string UriOf(AbsolutePath path) => new Uri(path.ToString()).AbsoluteUri;
+
+    /// <summary>Encodes a string as a JSON string literal, quotes included.</summary>
+    /// <remarks>
+    /// A whole source file goes through this, so the escaping has to be real: the fixture carries
+    /// backslashes in its doc comments and every line ends in one of two ways depending on how git
+    /// checked it out.
+    /// </remarks>
+    static string JsonEncode(string value)
+    {
+        var buffer = new MemoryStream();
+
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStringValue(value);
+        }
+
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    /// <summary>
+    /// Finds a zero-based LSP position by searching the text, rather than hard-coding a line number.
+    /// </summary>
+    /// <param name="text">The whole document.</param>
+    /// <param name="lineContains">A substring identifying the line.</param>
+    /// <param name="token">The token in it whose first character is the position.</param>
+    static (int Line, int Character) FindPosition(string text, string lineContains, string token)
+    {
+        var lines = text.ReplaceLineEndings("\n").Split('\n');
+
+        for (var index = 0; index < lines.Length; index++)
+        {
+            if (!lines[index].Contains(lineContains, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var character = lines[index].IndexOf(token, StringComparison.Ordinal);
+
+            if (character >= 0)
+            {
+                return (index, character);
+            }
+        }
+
+        Assert.Fail($"'{lineContains}' is not in the document; the fixture has moved underneath this build.");
+        return default;
     }
 
     /// <summary>Writes one <c>Content-Length</c>-framed message.</summary>

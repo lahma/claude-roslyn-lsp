@@ -17,11 +17,14 @@ actions, fix-all by diagnostic id, formatting and on-demand diagnostics, address
 rather than by a line number the model had to grep for first. One binary also serves GitHub Copilot
 CLI and OpenCode over LSP, and Codex, Gemini CLI, Cursor and VS Code over MCP.
 
-> **Status: under construction.** This release is the repository scaffold. The `lsp` verb answers the
-> LSP handshake and refuses everything else; the `mcp` verb completes the MCP handshake and registers
-> no tools; `doctor` and `fake-roslyn` report that they are not implemented yet. Nothing downloads or
-> launches Roslyn. This file is a placeholder so that the NuGet package and the release archives ship
-> with the README they reference — the full document is written against the frozen tool surface.
+> **Status: under construction.** The `lsp` verb answers the LSP handshake and refuses everything
+> else; the `mcp` verb completes the MCP handshake and registers no tools; `fake-roslyn` reports that
+> it is not implemented yet. What *does* work end to end is acquisition: `claude-roslyn-lsp install`
+> downloads and hash-verifies the pinned Roslyn server, and `claude-roslyn-lsp doctor` reports the
+> whole resolution chain and then starts the real server and completes a handshake with it. The
+> mediation between the two — which is the point of the project — is the next work package. This file
+> is still partly a placeholder, so that the NuGet package and the release archives ship with the
+> README they reference.
 
 ## Installing
 
@@ -30,13 +33,45 @@ from GitHub Releases, and `dnx claude-roslyn-lsp`._
 
 ## Using it
 
-_To be written: the four verbs, what each one is launched by, and what to expect on a first run
+_To be written: the verbs (`lsp`, `mcp`, `doctor`, `install`), what each one is launched by, and what
+to expect on a first run
 against a large solution._
 
 ## Configuration
 
-_To be written: the `CLAUDE_ROSLYN_LSP_*` variables, their defaults, and the
-`CLAUDE_PLUGIN_OPTION_*` precedence rule._
+Environment variables only — there is no configuration file. A client launches this binary with an
+environment block and nothing else, and reading configuration **never** fails startup: a malformed
+value falls back to its documented default and says so on stderr, because stdout is the protocol
+channel and a dead process has nowhere to explain itself.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `CLAUDE_ROSLYN_LSP_SOLUTION` | discovered | The `.slnx`, `.sln` or `.csproj` to open. A path that does not exist **fails loudly** rather than falling back to discovery. |
+| `CLAUDE_ROSLYN_LSP_ROSLYN_PATH` | — | A directory holding `Microsoft.CodeAnalysis.LanguageServer.dll`, that assembly, or another executable to run instead. First in the resolution chain; its version is not checked. Alias: `_SERVER_PATH`. |
+| `CLAUDE_ROSLYN_LSP_ROSLYN_VERSION` | the pin | Fetch a different `roslyn-language-server` version. There is no hash for it, so `doctor` reports it as unverified. Alias: `_SERVER_VERSION`. |
+| `CLAUDE_ROSLYN_LSP_ROSLYN_ARGS` | — | Extra arguments for the Roslyn child, split on whitespace. |
+| `CLAUDE_ROSLYN_LSP_HOME` | platform cache dir | Where downloads, logs and lock files live. Falls back to `CLAUDE_PLUGIN_DATA`, then `%LOCALAPPDATA%\claude-roslyn-lsp`, `~/Library/Caches/claude-roslyn-lsp`, `$XDG_CACHE_HOME/claude-roslyn-lsp` or `~/.cache/claude-roslyn-lsp`. |
+| `CLAUDE_ROSLYN_LSP_CACHE_DIR` | `<home>/roslyn` | Moves the downloaded servers only; logs stay under the home. |
+| `CLAUDE_ROSLYN_LSP_OFFLINE` | `0` | Never download. A missing server becomes an explained failure instead of a 70 MB fetch. |
+| `CLAUDE_ROSLYN_LSP_TRANSPORT` | `pipe` | `pipe` or `stdio`. The pipe keeps the protocol on a channel nothing else can write to. |
+| `CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS` | `120` | How long a request waits for the workspace to load before passing through anyway. |
+| `CLAUDE_ROSLYN_LSP_DIAGNOSTICS` | `1` | The pull-to-push diagnostics bridge. |
+| `CLAUDE_ROSLYN_LSP_DIAGNOSTIC_MIN_SEVERITY` | `warning` | The severity floor applied before diagnostics are published. |
+| `CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS` | off | Opt-in workspace-wide diagnostics for files that are not open. |
+| `CLAUDE_ROSLYN_LSP_FILE_WATCHER` | `1` | The file-watch bridge. Without it, a file created by a shell command never joins its project. |
+| `CLAUDE_ROSLYN_LSP_LOG_LEVEL` | `Information` | This adapter's own stderr logger. |
+| `CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL` | `Warning` | The level handed to Roslyn. Its `Information` is about twenty lines of narration per start. |
+| `CLAUDE_ROSLYN_LSP_OPTIONS` | — | A JSON object merged into the answers given to Roslyn's `workspace/configuration` requests. |
+| `CLAUDE_ROSLYN_LSP_LIVE_TESTS` | — | Development only: runs the tests that download and launch the real server. |
+
+Booleans accept `1/true/yes/on` and `0/false/no/off`, in any case.
+
+**The plugin-option rule.** Every one of these is also read as
+`CLAUDE_PLUGIN_OPTION_<NAME>`, **first**, with a blank value treated as absent. A Claude Code plugin
+manifest substitutes an unfilled option as the empty string rather than omitting it, so mapping one
+straight onto the plain name would set it to `""` in the child process and shadow whatever the user's
+environment already said. `CLAUDE_ROSLYN_LSP_HOME` is the single exception: the manifest sets it
+directly to `${CLAUDE_PLUGIN_DATA}`, which is a real directory Claude Code owns.
 
 ## What the MCP tools do
 
@@ -49,8 +84,81 @@ VS Code over MCP._
 
 ## How it works
 
-_To be written: acquisition and the pinned Roslyn version, solution discovery, the readiness gate,
-the diagnostics bridge, file watching and crash recovery._
+### Acquisition and pinning
+
+This binary contains no compiler. It runs Microsoft's `roslyn-language-server` as a child process,
+and it fetches that server itself the first time it is needed — pinned to one exact version,
+**5.12.0-1.26426.8**, whose SHA-512 for every published platform is checked into this repository.
+
+Bundling the server would multiply every release archive by an order of magnitude, and asking the user
+to install it would reproduce the exact failure this project exists to fix: a plugin that launches a
+binary nobody has. So the first run downloads about 70 MB, verifies it against the pin, and extracts
+it into a per-user cache. Afterwards there is nothing to download and nothing to check.
+
+The pin is one constant rather than a floating range because the server is prerelease-only with an
+unstable command line: `--clientProcessId`, `--daemon` and `--daemonKeepAlive` exist in 5.12 and do
+not exist in the builds a year older, and Roslyn *exits* on an option it does not recognise. A
+floating version is a release that breaks on somebody else's schedule.
+
+Where the server comes from, in order:
+
+1. **`CLAUDE_ROSLYN_LSP_ROSLYN_PATH`**, if set. Its version is not checked — you asked for it. A value
+   that does not resolve is an error, not a fall-through to a download: a variable that silently does
+   nothing is the one configuration bug you cannot diagnose.
+2. **The cache**, `<home>/roslyn/<version>/<rid>/`, if a `.complete` marker there records the hash the
+   pin expects.
+3. **A global `dotnet tool` installation**, but only at exactly the pinned version. One at a different
+   version is *reported* by `doctor` and not used.
+4. **nuget.org**, streamed straight to disk and hashed on the way, extracted into a staging directory
+   and renamed into place so that the cache is never half-populated. A lock file serialises the two
+   processes Claude Code starts at the same instant, so a first run downloads once, not twice.
+
+`CLAUDE_ROSLYN_LSP_OFFLINE=1` turns step 4 into an explanation instead of a fetch. Eight platforms are
+published (`win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `linux-musl-x64`, `linux-musl-arm64`,
+`osx-x64`, `osx-arm64`); on anything else, `doctor` says so rather than downloading something that
+cannot run.
+
+Roslyn needs a **.NET 10 runtime**, which this adapter does not bundle. It resolves the `dotnet` host
+itself — `DOTNET_ROOT`, then `PATH`, then the usual install locations — and asks it for its runtime
+list before launching anything, so a missing runtime is a sentence in a report rather than a child
+process that dies without one.
+
+### Checking, and installing on purpose
+
+```sh
+claude-roslyn-lsp doctor      # report everything, then start Roslyn and complete a handshake
+claude-roslyn-lsp install     # the same, but download the server if it is missing
+claude-roslyn-lsp doctor --json
+```
+
+`doctor` prints the adapter's version and platform, the `dotnet` host and its runtimes with the .NET 10
+ones marked, the whole Roslyn resolution chain with the winner and whether its bytes were verified, the
+cache directory and its free space, which solution would be opened and how it scored against the other
+candidates, and whether Claude Code's language-server tool is enabled — plus a warning if the official
+`csharp-lsp` plugin is also enabled, because the first plugin registered for `.cs` wins.
+
+Then it launches the server it just described and completes a real `initialize`/`shutdown`/`exit`, and
+reports what the server said and how long each step took. **It exits 0 only if that worked.** Every
+static check above it can pass on a machine where Roslyn still does not start.
+
+`doctor` never downloads; `install` (equivalently `doctor --fix`) is the same command with the download
+allowed. Through `dnx`, use `doctor` rather than `--version`: `dnx` consumes `--version` itself.
+
+### Which solution gets opened
+
+`CLAUDE_ROSLYN_LSP_SOLUTION` decides it outright, and a path that is not there is an error rather than
+a licence to guess. Failing that, `.vscode/settings.json`'s `dotnet.defaultSolution` is honoured —
+any repository that has been opened in VS Code has already answered this question — including its
+`disable` sentinel.
+
+Otherwise the adapter looks: three directories deep, skipping `bin`, `obj`, `.git`, `node_modules`,
+`.vs`, `artifacts` and `TestResults`, and scores what it finds. A name matching the repository folder
+is worth 100, `.slnx` over `.sln` is worth 10, and each project listed is worth one; ties go to the
+shallower file. With no solution at all it opens every `.csproj` it can find, up to 500 — test projects
+included, because an agent asked to fix a failing test needs the test project loaded. `doctor` prints
+the candidates and their scores, so a wrong choice is visible rather than mysterious.
+
+_To be written: the readiness gate, the diagnostics bridge, file watching and crash recovery._
 
 ### Known limitation: two Roslyn processes
 

@@ -191,8 +191,8 @@ return the same `EditResult` shape, and answer an applied edit with one fixed se
    binary;
 6. `ToolInventoryTests.ExpectedToolNames` and its annotation rows, plus a row in
    `ToolSchemaTests`'s frozen schema table;
-7. `.claude/skills/claude-roslyn-lsp/SKILL.md`, once that skill exists — `AgentSkillTests` requires
-   every tool to be named there as soon as the skill names any of them.
+7. `.claude/skills/claude-roslyn-lsp/SKILL.md` — `AgentSkillTests` requires every tool to be named
+   there, in backticks, and every tool-shaped name in it to exist (see *Agent skill*).
 
 ### Protocol gotchas
 
@@ -200,6 +200,78 @@ The **C-numbered** findings live in [`docs/roslyn-protocol-facts.md`](docs/rosly
 C1-C39 were observed on the wire against the pinned server on 2026-09-10 (WP0 spikes) and are cited
 from code comments and tests by number. Add to that file, never restate a fact here; a finding that
 changes on a pin bump gets re-verified there with the new date.
+
+## Agent skill
+
+`.claude/skills/claude-roslyn-lsp/SKILL.md` is one file and it is the **primary lever of this
+project**, not an add-on. Everything else here is machinery for answering a question correctly; the
+skill is the only thing that decides whether the question gets asked at all. The complaint this
+repository started from is behavioural — an agent reaching for `grep` and `sed` on C# — and no
+amount of correct `textDocument/references` fixes a model that never sends one.
+
+D70-D73 below are recorded here rather than as rows in the decision table, because each of them is
+about this file and would be read nowhere else.
+
+### The budget of attention
+
+Guidance can live in three places, and they are paid for at three different rates. Putting a
+sentence in the wrong one is either a tax on every session that never touches C# or a rule the
+caller never sees.
+
+| Surface | Paid by | What belongs there |
+|---|---|---|
+| `Mcp/ServerInstructions.cs` | **every session** that attaches the MCP server, whether or not any C# work happens | Only what a caller needs *before* the first call and cannot learn from a schema: what the server is, what it costs to start, and the conventions that span all ten tools. Roughly ten lines, and it has to stay that way. |
+| A tool's `[Description]`, and each parameter's | the client, per tool, when it renders or calls one | Everything true of *that* tool: what its arguments mean, what its defaults are, what it returns. |
+| `SKILL.md` body | only a session that actually starts C# work — the frontmatter description is the only always-loaded part | The order the calls go in, and what to reach for *instead of* what. |
+
+**D70 — the skill holds order and substitution, because a schema structurally cannot.** Every schema
+describes one tool, so no schema can say "resolve the symbol before you search for it", "rename
+semantically instead of editing the declaration and chasing the compiler", or "run a design-time
+diagnostic pass instead of a build". Those are statements about *pairs* of tools, one of which is
+usually a tool this server does not own — `Grep`, `Edit`, `Bash dotnet build`. The skill is the only
+surface where a claim about two tools can be made at all.
+
+**D71 — the skill teaches two tool families at once, and the pairing between them is the point.**
+Claude Code's built-in `LSP` tool has nine read-only operations and needs a file, a line and a
+character for every one of them; this server's tools are name-addressed and include the mutations.
+A model that has only the first has to find a position before it can navigate, and the only way it
+knows to find one is to search for it — which is the exact habit being replaced. So the skill
+teaches the join: `resolveSymbol` reports the `path:line:col` the `LSP` tool consumes, and once that
+sentence is in the skill the built-in tool stops being a reason to grep. This is why the skill names
+a tool it does not own, and why `AgentSkillTests`' verb scan is written to ignore identifiers that
+are not shaped like this server's names.
+
+**D72 — one canonical copy, and a test that keeps it in step.** The file lives under
+`.claude/skills/`, which is what Claude Code loads from a checkout, what the plugin manifest points
+at, and what `npx skills add` and `gh skill install` read when installing into another agent. There
+is no second copy anywhere; every other tool is pointed at this path. `AgentSkillTests`
+cross-references it against the *reflected* tool inventory in both directions, which is what makes
+the skill one of the seven places a new tool has to be added — nothing loads this file at build
+time, so it is exactly the kind of document that would keep advertising a surface that has moved on.
+The scaffold's escape hatch, which let the "every tool is named" direction pass while the skill was
+an under-construction placeholder, was removed with WP6: naming no tool is no longer a state this
+repository has.
+
+### The client configuration packs
+
+**D73 — the configuration for every other client is a checked-in file, not a fenced block.**
+`docs/clients/` holds one complete, minimal file per client — Copilot CLI, OpenCode, Neovim, Helix,
+Zed, Codex, Gemini CLI, Cursor, VS Code, Claude Desktop and a local Claude Code plugin directory —
+and `README.md` quotes them rather than being their source. Three reasons. A file can be copied
+verbatim, which is what a reader actually does with it. A file can be *parsed by a test*, and
+`ConfigSnippetTests` does: every one has to parse in its own format, name only variables
+`ClaudeRoslynLspOptions` actually reads, and launch the binary with a verb — this product has no
+default verb, so a snippet that forgot one is a server that exits 2 before the handshake and a
+client that reports it as a crash. And `.github/lsp.json` is the same idea turned on the repository
+itself: it is this checkout's own Copilot CLI configuration, pinned to the published package, so the
+project is configured by the file it ships.
+
+What no test can check is whether the surrounding key names are the ones somebody else's parser
+expects. Those are facts about other people's software; they are stated in `README.md` next to each
+snippet, with the ones nobody has run — Neovim, Helix, Zed — labelled untested rather than presented
+as verified. Zed gets the additional caveat that it cannot attach a language server it does not
+already know about, so the snippet replaces the binary behind its C# extension's server instead of
+adding one.
 
 ## Package budget
 
@@ -294,10 +366,14 @@ build/                      The Fallout orchestrator (Build.cs, Build.Publish.cs
                             `build/` is a resolver convention, and `.gitignore` must never
                             untrack it
 docs/                       roslyn-protocol-facts.md — the C-numbered findings (see above)
+docs/clients/               One complete configuration file per client, parsed by ConfigSnippetTests
+                            and quoted by README.md rather than the other way round (D73)
+.github/lsp.json            This checkout's own Copilot CLI configuration — the project configured
+                            by the file it ships
 ```
 
 Directories the plan reserves and the repository has not created, so that nobody invents a second
-home for them: `tests/fixtures/HelloSolution/` (WP7) and `docs/clients/` (WP6).
+home for them: `tests/fixtures/HelloSolution/` (WP7).
 
 ## Build
 
@@ -364,12 +440,21 @@ by scanning the repository. Do not delete one to make a change pass:
   the directory name, `description` within 1024 characters) and cross-checks every backticked
   tool-shaped identifier against the reflected tool inventory in both directions. The "names a tool
   that exists" direction is sharp, because the verb set it scans with is the union of the live
-  inventory and the designed table's verbs. The "every tool is named" direction skips while the skill
-  names **no** tool at all — WP5 landed ten tools and the skill is WP6's work package, and it still
-  says outright that this release answers the protocol handshakes and nothing else. That is the same
-  vacuity rule the scaffold's builder wrote, stated from the side that has not landed yet: the moment
-  the skill names one tool it has to name them all, so a playbook cannot quietly drop half the
-  surface.
+  inventory and the designed table's verbs. The "every tool is named" direction is now sharp too:
+  the scaffold's escape, which let it pass while the skill was a placeholder that named nothing, was
+  removed with WP6, so a playbook that quietly dropped half the surface — or all of it — fails here.
+  It also requires the `compatibility` line, because a skill that teaches tools only present when a
+  server is attached has to say so in the file itself.
+- **`ConfigSnippetTests`** parses every checked-in client configuration under `docs/clients/`, plus
+  this repository's own `.github/lsp.json`, in the format its extension claims — with JSON comments
+  allowed only in the two files whose clients document them, and trailing commas allowed nowhere.
+  It then asserts that each one names only variables `ClaudeRoslynLspOptions` actually reads, that
+  each launch ends in a verb (this binary has no default one, so a snippet that forgot it is a
+  process that exits 2 before the handshake), that every `.cs` extension mapping says `csharp`, and
+  that every `dnx` invocation pins the `CHANGELOG.md` version. The variable set is recovered from
+  `FromEnvironment`'s own source by `EnvironmentSurface`, so no document here can agree with a stale
+  copy of the surface — `.mcp/server.json` is held to the same set, in full, by
+  `McpServerManifestTests`.
 - **`ConfigurationTests`** asserts that every documented variable reaches a property, under its plain
   name *and* under the plugin prefix. A knob that is written down and never read is the one
   configuration bug with no symptom to search for.

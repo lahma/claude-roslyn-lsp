@@ -1,0 +1,14 @@
+# Build output
+bin/
+obj/
+artifacts/
+
+# IDE / editor
+.vs/
+.idea/
+*.user
+
+# Fallout
+# NOTE: never add a bare `build` rule here — the Fallout build project lives in build/
+# and a stock Visual Studio .gitignore would silently swallow the whole orchestrator.
+.fallout/temp/

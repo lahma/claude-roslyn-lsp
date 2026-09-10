@@ -1,0 +1,93 @@
+# Hand-written by design (AGENTS.md hard rule 4): the [GitHubActions] generator that produces
+# build.yml has no matrix support, and a release needs one job per runtime identifier.
+#
+# Every leg runs `fallout SmokeTest`, which depends on PublishAot - so each leg builds its own
+# Native AOT binary, drives a real LSP handshake and a real MCP handshake against it, and only then
+# uploads the archive. Nothing reaches a release without having answered `initialize` over both
+# protocols on the hardware it was compiled for; the arm64 legs run on arm64 runners for exactly
+# that reason.
+#
+# Action majors are pinned to match the generated build.yml (checkout@v7, setup-dotnet@v6);
+# upload-artifact@v7 and download-artifact@v8 are the current majors and are the matching pair
+# (v8 of the downloader exists to understand v7's direct uploads).
+#
+# Binaries and the GitHub Release only. The nuget.org push (D22) lives in the generated publish.yml,
+# which the same tag triggers independently - a nuget.org outage must not be able to hold up a
+# release, and the trusted publishing policy names one workflow file, which is that one and not
+# this one.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One broken runtime should not hide the state of the other four.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: windows-latest
+            rid: win-x64
+          - os: windows-11-arm
+            rid: win-arm64
+          - os: macos-latest
+            rid: osx-arm64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The changelog-driven version and GitRepository want the full history.
+          fetch-depth: 0
+      - name: 'Setup: .NET SDK'
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: 'Restore: dotnet tools'
+        run: dotnet tool restore
+      - name: 'Run: SmokeTest'
+        run: dotnet fallout SmokeTest --runtime ${{ matrix.rid }}
+      - name: 'Upload: archives'
+        uses: actions/upload-artifact@v7
+        with:
+          name: archives-${{ matrix.rid }}
+          path: artifacts/archives/*
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: 'Setup: .NET SDK'
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: 'Restore: dotnet tools'
+        run: dotnet tool restore
+      - name: 'Download: archives'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: archives-*
+          merge-multiple: true
+          path: artifacts/archives
+      # CreateGitHubRelease refuses to publish unless the tag matches CHANGELOG.md's version, then
+      # attaches everything in artifacts/archives to a release named after it.
+      - name: 'Run: CreateGitHubRelease'
+        run: dotnet fallout CreateGitHubRelease
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

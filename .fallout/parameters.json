@@ -1,0 +1,4 @@
+{
+  "$schema": "./build.schema.json",
+  "Solution": "claude-roslyn-lsp.slnx"
+}

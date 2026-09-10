@@ -1,7 +1,7 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C62 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C65 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
 C48-C54 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
@@ -364,6 +364,38 @@ would be re-verified from, so they share the numbering.
   and replays it after the relaunch (D74), so both orderings produce the same answer; the ordering
   itself is a property of how the two operating systems report a dead pipe and must not be relied
   on in either direction.
+
+## The shared engine (WP9, 2026-09-10)
+
+Measured on `tests/fixtures/HelloSolution` (three projects, one multi-targeted), warm cache, Windows
+11, with an `lsp` session and an `mcp` engine in one process talking over a real named pipe — which
+is the shape of the two processes a Claude Code plugin actually starts.
+
+- **C63** **Attaching costs nothing measurable next to loading.** The host loaded the solution in
+  **2.4-4.6 s** including the server-side restore; the second half was ready **0.0-0.1 s** after it
+  started, because attaching is a pipe connect plus one `initialize` the host answers out of the
+  result Roslyn already gave it. A `kill -9` of the shared Roslyn was answered again **3.2 s** later
+  on the hosting LSP side and **3.9 s** later on the attached MCP side, with the attached half never
+  having launched a server of its own; stopping the host process made the attached engine the owner
+  of a freshly launched one **2.7 s** later. One Roslyn, **296 MB** peak working set under the
+  workstation GC (D79) — against two of that for the same session before this work package, which is
+  what the number is there to compare against.
+- **C64** **`--pipe`'s naming rules apply to this product's own pipe too.** The shared host uses
+  `NamedPipeServerStream(name, InOut, MaxAllowedServerInstances, Byte, Asynchronous |
+  CurrentUserOnly)` and the attaching side a `NamedPipeClientStream` with `CurrentUserOnly` — the
+  same options C8 established for Roslyn's own transport, and they behave the same way here. Off
+  Windows .NET maps the name onto `/tmp/CoreFxPipe_<name>`, so the name must contain no path
+  separator; `claude-roslyn-lsp-share-<pid>-<8 hex>` is 40-odd characters and safe on every platform
+  this ships for. The random half is load-bearing: a host torn down and started again inside one
+  process — which is what a relaunch does — would otherwise reuse a name a client may still hold.
+- **C65** **A shared Roslyn means shared settings, and a raised diagnostic scope stays raised.**
+  Roslyn has one set of options per process, so an attached `getDiagnostics scope: "solution"`
+  raising `dotnet_compiler_diagnostics_scope` to `fullSolution` (C14) raises it for the *host's* push
+  diagnostics as well, and nothing lowers it again for the life of the session. That is a real cost —
+  full-solution compiler analysis is what makes a large solution expensive (D48) — and it is the same
+  cost the MCP half already paid alone, now paid once instead of twice in two processes. It is
+  recorded rather than fixed because lowering it after the call would make a second solution-wide
+  pull pay C57's confirmation loop again, and because the two halves genuinely want the same answer.
 
 ## Claude Code 2.1.267 client (spike S3, 2026-09-10)
 

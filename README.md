@@ -768,15 +768,39 @@ either: the LSP half of 0.1.0 writes no files at all, and the MCP half applies i
 makes `Edits/` the single place in this product that writes a source file, with one path guard in
 front of it.
 
-### Known limitation: two Roslyn processes
+### One Roslyn per solution, shared between the two servers
 
-Running both servers against the same solution starts **two** Roslyn instances, and each one loads
-the whole solution. On a large repository that is double the memory and double the load time. Both
-halves work; the cost is real and is stated here rather than discovered, and `getWorkspaceStatus`
-reports `engine: "owned"` so it is visible in an answer as well as in this paragraph. Sharing one
-engine between the two verbs is the next work package, and until it ships the honest advice for a
-very large solution is to enable one of the two — the MCP half if you want the refactorings, the LSP
-half if you want push diagnostics in the editor.
+Claude Code starts this plugin's MCP server when your session starts and its LSP server the first
+time you touch a `.cs` file. Both of them want a loaded solution, and a Roslyn holding a solution is
+by far the largest thing this product puts on a machine — so they share one.
+
+Whichever process gets there first becomes the **host**: it launches Roslyn, publishes itself in
+`<home>/sessions/<hash of the solution path>.json`, and listens on a named pipe. The other one
+**attaches** and starts nothing at all. Attaching costs about a tenth of a second, against the
+seconds or minutes a solution load costs, so the second server is answering questions as soon as it
+is asked one.
+
+The host multiplexes: requests from an attached client are renumbered onto the host's own connection
+and held by the same readiness gate, documents are reference-counted so one client closing a file
+does not take it away from the other, and the notifications an attached client needs — the log
+lines, the "workspace loaded" signal, the "your diagnostics are stale" refresh — are fanned out to
+everybody. Registrations, configuration and progress stay with the host, which is the one process
+that owes Roslyn an answer to them.
+
+Losing either half is a state, not a failure. If Roslyn dies, the host relaunches it and both halves
+see a workspace that went briefly quiet; requests in flight at the time are asked again rather than
+refused. If the *host* goes away, the attached process sees its backend disappear, finds the session
+file gone, and becomes the host itself — on the fixture solution, about two and a half seconds later.
+
+`getWorkspaceStatus` reports which of the two you are talking to: `engine: "owned"` for a Roslyn this
+server launched, `engine: "attached"` with `hostProcessId` for one it is sharing. Every failure in
+the rendezvous — an unwritable home directory, a platform that will not give out named pipes, a
+session file naming a process that has gone — falls back to launching a private Roslyn, which is
+what the first release did in every case. `CLAUDE_ROSLYN_LSP_SHARE=off` turns sharing off
+deliberately.
+
+`claude-roslyn-lsp doctor` lists the session directory, with the age and the verdict for each entry;
+`doctor --fix` removes the stale ones, though a server starting up removes them by itself.
 
 ## Environment variables
 
@@ -801,6 +825,7 @@ what is actually in effect and is the authority when this table and the binary d
 | `CLAUDE_ROSLYN_LSP_DIAGNOSTIC_MIN_SEVERITY` | `warning` | The severity floor applied before diagnostics are published to an LSP client. |
 | `CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS` | off | Opt-in workspace-wide diagnostics for files that are not open. Needs a full-solution compiler scope, which is the expensive setting. |
 | `CLAUDE_ROSLYN_LSP_FILE_WATCHER` | `1` | The file-watch bridge. Without it, a file created by a shell command or by git never joins its project and every later answer is silently stale. `lsp` only: the `mcp` half always watches, because it has no editor telling it what changed and because a repository that needs a restore does not finish loading without it. |
+| `CLAUDE_ROSLYN_LSP_SHARE` | `1` | Whether the `lsp` and `mcp` servers share one Roslyn per solution. Off makes each of them launch one of its own, which loads the solution twice and pays for it twice in memory. `getWorkspaceStatus` reports `engine: "owned"` or `"attached"`, so which of the two happened is never a guess. |
 | `CLAUDE_ROSLYN_LSP_GC` | `workstation` | Which garbage collector the Roslyn child runs with: `workstation` or `server`. Workstation peaks around 577 MB on a 239-project solution where server peaks around 2 GB, and costs about eight seconds of load time. An explicit `DOTNET_gcServer` in the environment wins over this and is left alone. |
 | `CLAUDE_ROSLYN_LSP_LOG_LEVEL` | `Information` | This adapter's own stderr logger: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`. |
 | `CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL` | `Warning` | The level handed to Roslyn. Its `Information` is about twenty lines of narration per start. |

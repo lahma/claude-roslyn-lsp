@@ -33,9 +33,10 @@ namespace ClaudeRoslynLsp.Mcp.Engine;
 /// call hierarchy on the way back — and none of that exists here, where the caller is a method on
 /// this object. Extracting a common session would mean inventing an abstraction for "the peer" whose
 /// only second implementation is "there isn't one", and it would put a refactor with no test of its
-/// own underneath the mediation that WP4 spent a live session getting right. WP9's shared engine is
-/// where the two lifecycles genuinely merge — a host and an attach client — and that is the seam
-/// worth cutting along.
+/// own underneath the mediation that WP4 spent a live session getting right. The seam that was worth
+/// cutting turned out to be the narrow one WP9 cut instead: <see cref="ISharedEngineHost"/>, which
+/// this class implements without being restructured, and which lets another process attach to this
+/// one's Roslyn rather than launching a second (D23, D87).
 /// </para>
 /// <para>
 /// <b>File watching is mandatory here, not optional.</b> C48: without <c>project.assets.json</c>

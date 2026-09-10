@@ -29,6 +29,12 @@
 - Ships as a Claude Code plugin carrying both servers and the agent skill, as a NuGet tool for
   `dnx`, and as a Native AOT archive per platform. Configuration files for Copilot CLI, OpenCode,
   Neovim, Helix, Zed, Codex, Gemini CLI, Cursor, VS Code and Claude Desktop are in `docs/clients/`.
-- **Known limitation:** running both servers against one solution starts two Roslyn instances and
-  loads the solution twice. `getWorkspaceStatus` reports `engine: "owned"` so this is visible in an
-  answer; sharing one engine between the two verbs is the next work package.
+- The two servers share **one Roslyn per solution**. Whichever starts first launches it, publishes
+  itself under the adapter's home and serves a named pipe; the other attaches and starts nothing, in
+  about a tenth of a second against the seconds a solution load costs. Requests from the attached
+  side are renumbered onto the host's connection and held by the same readiness gate, documents are
+  reference-counted so one server closing a file does not take it away from the other, and a Roslyn
+  that dies is relaunched once for both of them. If the hosting process goes away the other becomes
+  the host. `getWorkspaceStatus` reports `engine: "owned"` or `"attached"` with the host's process
+  id, `doctor` lists the session directory, and `CLAUDE_ROSLYN_LSP_SHARE=off` keeps each server's
+  Roslyn private — which is also what every failure in the rendezvous falls back to.

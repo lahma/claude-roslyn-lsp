@@ -62,11 +62,34 @@ public class SmokeTests
     /// A verb that exists but is not built yet exits 3, not 2. The distinction is what tells a user
     /// whether to fix their command line or to upgrade.
     /// </summary>
+    /// <remarks>
+    /// <c>doctor</c> was on this list until the acquisition work package landed. It is not, and must
+    /// not be, added back with a different expectation: exit 3 means "recognised, not implemented",
+    /// and <c>doctor</c>'s exit code now means "Roslyn is runnable" (0) or "it is not" (1).
+    /// </remarks>
     [Theory]
-    [InlineData("doctor")]
     [InlineData("fake-roslyn")]
     public async Task AVerbThisBuildDoesNotImplementYetSaysSo(string verb)
     {
         Assert.Equal(CliDispatcher.ExitNotImplemented, await CliDispatcher.RunAsync([verb]));
+    }
+
+    /// <summary>
+    /// Both acquisition verbs are dispatched, and an option neither of them knows is a usage error
+    /// rather than a silently ignored word.
+    /// </summary>
+    [Theory]
+    [InlineData("doctor")]
+    [InlineData("install")]
+    public async Task TheAcquisitionVerbsRejectAnUnknownOption(string verb)
+    {
+        Assert.Equal(CliDispatcher.ExitUsage, await CliDispatcher.RunAsync([verb, "--wat"]));
+    }
+
+    [Fact]
+    public void TheUsageTextDocumentsTheInstallVerb()
+    {
+        Assert.Contains("install", CliDispatcher.UsageText, StringComparison.Ordinal);
+        Assert.Contains("--json", CliDispatcher.UsageText, StringComparison.Ordinal);
     }
 }

@@ -100,8 +100,10 @@ internal sealed record ClaudeRoslynLspOptions
 
     /// <summary>
     /// <c>CLAUDE_ROSLYN_LSP_ROSLYN_VERSION</c> (alias <c>CLAUDE_ROSLYN_LSP_SERVER_VERSION</c>) —
-    /// overrides the pinned <c>roslyn-language-server</c> version. Unsupported by construction: the
-    /// pin is the only version a release is tested against.
+    /// overrides the pinned <c>roslyn-language-server</c> version. The pin is the only version a
+    /// release is tested against, so an override is downloaded into its own cache directory, has no
+    /// hash to check against and is reported by <c>doctor</c> as unverified (D25); the launcher also
+    /// drops the flags only the pinned build is known to accept (D26).
     /// </summary>
     internal string? RoslynVersion { get; init; }
 
@@ -113,16 +115,18 @@ internal sealed record ClaudeRoslynLspOptions
     internal string? RoslynArguments { get; init; }
 
     /// <summary>
-    /// <c>CLAUDE_ROSLYN_LSP_CACHE_DIR</c> — where downloaded Roslyn servers are extracted. Overrides
-    /// <see cref="Home"/>.
+    /// <c>CLAUDE_ROSLYN_LSP_CACHE_DIR</c> — where downloaded Roslyn servers are extracted. Moves the
+    /// payloads only; logs and staged downloads stay under <see cref="Home"/> (D27).
     /// </summary>
     internal string? CacheDirectory { get; init; }
 
     /// <summary>
     /// <c>CLAUDE_ROSLYN_LSP_HOME</c> — the adapter's per-user state directory. The plugin manifest
     /// sets it to <c>${CLAUDE_PLUGIN_DATA}</c> so an installed plugin keeps its downloads inside its
-    /// own data directory instead of a second copy under the home directory; unset, it falls back to
-    /// <c>~/.claude-roslyn-lsp</c> (WP3).
+    /// own data directory instead of a second copy under the home directory; unset, the chain is
+    /// <c>CLAUDE_PLUGIN_DATA</c> and then the platform's cache location — <c>%LOCALAPPDATA%</c>,
+    /// <c>~/Library/Caches</c>, <c>$XDG_CACHE_HOME</c> or <c>~/.cache</c> (D27,
+    /// <see cref="Roslyn.AdapterPaths"/>).
     /// </summary>
     internal string? Home { get; init; }
 
@@ -133,8 +137,10 @@ internal sealed record ClaudeRoslynLspOptions
     internal bool Offline { get; init; }
 
     /// <summary>
-    /// <c>CLAUDE_ROSLYN_LSP_TRANSPORT</c> — how the adapter talks to Roslyn (<c>pipe</c> or
-    /// <c>stdio</c>). Parsed in WP3, where the fallback behaviour is decided.
+    /// <c>CLAUDE_ROSLYN_LSP_TRANSPORT</c> — how the adapter talks to Roslyn (<c>pipe</c>, the
+    /// default, or <c>stdio</c>). Parsed by
+    /// <see cref="Roslyn.RoslynProcessLauncher.ParseTransport"/> (D37); an unrecognised value warns
+    /// and uses the pipe rather than refusing to start.
     /// </summary>
     internal string? Transport { get; init; }
 
@@ -175,9 +181,11 @@ internal sealed record ClaudeRoslynLspOptions
 
     /// <summary>
     /// <c>CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL</c> — the level handed to the Roslyn child process.
-    /// <see langword="null"/> means "not configured": the default belongs to the launcher (WP3),
-    /// which knows what Roslyn's own vocabulary costs in stderr volume, and inventing one here would
-    /// make an unset variable indistinguishable from a deliberate choice.
+    /// <see langword="null"/> means "not configured": the default belongs to the launcher
+    /// (<see cref="Roslyn.RoslynLaunchRequest.DefaultRoslynLogLevel"/>, which is <c>Warning</c>),
+    /// because that is where the cost of Roslyn's vocabulary in stderr volume is known — and
+    /// inventing one here would make an unset variable indistinguishable from a deliberate choice.
+    /// Roslyn's own level names are the same words as this enum's, so the value crosses unchanged.
     /// </summary>
     internal LogLevel? RoslynLogLevel { get; init; }
 

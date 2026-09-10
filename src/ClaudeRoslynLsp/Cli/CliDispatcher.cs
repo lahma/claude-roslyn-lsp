@@ -55,11 +55,19 @@ internal static class CliDispatcher
                                                 tools for a model that would otherwise use grep and
                                                 sed.
            {ServerVersion.Name} doctor             Report the Roslyn resolution chain, the .NET host,
-                                                the solution candidates and the integration state.
+                                                the solution candidates and the integration state,
+                                                then start Roslyn and complete one handshake with it.
+                                                Exits 0 only if that works. Add --json for a machine-
+                                                readable report, --fix to install what is missing.
+           {ServerVersion.Name} install           Download and verify the pinned Roslyn server, then
+                                                report exactly as doctor does. Same thing as
+                                                `doctor --fix`; the servers do this on first use
+                                                anyway, so this is for doing it deliberately.
 
          Options:
            -h, --help                           Show this help text.
-           -v, --version                        Show the version.
+           -v, --version                        Show the version. (Through `dnx`, use `doctor`
+                                                instead: dnx consumes --version itself.)
 
          There is no default verb: one of the above is required, because the two servers speak
          different protocols on the same stdout and a client connected to the wrong one hangs.
@@ -95,7 +103,13 @@ internal static class CliDispatcher
                 return await McpServerSetup.RunStdioAsync().ConfigureAwait(false);
 
             case "doctor":
-                return DoctorCommand.Run();
+                return await DoctorCommand.RunAsync(args[1..], fix: false).ConfigureAwait(false);
+
+            // The same command with the download allowed (D43). A separate verb rather than only a
+            // flag because "install it" is what a user wants to type, and a verb is what a README,
+            // a CI step and a support answer can all name without explaining a flag first.
+            case "install":
+                return await DoctorCommand.RunAsync(args[1..], fix: true).ConfigureAwait(false);
 
             // Hidden on purpose: it is a test double the smoke test launches, not something a user
             // has any reason to type, so it is absent from UsageText.

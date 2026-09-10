@@ -1,4 +1,4 @@
-using ClaudeRoslynLsp.Lsp;
+using ClaudeRoslynLsp.Adapter;
 using ClaudeRoslynLsp.Mcp;
 
 namespace ClaudeRoslynLsp.Cli;
@@ -38,8 +38,7 @@ internal static class CliDispatcher
     /// <remarks>
     /// Distinct from <see cref="ExitUsage"/> on purpose: "you typed something I do not recognise"
     /// and "you typed something I recognise and cannot do yet" are different problems, and only the
-    /// second one is fixed by upgrading. <c>doctor</c> and <c>fake-roslyn</c> answer with this until
-    /// WP3 and WP2 land.
+    /// second one is fixed by upgrading. <c>doctor</c> answers with this until WP3 lands.
     /// </remarks>
     internal const int ExitNotImplemented = 3;
 
@@ -96,25 +95,25 @@ internal static class CliDispatcher
 
         switch (args[0])
         {
-            case "lsp":
-                return await LspStubServer.RunStdioAsync().ConfigureAwait(false);
+            case CliVerbs.Lsp:
+                return await LspAdapterServer.RunStdioAsync(args[1..]).ConfigureAwait(false);
 
-            case "mcp":
+            case CliVerbs.Mcp:
                 return await McpServerSetup.RunStdioAsync().ConfigureAwait(false);
 
-            case "doctor":
+            case CliVerbs.Doctor:
                 return await DoctorCommand.RunAsync(args[1..], fix: false).ConfigureAwait(false);
 
             // The same command with the download allowed (D43). A separate verb rather than only a
             // flag because "install it" is what a user wants to type, and a verb is what a README,
             // a CI step and a support answer can all name without explaining a flag first.
-            case "install":
+            case CliVerbs.Install:
                 return await DoctorCommand.RunAsync(args[1..], fix: true).ConfigureAwait(false);
 
             // Hidden on purpose: it is a test double the smoke test launches, not something a user
             // has any reason to type, so it is absent from UsageText.
-            case "fake-roslyn":
-                return FakeRoslynCommand.Run();
+            case CliVerbs.FakeRoslyn:
+                return await FakeRoslynCommand.RunAsync().ConfigureAwait(false);
 
             case "--version":
             case "-v":

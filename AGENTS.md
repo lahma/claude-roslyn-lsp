@@ -632,6 +632,13 @@ A `kill -9` of the shared Roslyn is answered again 3.2 s later on the LSP side a
 attached MCP side, neither of which launched a server of its own; stopping the host makes the attached
 engine the owner 2.7 s later. One Roslyn, 296 MB peak — where two of them are two of that.
 
+The same claim with two *published* binaries, which is what the plugin produces: `mcp` and `lsp`
+started as separate processes against **Quartz.NET** (30 projects) with one `CLAUDE_ROSLYN_LSP_HOME`
+and both answering give **one** language server at **369-374 MB**, five runs out of five and
+including a cold payload cache; with `CLAUDE_ROSLYN_LSP_SHARE=off`, **two** at **720-724 MB**
+(C63b). That check is a script rather than a test, because counting language-server processes is
+machine-wide and a developer box has several that belong to somebody else.
+
 Every fixture gets a row in [`tests/fixtures/MANIFEST.md`](tests/fixtures/MANIFEST.md) recording what
 it is, when it arrived, and whether the bytes came off the wire or were written by hand. JSON cannot
 carry comments, and a fixture whose provenance nobody recorded is a fixture nobody dares to

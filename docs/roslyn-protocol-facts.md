@@ -380,6 +380,16 @@ is the shape of the two processes a Claude Code plugin actually starts.
   of a freshly launched one **2.7 s** later. One Roslyn, **296 MB** peak working set under the
   workstation GC (D79) — against two of that for the same session before this work package, which is
   what the number is there to compare against.
+- **C63b** **The same thing with two published binaries against Quartz.NET (30 projects), which is
+  what the plugin actually does.** `claude-roslyn-lsp mcp` and `claude-roslyn-lsp lsp` started as
+  separate processes with the same `CLAUDE_ROSLYN_LSP_HOME` and the same solution, each driven over
+  its own stdio, both answering (`getWorkspaceStatus` reports 30/30 projects, `textDocument/
+  documentSymbol` answers): **one** `Microsoft.CodeAnalysis.LanguageServer` process at **369-374 MB**,
+  five runs out of five, including one with a cold payload cache where the second process attached
+  while the first was still downloading. With `CLAUDE_ROSLYN_LSP_SHARE=off` the same script produced
+  **two** processes at **720-724 MB**. The count is machine-wide — it is the set of language-server
+  processes that appeared while the pair was running — so it is a floor on the saving rather than a
+  controlled measurement.
 - **C64** **`--pipe`'s naming rules apply to this product's own pipe too.** The shared host uses
   `NamedPipeServerStream(name, InOut, MaxAllowedServerInstances, Byte, Asynchronous |
   CurrentUserOnly)` and the attaching side a `NamedPipeClientStream` with `CurrentUserOnly` — the

@@ -32,11 +32,11 @@ namespace ClaudeRoslynLsp.Tests;
 /// one that never existed at all.
 /// </para>
 /// <para>
-/// <b>What is still under construction.</b> WP5 landed ten tools; the skill is WP6's work package
-/// and still says outright that this release answers the protocol handshakes and nothing else. So
-/// the "every tool is named" direction skips while the skill names no tool at all — see
-/// <see cref="EveryToolIsNamedInTheSkill"/> for why that is the same rule the WP1 builder wrote,
-/// stated from the side that has not landed yet.
+/// <b>Both directions are now sharp.</b> The scaffold's version of this file let the "every tool is
+/// named" direction pass while the skill named no tool at all, because the skill was a placeholder
+/// that said so in as many words. WP6 wrote the playbook and the escape went with it: naming no tool
+/// is no longer a state this repository has, so a skill that stopped naming them would be a
+/// regression rather than a stage — see <see cref="EveryToolIsNamedInTheSkill"/>.
 /// </para>
 /// </remarks>
 public class AgentSkillTests
@@ -82,33 +82,34 @@ public class AgentSkillTests
     }
 
     /// <summary>
-    /// Every tool the inventory has is named somewhere in the skill — once the skill claims to
-    /// describe any of them.
+    /// Every tool the inventory has is named somewhere in the skill.
     /// </summary>
     /// <remarks>
-    /// <b>The vacuity rule, and why it moved.</b> The WP1 builder wrote this direction to be vacuous
-    /// while the inventory was empty and to become real "with the first tool". WP5 landed ten tools
-    /// and no skill: the skill file still says, in as many words, that this release answers the
-    /// protocol handshakes and nothing else, and it deliberately names no tool. Writing the playbook
-    /// is WP6's work package, not this one's. So the vacuity condition moved from "the inventory is
-    /// empty" to "the skill names no tool at all" — which is the same claim about the same state of
-    /// affairs, expressed from the side that is actually still under construction. The direction is
-    /// as sharp as it ever was in the case that matters: a skill that names <em>one</em> tool has to
-    /// name them all, so WP6 cannot ship a playbook that quietly drops half the surface. And the
-    /// other direction — a name the skill uses that no tool answers to — has been sharp throughout
-    /// and is now sharper, because the verb set it scans with comes from a real inventory.
+    /// <para>
+    /// <b>The vacuity rule, and where it ended up.</b> The WP1 builder wrote this direction to be
+    /// vacuous while the inventory was empty and to become real "with the first tool"; WP5 landed
+    /// ten tools and no skill, so it was restated as "vacuous while the skill names no tool" — the
+    /// same claim, from the side that had not landed. WP6 landed the skill, and with the playbook
+    /// written there is no state left for the escape to describe. It is gone, and the assertion
+    /// below is what replaces it: a skill that names nothing now fails here rather than passing
+    /// quietly, which is the whole point of having had the rule in the first place.
+    /// </para>
+    /// <para>
+    /// A tool the skill leaves out is a tool the workflow it teaches silently drops. Nothing loads
+    /// this file at build time, so without this direction a tool could be added, documented in
+    /// AGENTS.md and shipped, and the one document that tells a model when to reach for it would
+    /// never mention it.
+    /// </para>
     /// </remarks>
     [Fact]
     public void EveryToolIsNamedInTheSkill()
     {
         var referenced = ReferencedToolNames();
 
-        if (referenced.Count == 0)
-        {
-            // The skill is still the "under construction" placeholder. It says so itself, and
-            // EveryToolTheSkillNamesExists is what keeps that honest.
-            return;
-        }
+        Assert.True(
+            referenced.Count > 0,
+            $"{SkillDirectory}/SKILL.md names no tool at all. It is the playbook for ten of them; a version "
+            + "of it that names none teaches nothing and would pass every other check here.");
 
         var missing = ToolNames()
             .Where(name => !referenced.Contains(name))
@@ -151,6 +152,13 @@ public class AgentSkillTests
             $"description is {description.Length} characters; the spec allows 1024.");
 
         Assert.Equal("MIT", Value(frontmatter, "license"));
+
+        // Not required by the spec, and required here: this skill teaches tools that only exist
+        // when the adapter is attached, which is a precondition no other field carries. A reader
+        // who has the skill and not the server needs to be told that in the file itself.
+        Assert.False(
+            string.IsNullOrWhiteSpace(Value(frontmatter, "compatibility")),
+            "SKILL.md has no 'compatibility' line saying what has to be attached for its guidance to apply.");
     }
 
     /// <summary>

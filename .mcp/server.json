@@ -102,6 +102,12 @@
           "isSecret": false
         },
         {
+          "name": "CLAUDE_ROSLYN_LSP_SHARE",
+          "description": "Whether the lsp and mcp servers share one Roslyn per solution, on by default. Off makes each of them launch a Roslyn of its own, which loads the solution twice and pays for it twice in memory. getWorkspaceStatus reports engine: owned or attached, so which of the two happened is never a guess.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
           "name": "CLAUDE_ROSLYN_LSP_GC",
           "description": "Which garbage collector the Roslyn child runs with: workstation (the default) or server. Workstation peaks at about 577 MB on a 239-project solution where server peaks at about 2 GB, and costs about 8 seconds of load time. An explicit DOTNET_gcServer in the environment wins over this.",
           "isRequired": false,

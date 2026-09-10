@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
 using ClaudeRoslynLsp.Adapter;
+using ClaudeRoslynLsp.Adapter.Sharing;
 using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Protocol;
 
@@ -52,18 +53,8 @@ namespace ClaudeRoslynLsp.Mcp.Engine;
 /// progress streams go to stderr.
 /// </para>
 /// </remarks>
-internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel, IAsyncDisposable
+internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel, ISharedEngineHost, IAsyncDisposable
 {
-    /// <summary>How long a configuration change waits for Roslyn to ask for the sections again.</summary>
-    /// <remarks>
-    /// Roslyn answers <c>workspace/didChangeConfiguration</c> by issuing a fresh
-    /// <c>workspace/configuration</c> request, and only once that has been answered is the new value
-    /// in effect (D77). Two seconds is far more than the round trip costs and is a ceiling rather
-    /// than a wait: a build that stopped re-pulling would make every diagnostic call two seconds
-    /// slower, which is worth noticing but not worth failing over.
-    /// </remarks>
-    internal static readonly TimeSpan ConfigurationRoundTrip = TimeSpan.FromSeconds(2);
-
     /// <summary>How long <c>shutdown</c> waits for Roslyn to acknowledge before the process is closed.</summary>
     internal static readonly TimeSpan ShutdownWait = TimeSpan.FromSeconds(5);
 
@@ -129,20 +120,6 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     /// </remarks>
     internal static readonly TimeSpan ScopeConfirmBudget = TimeSpan.FromSeconds(8);
 
-    /// <summary>
-    /// The <c>workspace/didChangeConfiguration</c> notification, written out rather than serialised.
-    /// </summary>
-    /// <remarks>
-    /// Its <c>settings</c> object is empty on purpose and always the same bytes: Roslyn never reads
-    /// what a client pushes, it treats the notification as "ask me again" and answers itself with a
-    /// fresh <c>workspace/configuration</c> request that the responder answers (C46, D48). So the
-    /// payload that matters is the override, not this — and a constant is both cheaper and immune to
-    /// the modelling accident that cost a live run: a default <see cref="JsonElement"/> has
-    /// <see cref="JsonValueKind.Undefined"/> and throws when it is written.
-    /// </remarks>
-    private static readonly byte[] DidChangeConfiguration =
-        JsonRpcErrors.Notification("workspace/didChangeConfiguration", """{"settings":{}}"""u8);
-
     private readonly Lock _stateLock = new();
     private readonly IRoslynConnectionFactory _factory;
     private readonly ClaudeRoslynLspOptions _options;
@@ -174,9 +151,12 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     private CompilerDiagnosticsScope? _analyzerScope;
     private WorkspaceDiagnosticReport? _lastWorkspaceReport;
     private TaskCompletionSource _diagnosticsRefreshed = Completion();
+    private TaskCompletionSource<byte[]> _handshake = Completion<byte[]>();
     private bool _scopeChangedSincePull;
     private bool? _organizeImports;
     private int? _backendProcessId;
+    private bool _attached;
+    private int? _hostProcessId;
     private bool _stopping;
     private int _generation;
 
@@ -266,14 +246,20 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     internal ReadinessGate Gate => _gate;
 
     /// <summary>
-    /// What <c>getWorkspaceStatus</c> reports for <c>engine</c>: this process launched its own.
+    /// What <c>getWorkspaceStatus</c> reports for <c>engine</c> when this process launched its own.
+    /// </summary>
+    internal const string Engine = "owned";
+
+    /// <summary>
+    /// What it reports when this process is using another one's Roslyn over the shared pipe (D23).
     /// </summary>
     /// <remarks>
-    /// The plan reserves <c>attached</c> for the shared engine (D23). Until that lands, running both
-    /// servers against one solution loads it twice, and this is the value that makes that visible in
-    /// an answer rather than only in the README.
+    /// The distinction is worth an answer rather than only a log line: it is how a user finds out
+    /// that the <c>lsp</c> and <c>mcp</c> servers in one session are one Roslyn instead of two, and
+    /// <c>hostProcessId</c> beside it names which process to look at when the memory question comes
+    /// up.
     /// </remarks>
-    internal const string Engine = "owned";
+    internal const string AttachedEngine = "attached";
 
     /// <summary>The workspace root as a <c>file:</c> URI.</summary>
     private string RootUri => new Uri(_workspaceRoot).AbsoluteUri;
@@ -1036,6 +1022,53 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         CancellationToken cancellationToken) => RequestAsync(method, rawParams, cancellationToken);
 
     // ---------------------------------------------------------------------------------------------
+    // ISharedEngineHost - what an attached claude-roslyn-lsp process is allowed to do (D87)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <inheritdoc />
+    ReadinessGate ISharedEngineHost.Gate => _gate;
+
+    /// <inheritdoc />
+    DocumentMirror ISharedEngineHost.Documents => _mirror;
+
+    /// <inheritdoc />
+    public event Action<byte[]>? BackendMessage;
+
+    /// <inheritdoc />
+    async Task<byte[]> ISharedEngineHost.BackendInitializeResultAsync(CancellationToken cancellationToken)
+    {
+        TaskCompletionSource<byte[]> handshake;
+
+        lock (_stateLock)
+        {
+            handshake = _handshake;
+        }
+
+        return await handshake.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    async Task<byte[]> ISharedEngineHost.ForwardAsync(
+        byte[] request,
+        byte[] replyIdToken,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(replyIdToken);
+
+        return await SharedForwarding
+            .ForwardAsync(request, replyIdToken, RequestAsync, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    void ISharedEngineHost.NotifyBackend(ReadOnlyMemory<byte> body) => Notify(body);
+
+    /// <inheritdoc />
+    Task ISharedEngineHost.SetOptionAsync(string section, byte[] rawValue, CancellationToken cancellationToken) =>
+        ConfigurationRoundTrip.ApplyAsync(_configuration, section, rawValue, Notify, _time, _logger, cancellationToken);
+
+    // ---------------------------------------------------------------------------------------------
     // Backend lifecycle
     // ---------------------------------------------------------------------------------------------
 
@@ -1067,6 +1100,11 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
 
             _server = server;
             _serverPump = Task.Run(() => PumpServerAsync(server), CancellationToken.None);
+
+            // Which of the two backends this is decides how a configuration change is routed (D90)
+            // and what getWorkspaceStatus reports for `engine` (D23).
+            _attached = server.Connection.Attached;
+            _hostProcessId = server.Connection.HostProcessId;
         }
 
         var budget = TimeSpan.FromSeconds(_options.ReadyTimeoutSeconds);
@@ -1181,6 +1219,11 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         // progress, projectInitializationComplete, the prompts a headless client cannot answer — is
         // answered here by the same table (D44's argument, minus the peer to forward to).
         _serverHandler.Handle(body, info, answer: message => server.Post(message), forward: static _ => { });
+
+        // The shared host, when there is one, filters its fan-out out of this stream (D89). Raised
+        // after the table has run, so a request Roslyn is waiting on has already been answered by the
+        // one process that owes it an answer.
+        BackendMessage?.Invoke(body);
     }
 
     /// <summary>Reads the two notifications that say how the load is going.</summary>
@@ -1267,6 +1310,11 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
                 lock (_stateLock)
                 {
                     _opened = Completion();
+
+                    // A relaunched Roslyn is a different process with a different _roslyn_processId
+                    // (C45), so a client attaching from now on must be told about the new one rather
+                    // than about the corpse.
+                    _handshake = Completion<byte[]>();
                 }
 
                 Log.Relaunching(_logger, attempt, RoslynSupervisor.MaxRestarts);
@@ -1374,43 +1422,71 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     }
 
     /// <summary>
-    /// Changes one Roslyn setting and waits for the pull that makes it real (D77).
+    /// Changes one Roslyn setting and waits for the pull that makes it real (D77, D90).
     /// </summary>
+    /// <remarks>
+    /// Two routes, because there are two things this engine can be talking to. Over its own Roslyn it
+    /// sets the override in its own responder and tells Roslyn to re-read. Attached to another
+    /// process's Roslyn it can do neither: Roslyn asks the <em>host</em> for configuration, so an
+    /// override set here would be a value nobody ever reads and the call that needed it —
+    /// <c>getDiagnostics scope: "solution"</c> without a <c>fullSolution</c> compiler scope (C14) —
+    /// would answer emptily and successfully. So it asks the host to do it, and waits for the host's
+    /// answer, which arrives only once the host's own round trip has come back.
+    /// </remarks>
     private async Task ApplyConfigurationAsync(
         string section,
         byte[] rawValue,
         CancellationToken cancellationToken)
     {
-        _configuration.SetOverride(section, rawValue);
+        bool attached;
 
-        var answered = Completion();
-
-        void OnAnswered(IReadOnlyList<string> sections)
+        lock (_stateLock)
         {
-            if (sections.Contains(section, StringComparer.Ordinal))
-            {
-                answered.TrySetResult();
-            }
+            attached = _attached;
         }
 
-        _configuration.Answered += OnAnswered;
+        if (!attached)
+        {
+            await ConfigurationRoundTrip
+                .ApplyAsync(_configuration, section, rawValue, Notify, _time, _logger, cancellationToken)
+                .ConfigureAwait(false);
+
+            return;
+        }
 
         try
         {
-            Notify(DidChangeConfiguration);
+            await RequestAsync(
+                    SharedRoslynHost.SetOptionMethod,
+                    BuildSetOption(section, rawValue),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The same trade the direct route makes: a setting that did not take is a slower or a
+            // narrower answer, not a failed call, and the tool above still has something to say.
+            Log.SharedOptionFailed(_logger, section, exception.Message);
+        }
+    }
 
-            await answered.Task.WaitAsync(ConfigurationRoundTrip, _time, cancellationToken).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
+    /// <summary>Renders the shared host's <c>setOption</c> parameters.</summary>
+    /// <param name="section">The exact section name.</param>
+    /// <param name="rawValue">Its raw JSON value.</param>
+    private static byte[] BuildSetOption(string section, byte[] rawValue)
+    {
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>(section.Length + rawValue.Length + 32);
+
+        using (var writer = new Utf8JsonWriter(buffer))
         {
-            // The override stands whatever happened; a Roslyn that did not re-pull is a slower
-            // answer, not a wrong one, and saying so once is more useful than failing the call.
-            Log.ConfigurationNotConfirmed(_logger, section, ConfigurationRoundTrip.TotalSeconds);
+            writer.WriteStartObject();
+            writer.WriteString("section"u8, section);
+            writer.WritePropertyName("value"u8);
+            writer.WriteRawValue(rawValue, skipInputValidation: false);
+            writer.WriteEndObject();
         }
-        finally
-        {
-            _configuration.Answered -= OnAnswered;
-        }
+
+        return buffer.WrittenSpan.ToArray();
     }
 
     /// <summary>Re-pushes the settings a tool changed, for a backend that has never heard of them.</summary>
@@ -1420,7 +1496,10 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
 
         lock (_stateLock)
         {
-            needed = _compilerScope is not null || _analyzerScope is not null || _organizeImports is not null;
+            // An attached engine holds no overrides of its own — the host does, and the host's
+            // Roslyn is the one that was relaunched, so the host re-applies them.
+            needed = !_attached
+                     && (_compilerScope is not null || _analyzerScope is not null || _organizeImports is not null);
         }
 
         if (!needed)
@@ -1428,7 +1507,7 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             return;
         }
 
-        server.Post(DidChangeConfiguration);
+        server.Post(ConfigurationRoundTrip.Notification);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1478,10 +1557,14 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         var identity = _identity?.Invoke() ?? default;
 
         int? processId;
+        bool attached;
+        int? hostProcessId;
 
         lock (_stateLock)
         {
             processId = _backendProcessId ?? identity.ProcessId;
+            attached = _attached;
+            hostProcessId = _hostProcessId;
         }
 
         return new WorkspaceState(
@@ -1502,7 +1585,8 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
                     + "Call getWorkspaceStatus again, or retry the tool in a few seconds.",
                 _ => null,
             },
-            Engine);
+            attached ? AttachedEngine : Engine,
+            hostProcessId);
     }
 
     /// <summary>The solution or project this session opened, once discovery has run.</summary>
@@ -1575,6 +1659,21 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     /// <summary>Remembers what the backend said it was, including C45's real process id.</summary>
     private void RecordBackendIdentity(JsonElement result)
     {
+        // Kept whole, because a process that goes on to host the shared engine answers an attached
+        // client's initialize out of exactly these bytes (D88) rather than authoring a second
+        // capability document that would drift from this one.
+        TaskCompletionSource<byte[]> handshake;
+
+        lock (_stateLock)
+        {
+            handshake = _handshake;
+        }
+
+        handshake.TrySetResult(
+            result.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+                ? "{}"u8.ToArray()
+                : System.Text.Encoding.UTF8.GetBytes(result.GetRawText()));
+
         if (result.ValueKind != JsonValueKind.Object)
         {
             return;
@@ -1780,9 +1879,9 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         [LoggerMessage(
             EventId = 5108,
             Level = LogLevel.Warning,
-            Message = "Roslyn did not re-read {Section} within {Seconds:0} s of being told the configuration " +
-                      "changed; the answer stands but the next pull may use the previous value.")]
-        internal static partial void ConfigurationNotConfirmed(ILogger logger, string section, double seconds);
+            Message = "The shared host would not set {Section} ({Reason}); the answer stands but it may " +
+                      "be narrower than the caller asked for.")]
+        internal static partial void SharedOptionFailed(ILogger logger, string section, string reason);
 
         [LoggerMessage(
             EventId = 5109,

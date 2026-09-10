@@ -177,6 +177,20 @@ internal sealed record ClaudeRoslynLspOptions
     internal bool FileWatcher { get; init; } = true;
 
     /// <summary>
+    /// <c>CLAUDE_ROSLYN_LSP_SHARE</c> — whether the <c>lsp</c> and <c>mcp</c> servers share one
+    /// Roslyn per solution (D23). On by default.
+    /// </summary>
+    /// <remarks>
+    /// Off means what every version before this one did: each verb launches a Roslyn of its own, so a
+    /// session running both loads the solution twice and pays for it twice in memory. It is a knob
+    /// rather than a fixed behaviour because sharing puts a named pipe between two processes, and a
+    /// machine where that is refused — a hardened container, a policy that forbids pipes — should
+    /// degrade to something slower rather than to something broken. <c>getWorkspaceStatus</c> reports
+    /// which of the two happened, so it is never a guess.
+    /// </remarks>
+    internal bool Share { get; init; } = true;
+
+    /// <summary>
     /// <c>CLAUDE_ROSLYN_LSP_GC</c> — which garbage collector the Roslyn child runs with:
     /// <c>workstation</c> (the default) or <c>server</c>.
     /// </summary>
@@ -250,6 +264,7 @@ internal sealed record ClaudeRoslynLspOptions
             DiagnosticMinSeverity = ReadConfigured(read, "CLAUDE_ROSLYN_LSP_DIAGNOSTIC_MIN_SEVERITY"),
             WorkspaceDiagnostics = ReadConfigured(read, "CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS"),
             FileWatcher = ReadBoolean(read, "CLAUDE_ROSLYN_LSP_FILE_WATCHER", defaultValue: true),
+            Share = ReadBoolean(read, "CLAUDE_ROSLYN_LSP_SHARE", defaultValue: true),
             GarbageCollector = ReadConfigured(read, "CLAUDE_ROSLYN_LSP_GC"),
             LogLevel = ReadLogLevel(read, "CLAUDE_ROSLYN_LSP_LOG_LEVEL") ?? DefaultLogLevel,
             RoslynLogLevel = ReadLogLevel(read, "CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL"),

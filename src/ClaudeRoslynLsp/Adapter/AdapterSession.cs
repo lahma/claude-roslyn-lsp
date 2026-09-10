@@ -1,5 +1,6 @@
 using System.Text.Json;
 
+using ClaudeRoslynLsp.Adapter.Sharing;
 using ClaudeRoslynLsp.Cli;
 using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Protocol;
@@ -38,7 +39,7 @@ namespace ClaudeRoslynLsp.Adapter;
 /// here.
 /// </para>
 /// </remarks>
-internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
+internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHost, IAsyncDisposable
 {
     /// <summary>How long <c>shutdown</c> waits for Roslyn to answer before answering the client anyway.</summary>
     /// <remarks>
@@ -72,6 +73,9 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
     private readonly DiagnosticsBridge? _diagnostics;
     private readonly FileWatchBridge? _watching;
     private readonly bool _watchFiles;
+
+    private TaskCompletionSource<byte[]> _handshake =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private ServerEndpoint? _server;
     private Task? _backendTask;
@@ -818,6 +822,11 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
             info,
             answer: message => server.Post(message),
             forward: outbound => ForwardServerMessageToClient(outbound, info.Kind == LspMessageKind.Request));
+
+        // The shared host, when this process is one, filters its fan-out out of this stream (D89).
+        // Raised after the table has run, so a request Roslyn is waiting on has already been answered
+        // by the one process that owes it an answer.
+        BackendMessage?.Invoke(body);
     }
 
     /// <summary>Routes an answer from Roslyn back to whoever asked the question.</summary>
@@ -964,6 +973,13 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
             // would be empty and successful (C27), which is the failure the gate exists to prevent.
             _gate.MarkRestarting();
             _diagnostics?.Reset();
+
+            lock (_stateLock)
+            {
+                // A relaunched Roslyn is a different process with a different _roslyn_processId
+                // (C45), so a client attaching from now on must be told about the new one.
+                _handshake = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
         }
 
         var pending = _serverBound.DrainAll();
@@ -1194,6 +1210,21 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
     /// <summary>Reports what the backend said it was, which is the first thing a bug report needs.</summary>
     private void LogBackendIdentity(JsonElement result)
     {
+        // Kept whole, because a process that goes on to host the shared engine answers an attached
+        // client's initialize out of exactly these bytes (D88) rather than authoring a second
+        // capability document that would drift from this one.
+        TaskCompletionSource<byte[]> handshake;
+
+        lock (_stateLock)
+        {
+            handshake = _handshake;
+        }
+
+        handshake.TrySetResult(
+            result.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+                ? "{}"u8.ToArray()
+                : System.Text.Encoding.UTF8.GetBytes(result.GetRawText()));
+
         var name = "(unnamed)";
         var version = string.Empty;
 
@@ -1270,6 +1301,63 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
 
         return await completion.Task.ConfigureAwait(false);
     }
+
+    // -----------------------------------------------------------------------------------------
+    // ISharedEngineHost - what an attached claude-roslyn-lsp process is allowed to do (D87)
+    // -----------------------------------------------------------------------------------------
+
+    /// <inheritdoc />
+    ReadinessGate ISharedEngineHost.Gate => _gate;
+
+    /// <inheritdoc />
+    DocumentMirror ISharedEngineHost.Documents => _mirror;
+
+    /// <inheritdoc />
+    public event Action<byte[]>? BackendMessage;
+
+    /// <inheritdoc />
+    async Task<byte[]> ISharedEngineHost.BackendInitializeResultAsync(CancellationToken cancellationToken)
+    {
+        TaskCompletionSource<byte[]> handshake;
+
+        lock (_stateLock)
+        {
+            handshake = _handshake;
+        }
+
+        return await handshake.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    Task<byte[]> ISharedEngineHost.ForwardAsync(
+        byte[] request,
+        byte[] replyIdToken,
+        CancellationToken cancellationToken) =>
+        SharedForwarding.ForwardAsync(
+            request,
+            replyIdToken,
+            ((IAdapterChannel) this).AskAsync,
+            cancellationToken);
+
+    /// <inheritdoc />
+    void ISharedEngineHost.NotifyBackend(ReadOnlyMemory<byte> body)
+    {
+        if (Server is { } server && _gate.NotificationsAllowed)
+        {
+            server.Post(body);
+        }
+    }
+
+    /// <inheritdoc />
+    Task ISharedEngineHost.SetOptionAsync(string section, byte[] rawValue, CancellationToken cancellationToken) =>
+        ConfigurationRoundTrip.ApplyAsync(
+            _configuration,
+            section,
+            rawValue,
+            ((IAdapterChannel) this).NotifyServer,
+            _time,
+            _logger,
+            cancellationToken);
 
     /// <summary>The <c>window/logMessage</c> severities, so the numbers are not bare.</summary>
     private static class LogMessageType

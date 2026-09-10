@@ -64,6 +64,23 @@ internal sealed class RoslynConnection : IAsyncDisposable
     /// <summary>A short phrase naming this backend, for logs.</summary>
     internal string Description { get; }
 
+    /// <summary>
+    /// Whether the thing on the other end is another <c>claude-roslyn-lsp</c> process's shared Roslyn
+    /// rather than a Roslyn this process launched (D23).
+    /// </summary>
+    /// <remarks>
+    /// Two things read it. <c>getWorkspaceStatus</c> reports <c>engine: "attached"</c>, which is what
+    /// makes "there is one Roslyn, not two" observable in an answer rather than only in a log. And
+    /// the MCP engine routes a configuration change through
+    /// <c>claude-roslyn-lsp/setOption</c> instead of <c>workspace/didChangeConfiguration</c>, because
+    /// Roslyn asks the <em>host</em> for configuration and an override set on this side would never
+    /// be seen (D90).
+    /// </remarks>
+    internal bool Attached { get; init; }
+
+    /// <summary>The process hosting the shared Roslyn, when this connection is attached to one.</summary>
+    internal int? HostProcessId { get; init; }
+
     /// <inheritdoc />
     public ValueTask DisposeAsync() =>
         Interlocked.Exchange(ref _disposed, 1) == 0 ? _dispose() : ValueTask.CompletedTask;

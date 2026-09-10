@@ -60,6 +60,7 @@ public class ConfigurationTests
         { "CLAUDE_ROSLYN_LSP_DIAGNOSTIC_MIN_SEVERITY", "error" },
         { "CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS", "errors" },
         { "CLAUDE_ROSLYN_LSP_FILE_WATCHER", "0" },
+        { "CLAUDE_ROSLYN_LSP_SHARE", "0" },
         { "CLAUDE_ROSLYN_LSP_GC", "server" },
         { "CLAUDE_ROSLYN_LSP_LOG_LEVEL", "Trace" },
         { "CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL", "Trace" },
@@ -89,6 +90,7 @@ public class ConfigurationTests
         Assert.False(options.Offline);
         Assert.True(options.Diagnostics);
         Assert.True(options.FileWatcher);
+        Assert.True(options.Share);
         Assert.Equal(LogLevel.Information, options.LogLevel);
         Assert.Equal(120, options.ReadyTimeoutSeconds);
     }

@@ -1,3 +1,4 @@
+using ClaudeRoslynLsp.Adapter.Sharing;
 using ClaudeRoslynLsp.Cli;
 using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Roslyn;
@@ -73,11 +74,16 @@ internal static partial class LspAdapterServer
         using var loggerFactory = CliRuntime.CreateLoggerFactory(options.LogLevel);
         var logger = loggerFactory.CreateLogger("ClaudeRoslynLsp.Adapter");
 
+        // Discovery runs once and both callers read the same answer: the opener needs what to
+        // open, and the shared engine needs the path to derive its session key from (D85). Two walks
+        // could also disagree, if a solution appeared between them.
+        var workspace = new Lazy<WorkspaceSelection>(() => SelectWorkspace(options, logger));
+
         // Built before the session so the session can hand it a way to talk to the client: an
         // acquisition that downloads 70 MB has to be able to say so, and the only channel a client
         // renders is window/logMessage.
         var messages = new PendingClientMessages();
-        var factory = SelectFactory(smoke, options, logger, messages.Send);
+        var factory = SelectFactory(smoke, options, logger, messages.Send, workspace);
 
         Log.Starting(logger, ServerVersion.Name, ServerVersion.Value, factory.Description);
 
@@ -89,7 +95,11 @@ internal static partial class LspAdapterServer
             () => options.Solution,
             TimeProvider.System,
             logger,
-            () => SelectWorkspace(options, logger));
+            () => workspace.Value);
+
+        // The seam runs both ways by construction: the session takes the factory, and the factory
+        // needs something to host with. Claimed here, before anything can connect (D92).
+        (factory as SharingRoslynFactory)?.Own(session);
 
         messages.Attach(session);
 
@@ -161,11 +171,13 @@ internal static partial class LspAdapterServer
     /// <param name="options">The environment configuration.</param>
     /// <param name="logger">The stderr log.</param>
     /// <param name="tellClient">Sends a message to the client, once there is a session to send it through.</param>
+    /// <param name="workspace">What is being opened, for the shared engine's session key (D85).</param>
     private static IRoslynConnectionFactory SelectFactory(
         bool smoke,
         ClaudeRoslynLspOptions options,
         ILogger logger,
-        Action<int, string> tellClient)
+        Action<int, string> tellClient,
+        Lazy<WorkspaceSelection> workspace)
     {
         if (smoke)
         {
@@ -180,7 +192,20 @@ internal static partial class LspAdapterServer
             return new ChildProcessFakeRoslynFactory(logger);
         }
 
-        return new LaunchedRoslynFactory(options, AdapterPaths.Resolve(options), logger, tellClient);
+        var paths = AdapterPaths.Resolve(options);
+        var launcher = new LaunchedRoslynFactory(options, paths, logger, tellClient);
+
+        // Deliberately not wrapped around either fake. A scripted backend is per process by
+        // definition, and sharing one between two of them would prove nothing that the real path
+        // does not — while making SmokeTest depend on a named pipe it has no reason to need.
+        return options.Share
+            ? new SharingRoslynFactory(
+                launcher,
+                SessionRegistry.ForHome(paths.Home, logger),
+                () => workspace.Value.SolutionPath,
+                TimeProvider.System,
+                logger)
+            : launcher;
     }
 
     /// <summary>

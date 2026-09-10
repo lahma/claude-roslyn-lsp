@@ -1,4 +1,5 @@
 using ClaudeRoslynLsp.Adapter;
+using ClaudeRoslynLsp.Adapter.Sharing;
 using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Mcp.Engine;
 using ClaudeRoslynLsp.Roslyn;
@@ -94,18 +95,38 @@ internal static partial class McpBackendSelection
                 static () => new RoslynBackendIdentity("scripted-fake", null));
         }
 
-        var factory = new LaunchedRoslynFactory(options, AdapterPaths.Resolve(options), logger);
+        var paths = AdapterPaths.Resolve(options);
+        var launcher = new LaunchedRoslynFactory(options, paths, logger);
 
-        return new OwnedRoslynEngine(
-            factory,
+        // Discovery runs once and both callers read the same answer: the opener needs what to open,
+        // and the shared engine needs the path its session key is derived from (D85).
+        var workspace = new Lazy<WorkspaceSelection>(() => SelectWorkspace(options, logger));
+
+        var sharing = options.Share
+            ? new SharingRoslynFactory(
+                launcher,
+                SessionRegistry.ForHome(paths.Home, logger),
+                () => workspace.Value.SolutionPath,
+                TimeProvider.System,
+                logger)
+            : null;
+
+        var engine = new OwnedRoslynEngine(
+            sharing ?? (IRoslynConnectionFactory) launcher,
             options,
-            () => SelectWorkspace(options, logger),
+            () => workspace.Value,
             root,
             TimeProvider.System,
             logger,
             () => new RoslynBackendIdentity(
-                factory.Resolution?.Version ?? RoslynServerManifest.Version,
-                factory.ProcessId));
+                launcher.Resolution?.Version ?? RoslynServerManifest.Version,
+                launcher.ProcessId));
+
+        // The seam runs both ways by construction: the engine takes the factory, and the factory
+        // needs something to host with. Claimed here, before Start() can connect (D92).
+        sharing?.Own(engine);
+
+        return engine;
     }
 
     /// <summary>

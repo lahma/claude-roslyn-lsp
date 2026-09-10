@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
+using ClaudeRoslynLsp.Adapter.Sharing;
 using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Roslyn;
 
@@ -112,6 +113,20 @@ internal static class DoctorCommand
             options.Solution,
             options.SolutionVariable);
 
+        // The shared-engine registry (D94). Reported always, and tidied only by the verb whose whole
+        // job is to change things: a diagnostic that deletes files nobody asked it to is a diagnostic
+        // people stop running.
+        var registry = SessionRegistry.ForHome(paths.Home, logger);
+        var sessions = registry.List();
+
+        if (fix)
+        {
+            foreach (var stale in sessions.Where(static session => !session.Usable))
+            {
+                registry.Delete(stale.Key);
+            }
+        }
+
         RoslynHandshakeResult? handshake = null;
 
         if (resolution.IsResolved && (host.IsUsable || resolution.LaunchKind == RoslynLaunchKind.Native))
@@ -136,6 +151,8 @@ internal static class DoctorCommand
             Locator = locator,
             Resolution = resolution,
             Solution = solution,
+            Sessions = sessions,
+            SessionsDirectory = registry.Directory_,
             Integration = IntegrationState.Read(),
             Handshake = handshake,
             Fix = fix,
@@ -238,6 +255,38 @@ internal static class DoctorCommand
         foreach (var project in report.Solution.ProjectPaths)
         {
             Item(text, "project", project);
+        }
+
+        text.AppendLine();
+
+        Section(text, "Shared engines");
+        Item(text, "sharing", report.Options.Share ? "on" : "off (CLAUDE_ROSLYN_LSP_SHARE)");
+        Item(text, "sessions", report.SessionsDirectory);
+
+        if (report.Sessions.Count == 0)
+        {
+            Item(text, "state", "no claude-roslyn-lsp process is hosting a Roslyn for any solution");
+        }
+
+        foreach (var session in report.Sessions)
+        {
+            Item(
+                text,
+                session.Usable ? "session *" : "session",
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{session.Key}  {DescribeSession(session)}"));
+        }
+
+        if (report.StaleSessions > 0)
+        {
+            Item(
+                text,
+                report.Fix ? "cleaned" : "hint",
+                report.Fix
+                    ? $"removed {report.StaleSessions} stale session file(s)"
+                    : $"{report.StaleSessions} stale session file(s); `{ServerVersion.Name} doctor --fix` "
+                      + "removes them (a process starting now removes them by itself, too)");
         }
 
         text.AppendLine();
@@ -407,6 +456,34 @@ internal static class DoctorCommand
             writer.WriteEndArray();
             writer.WriteEndObject();
 
+            writer.WriteStartObject("sharing");
+            writer.WriteBoolean("enabled", report.Options.Share);
+            writer.WriteString("sessionsDirectory", report.SessionsDirectory);
+            writer.WriteStartArray("sessions");
+
+            foreach (var session in report.Sessions)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("key", session.Key);
+                writer.WriteString("path", session.Path);
+                writer.WriteBoolean("usable", session.Usable);
+                writer.WriteString("verdict", session.Verdict);
+
+                if (session.Session is { } published)
+                {
+                    writer.WriteNumber("pid", published.ProcessId);
+                    writer.WriteString("version", published.Version);
+                    writer.WriteString("solution", published.Solution);
+                    writer.WriteString("pipeName", published.PipeName);
+                    writer.WriteString("startedAt", published.StartedAt.ToString("O", CultureInfo.InvariantCulture));
+                }
+
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+
             writer.WriteStartObject("claudeCode");
             writer.WriteString("settingsPath", report.Integration.SettingsPath);
             WriteNullableBoolean(writer, "enableLspTool", report.Integration.EnableLspTool);
@@ -474,6 +551,23 @@ internal static class DoctorCommand
         {
             writer.WriteBoolean(name, value.Value);
         }
+    }
+
+    /// <summary>One session file's line in the report: who, what, and how long ago.</summary>
+    /// <param name="session">The inspected session file.</param>
+    private static string DescribeSession(SharedSessionReport session)
+    {
+        if (session.Session is not { } published)
+        {
+            return session.Verdict;
+        }
+
+        var age = DateTimeOffset.UtcNow - published.StartedAt;
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{session.Verdict}, pid {published.ProcessId}, version {published.Version}, "
+            + $"started {age.TotalMinutes:0} min ago, {published.Solution}");
     }
 
     private static void Section(StringBuilder text, string title) =>
@@ -559,6 +653,12 @@ internal static class DoctorCommand
         internal required RoslynResolution Resolution { get; init; }
 
         internal required SolutionDiscoveryResult Solution { get; init; }
+
+        internal required IReadOnlyList<SharedSessionReport> Sessions { get; init; }
+
+        internal required string SessionsDirectory { get; init; }
+
+        internal int StaleSessions => Sessions.Count(static session => !session.Usable);
 
         internal required IntegrationState Integration { get; init; }
 

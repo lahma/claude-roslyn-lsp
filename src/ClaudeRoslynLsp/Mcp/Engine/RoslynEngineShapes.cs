@@ -463,9 +463,13 @@ internal sealed record WorkspaceProject(string Name, string Path, IReadOnlyList<
 /// <param name="WorkingSetBytes">That process's working set, because a loaded solution is a quarter of a gigabyte (C38).</param>
 /// <param name="Message">Why the workspace is not ready, when it is not.</param>
 /// <param name="Engine">
-/// How this process got its Roslyn: <c>owned</c> for one it launched itself. The shared engine (D23)
-/// reserves <c>attached</c>, and reporting the distinction is what makes "there are two Roslyn
-/// processes" observable rather than only documented.
+/// How this process got its Roslyn: <c>owned</c> for one it launched itself, <c>attached</c> for one
+/// another <c>claude-roslyn-lsp</c> process is hosting (D23). Reporting the distinction is what makes
+/// "there is one Roslyn, not two" observable in an answer rather than only in a log.
+/// </param>
+/// <param name="HostProcessId">
+/// The <c>claude-roslyn-lsp</c> process hosting the shared Roslyn, when this one is attached to it.
+/// Null for an owned engine, where the answer would be this process.
 /// </param>
 internal sealed record WorkspaceState(
     WorkspaceLoadStatus Status,
@@ -478,7 +482,8 @@ internal sealed record WorkspaceState(
     int? ProcessId = null,
     long? WorkingSetBytes = null,
     string? Message = null,
-    string? Engine = null)
+    string? Engine = null,
+    int? HostProcessId = null)
 {
     /// <summary>Whether the workspace will answer a question truthfully rather than emptily (C27).</summary>
     internal bool IsReady => Status == WorkspaceLoadStatus.Ready;

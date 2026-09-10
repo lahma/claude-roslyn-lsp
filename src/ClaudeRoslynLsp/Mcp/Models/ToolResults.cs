@@ -14,10 +14,14 @@ namespace ClaudeRoslynLsp.Mcp.Models;
 /// <param name="MemoryMegabytes">That process's working set.</param>
 /// <param name="Note">What to do next, when the answer is not a real one.</param>
 /// <param name="Engine">
-/// How this server got its Roslyn: <c>owned</c> when it launched one of its own. The plan reserves
-/// <c>attached</c> for the shared engine (D23), and until that lands the value is worth reporting
-/// precisely because it is always <c>owned</c> — a repository running both servers has two Roslyn
-/// processes and this is where that becomes visible rather than merely documented.
+/// How this server got its Roslyn: <c>owned</c> when it launched one of its own, <c>attached</c> when
+/// it is sharing the one another <c>claude-roslyn-lsp</c> process launched for the same solution
+/// (D23). A session running both the <c>lsp</c> and the <c>mcp</c> server answers <c>attached</c> from
+/// one of them, and that is where "one Roslyn, not two" stops being a paragraph in a README.
+/// </param>
+/// <param name="HostProcessId">
+/// The adapter process hosting the shared Roslyn, when this one is attached to it — the process to
+/// look at when the memory question comes up, since <c>processId</c> names Roslyn itself.
 /// </param>
 internal sealed record WorkspaceStatusResult(
     string Status,
@@ -30,7 +34,8 @@ internal sealed record WorkspaceStatusResult(
     int? ProcessId = null,
     int? MemoryMegabytes = null,
     string? Note = null,
-    string? Engine = null);
+    string? Engine = null,
+    int? HostProcessId = null);
 
 /// <summary>One project of the loaded workspace.</summary>
 /// <param name="Name">The project's name.</param>
@@ -297,7 +302,8 @@ internal static class NotReadyResults
             state.ProcessId,
             state.WorkingSetBytes is { } bytes ? (int) (bytes / 1024 / 1024) : null,
             ToolStatus.NoteFor(state),
-            state.Engine);
+            state.Engine,
+            state.HostProcessId);
 
     /// <inheritdoc cref="Workspace" />
     /// <param name="state">The workspace state.</param>

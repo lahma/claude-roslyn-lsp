@@ -1,0 +1,84 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>claude-roslyn-lsp</AssemblyName>
+    <RootNamespace>ClaudeRoslynLsp</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <EventSourceSupport>false</EventSourceSupport>
+    <MetadataUpdaterSupport>false</MetadataUpdaterSupport>
+    <StripSymbols>true</StripSymbols>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <!-- Required for IDE0005 (unnecessary usings) to run under EnforceCodeStyleInBuild;
+         CS1591 is silenced centrally. See https://github.com/dotnet/roslyn/issues/41640. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- D4: the NuGet channel is what the Claude Code plugin launches. `dotnet pack` produces a
+       framework-dependent .NET tool package, so the plugin's two `dnx claude-roslyn-lsp@{version}`
+       entries (one ending in `lsp`, one in `mcp`) run the same binary with no download step of
+       their own; the Native AOT binaries published to GitHub Releases are what every file-based
+       client (Copilot CLI, OpenCode, Neovim, Helix, Zed) points at. PackageType McpServer is what nuget.org filters on
+       to show the MCP tab and generate client configuration; PackAsTool already makes it a tool
+       package, so DotnetTool is deliberately NOT listed alongside it (the mcpserver template does
+       the same). The package id, the assembly name, the tool command and the plugin name are all
+       the same string here - `claude-roslyn-lsp` is unreserved on nuget.org. -->
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <PackageType>McpServer</PackageType>
+    <PackageId>claude-roslyn-lsp</PackageId>
+    <ToolCommandName>claude-roslyn-lsp</ToolCommandName>
+    <!-- The tool half is framework-dependent, so it must keep working on a runtime newer than the
+         one it was built against. -->
+    <RollForward>Major</RollForward>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>lsp;language-server;roslyn;csharp;dotnet;refactoring;claude-code;mcp;mcp-server;model-context-protocol;stdio</PackageTags>
+    <Description>Roslyn C# language server adapter for Claude Code and other agents. Runs as an LSP server (`claude-roslyn-lsp lsp`) that mediates Microsoft's roslyn-language-server so navigation and edit-time diagnostics work reliably, and as an MCP server (`claude-roslyn-lsp mcp`) that exposes semantic refactoring - rename, code actions, fix-all, formatting and on-demand diagnostics - to models that would otherwise reach for grep and sed. Pure BCL, Native AOT, no compiler packages of its own.</Description>
+  </PropertyGroup>
+
+  <!-- PackTool.targets packs $(PublishDir), so `dotnet pack` runs a publish of this project. Left
+       alone that publish would inherit PublishAot=true above and fail for want of a RuntimeIdentifier
+       (D8 keeps RIDs out of the csproj). The AOT publish always passes -r, so keying the property off
+       RuntimeIdentifier gives the release path AOT and the pack path a portable IL tool. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == ''">
+    <PublishAot>false</PublishAot>
+  </PropertyGroup>
+
+  <!-- The three analyzers below are what turn an AOT-hostile line of code (IL2026, IL3050) into a
+       build error under TreatWarningsAsErrors. The SDK derives them from PublishAot, so leaving
+       them implicit would switch them off for every RID-less build - which is every `dotnet build`,
+       every `dotnet test` and every IDE session. Stated explicitly, they no longer depend on it. -->
+  <PropertyGroup>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Packed into the package root as /.mcp/server.json, which is where nuget.org looks for the
+         MCP server manifest. Both files live at the repository root - one server manifest per
+         repository, and the same README.md the AOT archives ship - so they are referenced from
+         there rather than duplicated under src/. -->
+    <None Include="../../.mcp/server.json" Pack="true" PackagePath="/.mcp/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+  <!-- Deliberately absent (D8): RuntimeIdentifiers (would pull ILCompiler packs per RID on every
+       restore - the RID reaches publish via -r), PublishSingleFile (ignored under AOT) and
+       SelfContained (implied by PublishAot). -->
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ClaudeRoslynLsp.Tests" />
+  </ItemGroup>
+
+  <!-- The whole package budget for the product. No Microsoft.CodeAnalysis.*, ever (D1): the
+       compiler runs in the child process this adapter launches, never in this one. -->
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+  </ItemGroup>
+
+</Project>

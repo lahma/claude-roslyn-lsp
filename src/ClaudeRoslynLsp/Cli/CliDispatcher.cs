@@ -1,0 +1,137 @@
+using ClaudeRoslynLsp.Lsp;
+using ClaudeRoslynLsp.Mcp;
+
+namespace ClaudeRoslynLsp.Cli;
+
+/// <summary>
+/// Hand-rolled argv dispatch (D3). No <c>System.CommandLine</c>: the surface is four verbs and two
+/// flags, and the package budget is a hard constraint.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>No arguments is an error here</b>, unlike in the sibling MCP servers where a bare invocation
+/// means "serve". This binary is two servers in one, and a client that forgot the subcommand would
+/// otherwise be connected to the wrong protocol: an LSP client would receive newline-delimited MCP
+/// JSON with no <c>Content-Length</c> header and hang, and an MCP client would receive framed LSP
+/// bytes and fail to parse. Exiting 2 with the usage text on stderr is the only failure mode a
+/// caller can act on.
+/// </para>
+/// <para>
+/// This namespace is the only place in the product that may write to the console, and within it only
+/// <see cref="CliRuntime"/> actually does.
+/// </para>
+/// </remarks>
+internal static class CliDispatcher
+{
+    /// <summary>Command completed successfully.</summary>
+    internal const int ExitSuccess = 0;
+
+    /// <summary>Command ran but failed.</summary>
+    internal const int ExitFailure = 1;
+
+    /// <summary>The command line could not be understood.</summary>
+    internal const int ExitUsage = 2;
+
+    /// <summary>
+    /// The verb exists and is spelled correctly, but this build does not implement it yet.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="ExitUsage"/> on purpose: "you typed something I do not recognise"
+    /// and "you typed something I recognise and cannot do yet" are different problems, and only the
+    /// second one is fixed by upgrading. <c>doctor</c> and <c>fake-roslyn</c> answer with this until
+    /// WP3 and WP2 land.
+    /// </remarks>
+    internal const int ExitNotImplemented = 3;
+
+    internal static string UsageText { get; } =
+        $"""
+         {ServerVersion.Name} {ServerVersion.Value} - Roslyn C# language server adapter (LSP + MCP).
+
+         Usage:
+           {ServerVersion.Name} lsp          Run the LSP server over stdio, mediating Microsoft's
+                                             roslyn-language-server. This is what an editor or an
+                                             agent's LSP client launches.
+           {ServerVersion.Name} mcp          Run the MCP server over stdio: semantic refactoring
+                                             tools for a model that would otherwise use grep and sed.
+           {ServerVersion.Name} doctor       Report the Roslyn resolution chain, the .NET host, the
+                                             solution candidates and the client integration state.
+
+         Options:
+           -h, --help                        Show this help text.
+           -v, --version                     Show the version.
+
+         There is no default verb: one of the above is required, because the two servers speak
+         different protocols on the same stdout and a client connected to the wrong one hangs.
+
+         Configuration is environment variables only. The client-facing ones:
+           CLAUDE_ROSLYN_LSP_SOLUTION        The .slnx/.sln/.csproj to open (default: discovered).
+           CLAUDE_ROSLYN_LSP_ROSLYN_PATH     A directory holding an installed Roslyn language server.
+           CLAUDE_ROSLYN_LSP_ROSLYN_VERSION  Override the pinned roslyn-language-server version.
+           CLAUDE_ROSLYN_LSP_LOG_LEVEL       Trace|Debug|Information|Warning|Error|Critical|None
+                                             (default Information). Logs go to stderr.
+
+         Run `{ServerVersion.Name} doctor` to see which of these are in effect; the README documents
+         the full set.
+         """;
+
+    /// <summary>Dispatches <paramref name="args"/> and returns the process exit code.</summary>
+    /// <param name="args">The process arguments, without the executable name.</param>
+    internal static async Task<int> RunAsync(string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        if (args.Length == 0)
+        {
+            return Usage($"{ServerVersion.Name}: a verb is required.");
+        }
+
+        switch (args[0])
+        {
+            case "lsp":
+                return await LspStubServer.RunStdioAsync().ConfigureAwait(false);
+
+            case "mcp":
+                return await McpServerSetup.RunStdioAsync().ConfigureAwait(false);
+
+            case "doctor":
+                return DoctorCommand.Run();
+
+            // Hidden on purpose: it is a test double the smoke test launches, not something a user
+            // has any reason to type, so it is absent from UsageText.
+            case "fake-roslyn":
+                return FakeRoslynCommand.Run();
+
+            case "--version":
+            case "-v":
+                CliRuntime.WriteOut(ServerVersion.Value);
+                return ExitSuccess;
+
+            case "--help":
+            case "-h":
+                CliRuntime.WriteOut(UsageText);
+                return ExitSuccess;
+
+            default:
+                return Usage($"{ServerVersion.Name}: unknown argument '{args[0]}'.");
+        }
+    }
+
+    /// <summary>
+    /// Reports a command line that could not be understood: the reason, then the usage text, both on
+    /// stderr.
+    /// </summary>
+    /// <remarks>
+    /// Stderr rather than stdout even though this is the whole output of the run, because the caller
+    /// that gets it wrong is usually a protocol client whose stdout is already a channel — writing
+    /// usage text there would corrupt the stream it is complaining about.
+    /// </remarks>
+    /// <param name="reason">One line naming what was wrong.</param>
+    private static int Usage(string reason)
+    {
+        CliRuntime.WriteError(reason);
+        CliRuntime.WriteErrorLine();
+        CliRuntime.WriteError(UsageText);
+
+        return ExitUsage;
+    }
+}

@@ -38,6 +38,20 @@ missing (C30) and a fixture that could not restore would load with no references
 | `Program.cs`'s `int x = "s";` | CS0029, at severity 1. The live tests assert it arrives as a `publishDiagnostics` after `didOpen` and **disappears** within 2 s of a `didChange` that fixes it. Without a real error the diagnostics bridge could be a no-op and every test would still pass. |
 | `Hello.Tests` is a real xunit project | The fixture mirrors a normal repository: a second reference edge, a project the fallback's keep-the-tests rule (D42) can be observed on, and something a solution scan must not mistake for the repository's own solution. Nothing here ever runs these tests. |
 
+### What the copies do to it
+
+The live tests never use this directory in place; each copies it to a temporary tree first, because
+they write to it. `AdapterLiveFixture` copies it for the LSP session, and `McpToolsLiveFixture`
+copies it separately for the MCP tool session — separately because the two edit the same files in
+different ways and xunit runs their collections in parallel.
+
+`McpToolsLiveFixture` also rewrites its copy of `Hello.Core/Caller.cs` as **CRLF with a UTF-8
+byte-order mark** (D81). It cannot be checked in that way — `.gitattributes` forces `*.cs` to LF on
+checkout — and the property being asserted needs it: `Caller.cs` is one of the files a
+`renameSymbol` rewrites, and the test proves it comes back CRLF with its mark intact. A codec that
+silently normalised it would turn a one-word refactoring into a diff touching every line, and the
+code would still compile.
+
 ### Rules for changing it
 
 - **Do not fix the CS0029.** Four tests and one build target assert it.

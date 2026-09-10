@@ -44,7 +44,9 @@ internal sealed class DiagnosticTools
         + "build takes ten to sixty. It is not a build, though — it does not run source generators the way a build "
         + "does, has no MSBuild errors in it and runs no tests — so run the real build before you claim the solution "
         + "is green. Defaults to compiler diagnostics at warning and above; set includeAnalyzers to see IDE0005, "
-        + "CA1822 and their kind.")]
+        + "CA1822 and their kind. The one-second figure is for scope: \"file\" — the first solution-wide pass of a "
+        + "session compiles every project and took about a minute on a 30-project solution, so prefer file or "
+        + "project scope after an edit and keep solution scope for when you actually need the whole picture.")]
     public static async Task<DiagnosticsResult> GetDiagnosticsAsync(
         RoslynToolContext context,
         [Description("How much to look at: file (default, needs path), project (needs project, or path to infer it), or solution.")]

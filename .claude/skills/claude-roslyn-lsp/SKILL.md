@@ -72,8 +72,11 @@ you do not have to ask for the file you are working in. What is worth asking for
 1. `getDiagnostics` with `scope: "file"` immediately after an edit, whenever the edit was not
    trivial. About a second.
 2. `getDiagnostics` with `scope: "solution"` and `minSeverity: "error"` **before claiming the work is
-   done**. That is the difference between "my file compiles" and "the solution compiles", and it is
-   about a second against ten to sixty for `dotnet build`.
+   done**. That is the difference between "my file compiles" and "the solution compiles". It is the
+   expensive one: the first solution-wide pass of a session compiles every project, which is about a
+   minute on thirty of them and can exceed the budget on hundreds — so use it once, at the end, and
+   use `scope: "project"` while you are still working. If it refuses because the pass did not
+   finish, it says so and names the cheaper scope; that is not an empty result.
 
 `getDiagnostics` is a *design-time* pass — the same analysis an IDE underlines with — not a build. It
 does not run source generators the way a build does, it has no MSBuild errors in it, and it runs no

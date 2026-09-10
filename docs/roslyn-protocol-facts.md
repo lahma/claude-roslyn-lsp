@@ -1,7 +1,7 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C56 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C61 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
 C48-C54 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
@@ -281,6 +281,49 @@ three orders of magnitude faster than everything else.
 | `callHierarchy/incomingCalls` (225 calls) | 3.6 s |
 | `textDocument/references` (278 references over 135 files) | 11.2 s |
 | `shutdown` | 15-26 ms |
+
+## The MCP half against the real server (WP5b, 2026-09-10)
+
+Observed through `Mcp/Engine/OwnedRoslynEngine` — a second, independent client of the same pinned
+server — against `tests/fixtures/HelloSolution`, Quartz.NET and OrchardCore. The first three are
+protocol behaviour the LSP half never met, because it pushes diagnostics on a schedule of its own
+and never changes a setting mid-session.
+
+- **C57** **A diagnostic scope change does not reach the pull that follows it, and a pull already
+  waiting is not woken by it.** Raising `csharp|background_analysis.dotnet_analyzer_diagnostics_scope`
+  to `fullSolution` is answered on the `workspace/configuration` re-pull within a few milliseconds
+  (75 sections, then 5 — the same two batches as startup, C46), and a `workspace/diagnostic` issued
+  immediately afterwards still reports the *old* set. A fresh request about 1.5-2 s later carries the
+  new one; a request that was already in flight when the option landed is simply held (C58) and
+  never sees it. Roslyn computes the set when the request arrives, so the fix is another request
+  rather than a longer wait — and one retry is not always enough: the same solution answered on the
+  first confirming pull in one run and on the second in the next.
+- **C58** **`workspace/diagnostic` is a long poll: with nothing new to say, Roslyn holds the request
+  indefinitely.** Two consecutive pulls with nothing changed in between were both still outstanding
+  after 10 s and never returned. An unbounded pull therefore turns a second
+  `getDiagnostics scope: "solution"` into a call that never comes back. Being held *means* "nothing
+  has changed since the last report I gave you", so a bounded pull that falls back to the previous
+  report is not an approximation — it is the same answer, arrived at without hanging.
+- **C59** **`tabSize: 0` crashes the formatter rather than being refused.**
+  `textDocument/formatting` with `options.tabSize` of 0 answers `-32000 Unexpected false - file
+  StringExtensions.cs line 210` with a Roslyn stack trace through
+  `TriviaDataFactory.ComplexTrivia.ExtractLineAndSpace`; the value is asserted, not validated. Worth
+  knowing because a positional record struct's parameter defaults belong to its *primary*
+  constructor, so `new LspFormattingOptions()` produced exactly that value.
+- **C60** **Quartz.NET (30 projects) through the MCP half, workstation GC.** `getWorkspaceStatus`
+  answered `ok` with 30/30 projects and **300-343 MB** working set — against 576-948 MB for the same
+  solution under the shipped server GC (C38), which is C54's trade confirmed on a second solution.
+  `resolveSymbol("IScheduler.Start")` and a `renameSymbol` preview (2 files, 2 edits) each returned
+  inside a 16-18 s `claude -p` run including the client's own startup and the whole solution load.
+  `getDiagnostics scope: "solution", minSeverity: "error"` found 16 CS8618s but cost **~100 s**: the
+  first solution-wide pass compiles every project, which is a different order of magnitude from the
+  ~1 s a single file costs (C17).
+- **C61** **OrchardCore (239 projects) through the MCP half.** Load plus `getWorkspaceStatus` plus
+  `resolveSymbol` in a 48 s `claude -p` run; **439-473 MB** working set, against C54's 1,931-2,089 MB
+  under server GC — a 4x saving on the largest solution measured. `getDiagnostics scope: "solution"`
+  did **not** finish its first pass within 120 s and was refused with a sentence naming
+  `scope: "project"` and `scope: "file"`, which is the intended outcome: an empty list there would
+  say "nothing was found" about a solution nothing had looked at.
 
 ## Host and platform findings (WP5b, 2026-09-10)
 

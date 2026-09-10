@@ -59,7 +59,9 @@ that later work packages have a number to fill in rather than a decision to inve
 **TBD** is a decision that has not been made, not one that has been forgotten. D14 and D24-D29 were
 settled by the protocol work package (WP2) against the wire facts in
 [`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md). D20, D21 and D60-D69 were settled
-by the MCP work package (WP5a), which also froze the tool table below.
+by the MCP work package (WP5a), which also froze the tool table below; **D74-D84** by WP5b, which
+put a real Roslyn behind those tools and, in doing so, found five things about the pinned server
+that a scripted backend cannot show (C55-C61).
 
 The four rows D16-D19 reserved were settled by WP4 and are written out as **D50-D59**, which is
 where the argument lives; the reserved rows point there rather than restating it in two places.
@@ -85,10 +87,10 @@ where the argument lives; the reserved rows point there rather than restating it
 | D17 | **Workspace-wide diagnostics for files that are not open are opt-in.** Settled as **D54**. |
 | D18 | **File watching is on by default, with an opt-out.** Settled as **D55** and **D56**. |
 | D19 | **A Roslyn crash is absorbed, not forwarded.** Settled as **D57**. |
-| D20 | **The MCP tool table and its annotations.** — **TBD in WP5.** camelCase verb-noun names, 1-based positions, workspace-relative paths, structured content, and a `preview` flag on every mutating tool. |
-| D21 | **The MCP server applies its own edits.** — **TBD in WP5.** It is the LSP *client* in that direction, so it writes files itself, preserving BOM and line endings, and then tells Roslyn what changed. |
+| D20 | **The MCP tool table and its annotations.** Settled by WP5a; the table is *The MCP tool surface* below and the arguments are **D60-D69**. camelCase verb-noun names, 1-based positions, workspace-relative paths, structured content, and a `preview` flag on every mutating tool. |
+| D21 | **The MCP server applies its own edits.** Settled by WP5a as **D61** and **D62**. It is the LSP *client* in that direction, so it writes files itself, preserving BOM and line endings, and then tells Roslyn what changed — including C33's synthetic project event, which WP5b's engine owns (D75). |
 | D22 | **NuGet is the plugin's launch channel; the AOT archives are everything else's.** The plugin runs `dnx claude-roslyn-lsp@{version}` for both servers — no download step, and an SDK is required for C# work anyway — while file-based clients point at a Native AOT binary from GitHub Releases. The package is pushed by **trusted publishing**: the workflow exchanges its GitHub OIDC token for an API key that lives minutes, so no NuGet API key exists in this repository or in its secrets. The exchange is C# inside the build (`build/Build.Publish.cs`), not a marketplace action. |
-| D23 | **One Roslyn per solution, shared by whichever verb started first.** — **TBD in WP9.** Until it lands, running both servers against one solution loads the solution twice; `README.md` says so plainly rather than letting it be discovered. |
+| D23 | **One Roslyn per solution, shared by whichever verb started first.** — **TBD in WP9.** Until it lands, running both servers against one solution loads the solution twice; `README.md` says so plainly rather than letting it be discovered, and `getWorkspaceStatus` now answers `engine: "owned"` so it is visible in a result as well as in a document (D84). The seams WP9 builds on are `Mcp/Engine/IRoslynEngine` (a second implementation attaches instead of launching) and `Adapter/IRoslynConnectionFactory` (a host serves a pipe instead of a child). |
 | D24 | **Eight runtime identifiers, and a host outside them is named rather than corrected.** `roslyn-language-server` is a 33 KB shim; the payload is `roslyn-language-server.<rid>`, and Microsoft publishes eight of them — `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `linux-musl-x64`, `linux-musl-arm64`, `osx-x64`, `osx-arm64` (C5, from the shim's own `DotnetToolSettings.xml`). That list is deliberately longer than this repository's five-RID release matrix, because the framework-dependent NuGet tool (D22) reaches platforms no archive is built for. musl is detected from `RuntimeInformation.RuntimeIdentifier` **and** from `/lib/ld-musl-*`, because a portable build on Alpine reports the RID it was *built* for. `win-x86` and `linux-arm` resolve to themselves and are reported unsupported: downloading the 64-bit payload for a 32-bit host produces a child that dies about an image format, which is nobody's idea of a diagnosis. |
 | D25 | **The hash table is per RID; a version override has no hash at all.** `Roslyn/RoslynServerManifest.cs` carries one base64 SHA-512 per RID for the pinned version, and `dotnet fallout UpdateRoslynPin` is the only thing allowed to write them — a hash typed in by a person is a hash nobody verified. `CLAUDE_ROSLYN_LSP_ROSLYN_VERSION` is honoured (somebody debugging against a newer build should not have to fork the adapter) but that download is verified by TLS alone, and the result carries `Verified = false` all the way to `doctor` rather than being quietly equivalent. |
 | D26 | **Command-line feature flags are per Roslyn version.** `--clientProcessId`, `--daemon` and `--daemonKeepAlive` exist in 5.12 and do not exist in the 5.5 builds still sitting in people's tool stores. Roslyn parses its command line with `System.CommandLine`, which *exits* on an unknown option — so a flag passed to the wrong version is not a degraded feature, it is a child that never starts, explaining itself on a stderr nobody is reading yet. The manifest therefore answers per version: the pin's flags for the pin, a conservative set (stdio only) for anything else. `UpdateRoslynPin` derives the pin's by running the downloaded server's own `--help`. |
@@ -136,6 +138,16 @@ where the argument lives; the reserved rows point there rather than restating it
 | D68 | **The workspace root is the process's working directory.** Every MCP client — Claude Code, Codex, Gemini CLI, Cursor — launches a stdio server with the workspace as its current directory, and no protocol field carries a root. That directory bounds *writes*, not analysis: a solution configured elsewhere still loads, and `getWorkspaceStatus` reports its real path so the discrepancy is visible rather than mysterious. |
 | D69 | **A build with no backend registers `NotWiredRoslynEngine`, which fails with one sentence.** The MCP handshake and `tools/list` must work with no Roslyn in the picture — that is the leg `SmokeTest` drives against a published Native AOT binary on every release RID, and it is also what a client sees in the seconds before anything is launched. Registering nothing would make the container throw at the first call with the SDK's generic "An error occurred"; this names the problem and the command that diagnoses it. `EnsureReadyAsync` is the one member that does not throw — it answers `Failed`, a state every tool already handles, so the nine gated tools return a status object and `getWorkspaceStatus` answers correctly instead of failing. WP5b replaces the factory, and nothing above the seam changes. |
 | D74 | **The model never sees a crash — including one that happens mid-request.** D57 absorbs a backend that dies *between* requests; a backend that dies *holding* one used to answer it `-32603`, which put the crash in front of the model as a failed tool call seconds before the relaunched server could have answered it correctly. So `IdMap` keeps a forwarded request's original bytes, and a backend death that the supervisor decides to restart puts every such request **back into the readiness gate** — closed first, so nothing is replayed into the corpse or into a server that has not loaded the solution (C27) — and re-forwards it under a fresh id when the gate reopens. The client is still waiting on its own id and gets a real answer under it. Only adapter-originated requests fail: a diagnostic pull carries a `resultId` that died with the old process and is re-issued on the bridge's own schedule anyway. When the supervisor gives up, the held requests are released as `Failed`, which is `-32603` with a `doctor` hint — the state a user can act on. Safe because every request this adapter forwards is a *read*: the v1 LSP half writes no files (D21 puts edits in the MCP half), so replaying one cannot apply anything twice. Found by CI on Linux, where the kill lands after the forward far more often than on Windows (C56). |
+| D75 | **The MCP half composes the mediation's components; it does not share its session.** `Mcp/Engine/OwnedRoslynEngine` reuses every class that carries a decision — `ServerEndpoint` and the authored `initialize` in it (D14), `ReadinessGate` (D46), `ConfigurationResponder` (D48), `RegistrationTracker`, `ProgressTracker`, `ServerRequestHandler`, `WorkspaceOpener`, `RoslynSupervisor` (D57), `FileWatchBridge` (D55-D56), `DocumentMirror`, `IdMap` (D47), `LaunchedRoslynFactory` (D50), `SolutionDiscovery` (D39-D42) — and writes only the lifecycle glue that joins them. The alternative on offer was extracting a `BackendSession` shared with `AdapterSession`, and it was declined on the evidence: that class's glue exists to *serve a peer* — two id maps, byte forwarding with an id rewrite, a queue of somebody else's requests, call-hierarchy de-duplication on the way back — and none of it exists where the caller is a method on the object. A shared session would mean inventing an abstraction for "the peer" whose only second implementation is "there isn't one", and putting that refactor underneath the mediation WP4 spent a live session getting right. WP9's shared engine — one host, one attach client — is where the two lifecycles genuinely merge, and that is the seam worth cutting along. The three small helpers that *were* duplicated are shared instead: `Adapter/RoslynResponses` completes a response, reads an error code, and builds a `$/cancelRequest`. |
+| D76 | **The `mcp` verb starts Roslyn from `notifications/initialized`, not from the first tool call.** Every MCP client starts its servers when the session starts and may not call a tool for minutes, so launching at the handshake spends the 3-45 s load (C31, C53) during time the user is already spending; a first tool call then answers immediately instead of being the thing that pays. A session that never asks a C# question pays for a child process it did not need, and that is the trade taken deliberately: the alternative makes the *first* question the slow one, and the first question is the one that decides whether the model uses these tools again. Tools still gate on `EnsureReadyAsync(CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS)` and answer `loading` rather than hanging (D66). |
+| D77 | **Changing a Roslyn setting is a round trip, and the answer outranks every standing one.** `ConfigurationResponder` gains runtime overrides that sit *above* the client's own settings, the environment and the defaults, because an override is set for the duration of one call that cannot work without it — a solution-wide pull needs `fullSolution` (C14), `formatCode organizeUsings: true` needs the format option — where every other layer is a standing preference. Losing to a static setting would make those calls answer emptily and successfully. The change is a `workspace/didChangeConfiguration` notification, and the engine then *waits for the `workspace/configuration` request Roslyn issues in response*, because that pull is the only observable moment at which the value is in effect. Two seconds, and a build that stopped re-pulling gets a logged warning rather than a failed call. |
+| D78 | **The project list is read off the solution file, not asked for.** Roslyn's custom methods (C39) have no "describe the workspace" request, and the only thing that names a project is a log line the default child level does not emit (D37). `Mcp/Engine/WorkspaceProjects` therefore reads the `.slnx`/`.sln` for its project entries and each project file for a literal `TargetFramework(s)`; `Mcp/Engine/WorkspaceLoadTracker` layers on what Roslyn *does* report — the progress stream's `Loading N project(s)` and, when the level is raised, the per-project outcomes. The target frameworks are a text scan and a best effort, exactly as D41's project count is: a project that gets its TFM from a `Directory.Build.props` reports none, because an empty list reads as "not known" where a wrong list would read as a fact. Evaluating a project file properly means MSBuild, which hard rule 1 and the package budget both refuse. |
+| D79 | **Workstation GC is the default for the child, in both verbs.** Roslyn's payload ships `System.GC.Server: true` (C44), and C54 measured what that costs on OrchardCore: 1,931-2,089 MB of working set against **577 MB** for workstation, for a load of 20.4 s instead of 28.2 s. WP5b re-measured it on Quartz.NET (300-343 MB, C60) and on OrchardCore through the MCP half (439-473 MB, C61). The eight seconds are paid once by somebody who is waiting for a language server to start and expects to; the one and a half gigabytes are paid by every other process on the machine for as long as the session lasts — and this product exists because a Claude session is already running a model's tool calls on the same box. So `DOTNET_gcServer=0` goes into the child's environment unless `CLAUDE_ROSLYN_LSP_GC=server` asks otherwise, an explicit `DOTNET_gcServer` in the environment wins over both and is never overwritten, and `doctor` prints which of the three is in effect. |
+| D80 | **The `mcp` verb has the same backend vocabulary as `lsp`, plus one value for "none".** `mcp --smoke` runs the scripted backend in this process, `CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child` runs it as a child, and `=none` registers `NotWiredRoslynEngine`. That last one used to be what happened by default, which made `SmokeTest`'s claim about D69 accidental; with the eager start (D76) it would also have become a 70 MB download on five release runners, so it is spelled out. `SmokeTest` now drives **two** MCP legs: `=none`, which proves the handshake and `tools/list` do not depend on a backend at all, and `--smoke`, which proves that starting one from the handshake puts no byte on stdout — the channel it would corrupt. |
+| D81 | **The MCP live tests are one method in phases, with their own copy of the fixture.** D59's argument, restated where it applies again: the phases destroy each other's preconditions — the fix-all deletes the using the code-action phase asks about, the rename changes the symbol the navigation phases resolve — and xunit does not order tests within a class. The copy is private to this collection because `AdapterLiveFixture`'s is edited differently and collections run in parallel. One file in the copy is rewritten as **CRLF with a BOM** on the way in, because `.gitattributes` forces `*.cs` to LF on checkout and the property worth asserting is precisely that a rename writes a file back the way it found it (D61). The formatting phase formats a file written badly on purpose, because "the second run changes nothing" is satisfied by a first run that also changed nothing. |
+| D82 | **`workspace/diagnostic` needs the analyzer scope raised as well as the compiler one, and only when analyzers were asked for.** C14's second sentence, which cost a live run: with only `dotnet_compiler_diagnostics_scope` at `fullSolution`, a closed file's compiler errors are reported and its IDE and CA diagnostics are not — so `fixDiagnostics IDE0005 scope: "solution"` answered "no occurrence of IDE0005" on a solution that has one. `IRoslynEngine` therefore has a second scope member, and `DiagnosticQuery` raises it only when `includeAnalyzers` or an explicit `ids` list says the caller wants analyzers, because every analyzer over every file is the expensive half and D48's standing answer stays `openFiles`. |
+| D83 | **A workspace diagnostic pull is bounded, falls back to the last report, and is confirmed after a scope change.** Three behaviours, one method, all of them C57 and C58. Bounded, because the pull is a long poll and an unbounded one makes a second `getDiagnostics scope: "solution"` a call that never returns. Falling back to the previous report rather than to nothing, because Roslyn holding the request *means* "nothing has changed since I last told you". And confirmed with up to three fresh pulls after a scope change, spaced by a settle, because the change does not reach the pull that follows it and a pull already waiting is not woken by it. The one case that is not a fallback is the **first** pull of a session: with nothing cached, a timeout throws a sentence naming `scope: "project"` and `scope: "file"` rather than answering with an empty list, because an empty list would say "nothing was found" about a solution nothing had looked at — which is the failure this product exists to remove. That path is not hypothetical: OrchardCore's 239 projects do not finish a first solution-wide pass inside 120 s (C61). |
+| D84 | **`getWorkspaceStatus` reports how this server got its Roslyn.** `engine: "owned"` means this process launched one of its own; the plan reserves `attached` for the shared engine (D23). Until that lands the value is always `owned`, and reporting it is exactly the point: a repository running both servers has two Roslyn processes, and this is where that stops being a paragraph in the README and becomes something an answer says. |
 
 ### The plugin-option rule
 
@@ -363,11 +375,12 @@ src/ClaudeRoslynLsp/        One production project; AssemblyName claude-roslyn-l
                             OutboundQueue, IdMap, ReadinessGate, DocumentMirror, RegistrationTracker,
                             ConfigurationResponder, ProgressTracker, ServerRequestHandler,
                             RequestRouter, WorkspaceOpener + WorkspaceSelection,
-                            IRoslynConnectionFactory, and LspAdapterServer (the `lsp` verb's stdio
-                            entry point). WP4's bridges live here too, all four reaching the session
-                            through the one narrow IAdapterChannel seam: DiagnosticsBridge
-                            (+ .Workspace, DiagnosticTranslation) D52-D54, FileWatchBridge +
-                            GlobMatcher D55-D56, RoslynSupervisor D57, CallHierarchyDeduplicator D58
+                            IRoslynConnectionFactory, RoslynResponses (shared with the MCP engine,
+                            D75), and LspAdapterServer (the `lsp` verb's stdio entry point). WP4's
+                            bridges live here too, all four reaching the session through the one
+                            narrow IAdapterChannel seam: DiagnosticsBridge (+ .Workspace,
+                            DiagnosticTranslation) D52-D54, FileWatchBridge + GlobMatcher D55-D56,
+                            RoslynSupervisor D57, CallHierarchyDeduplicator D58
   Testing/                  The scripted fake Roslyn server (D49), shared by the tests, `lsp --smoke`
                             and the hidden `fake-roslyn` verb
   Roslyn/                   Everything about the child process (D24–D43): RuntimeIdentifier,
@@ -377,11 +390,14 @@ src/ClaudeRoslynLsp/        One production project; AssemblyName claude-roslyn-l
                             RoslynStderrPump, RoslynHandshakeProbe, SolutionDiscovery, and
                             LaunchedRoslynFactory (D50), which is the one class the mediation and
                             the acquisition chain meet in
-  Mcp/                      McpServerSetup (D5), ServerInstructions, SymbolAddress (D63) and
-                            CodeActionCatalog (D64)
+  Mcp/                      McpServerSetup (D5), McpBackendSelection (D80), ServerInstructions,
+                            SymbolAddress (D63) and CodeActionCatalog (D64)
   Mcp/Engine/               IRoslynEngine — the LSP-level seam the tools run against (D60) — its
-                            wire shapes, RoslynEngineJsonContext, and NotWiredRoslynEngine (D69).
-                            WP5b implements the interface on the real launcher
+                            wire shapes, the outbound request shapes, RoslynEngineJsonContext, and
+                            NotWiredRoslynEngine (D69). OwnedRoslynEngine (D75) is the real one:
+                            it launches a Roslyn of its own and composes the mediation's components
+                            around it, with WorkspaceLoadTracker and WorkspaceProjects (D78)
+                            answering getWorkspaceStatus
   Mcp/Tools/                The five tool classes behind the ten tools (D20), the RoslynToolContext
                             they all take, ToolLookup, DiagnosticQuery, DocumentSession, ToolErrors
   Mcp/Models/               Result records and RoslynToolJsonContext (camelCase, D7)
@@ -515,17 +531,19 @@ by scanning the repository. Do not delete one to make a change pass:
   here.
 
 `SmokeTest` is the end-to-end check the unit tests cannot be: it publishes the Native AOT binary,
-spawns it, and drives **three** real exchanges. Two of them are LSP sessions —
+spawns it, and drives **four** real exchanges. Two of them are LSP sessions —
 `initialize`, `initialized`, a `didOpen`, a `textDocument/definition`, then, once that definition has
 been answered, `shutdown` and `exit` with the exit code asserted — one against the scripted backend
 running *inside* the server process (`lsp --smoke`) and one against the same script in a *child*
-process (`CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child`, which spawns `<self> fake-roslyn`). The third is the
-MCP handshake (`initialize`, `initialized`, `tools/list`), whose answer is compared against
+process (`CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child`, which spawns `<self> fake-roslyn`). The other two
+are MCP handshakes (`initialize`, `initialized`, `tools/list`), whose answers are compared against
 `ExpectedToolNames` verbatim — the only assertion this repository makes about the tool inventory of
 the *published* binary rather than of a reflected type list, and therefore the only thing that would
 catch an AOT publish which dropped a tool class or a serializer context that could not describe a
-result type. It runs with no Roslyn wired in at all (D69), which is exactly the point: the handshake
-and `tools/list` must not depend on a backend.
+result type. The first of them runs with `CLAUDE_ROSLYN_LSP_FAKE_BACKEND=none`, so no Roslyn is
+wired in at all (D69, D80), which is exactly the point: the handshake and `tools/list` must not
+depend on a backend. The second runs `mcp --smoke`, where a backend *is* started from the handshake
+(D76) — the leg that proves the eager start puts no byte on the protocol channel.
 
 Each leg proves something the others cannot. The LSP legs read stdout as *frames*, so any byte that
 is not part of one fails the test: that is what proves the "nothing else writes to stdout" rule on a
@@ -558,10 +576,24 @@ gone after the `didChange` that fixes it; a file written with `File.WriteAllText
 inside its budget. Every phase prints its timing, and the run ends with the child's peak working set,
 which is C38 re-measured.
 
-Local numbers on this machine (three-project fixture, warm cache): load 3.9 s **including** the
-cold server-side restore, CS0029 published 0.2 s after `didOpen` and cleared 0.56 s after the fix,
-`Triangle.cs` found 1.4 s after being written, definition answered 2.9 s after a `kill -9`, shutdown
-0.11 s, Roslyn peak working set 356 MB, whole session 24 s.
+`McpToolsLiveTests` covers the **MCP half** the same way, through `OwnedRoslynEngine` and its own
+copy of the fixture (D81): `getWorkspaceStatus` reaching `ok` with 3/3 projects and the multi-target
+frameworks it expects, `resolveSymbol` and a three-project `findReferences`, both halves of
+`getDiagnostics` (a `fullSolution` workspace pull for the closed `Program.cs`, and a file pull that
+opens and closes it — C13, C14), a `getCodeActions` list carrying the folded fix-all scopes, a
+`renameSymbol` previewed and then applied across four files with a CRLF+BOM file coming back
+CRLF+BOM, `fixDiagnostics IDE0005 scope: "solution"` touching exactly one file, an
+`applyCodeAction "Move type to Rectangle.cs"` whose new file becomes resolvable, and a `formatCode`
+that is idempotent on a file written badly on purpose.
+
+Local numbers on this machine (three-project fixture, warm cache). The LSP session: load 3.9 s
+**including** the cold server-side restore, CS0029 published 0.2 s after `didOpen` and cleared 0.56 s
+after the fix, `Triangle.cs` found 1.4 s after being written, definition answered 2.9 s after a
+`kill -9`, shutdown 0.11 s, Roslyn peak working set 356 MB, whole session 24 s. The MCP session:
+load 4.0-4.4 s, `getWorkspaceStatus` 10 ms, `resolveSymbol` 1.1 s cold, `findReferences` 0.6 s,
+a solution-wide diagnostic pull 2.1 s, `renameSymbol` 0.2 s to preview and 20 ms to apply,
+`applyCodeAction` 0.17 s, `formatCode` 29 ms, Roslyn peak working set 373 MB, whole run 28 s — of
+which 20 s is two deliberately-held workspace pulls proving C58 comes back at all.
 
 Every fixture gets a row in [`tests/fixtures/MANIFEST.md`](tests/fixtures/MANIFEST.md) recording what
 it is, when it arrived, and whether the bytes came off the wire or were written by hand. JSON cannot

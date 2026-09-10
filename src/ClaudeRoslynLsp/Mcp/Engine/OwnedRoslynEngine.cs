@@ -8,6 +8,8 @@ using ClaudeRoslynLsp.Protocol;
 
 using Microsoft.Extensions.Logging;
 
+using ModelContextProtocol;
+
 namespace ClaudeRoslynLsp.Mcp.Engine;
 
 /// <summary>
@@ -65,13 +67,18 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     /// <summary>How long <c>shutdown</c> waits for Roslyn to acknowledge before the process is closed.</summary>
     internal static readonly TimeSpan ShutdownWait = TimeSpan.FromSeconds(5);
 
-    /// <summary>How long the <em>first</em> workspace diagnostic pull of a session may take.</summary>
+    /// <summary>
+    /// How long the <em>first</em> workspace diagnostic pull of a session may take, when the
+    /// readiness budget does not say.
+    /// </summary>
     /// <remarks>
-    /// Generous because it is the one that has to wait for a full-solution compilation: C17's first
-    /// document pull already costs 1.3-1.7 s, and every project's compilation is a different order of
-    /// magnitude on a 239-project solution (C53).
+    /// The first pull is the one that waits for a full-solution compilation — C17's first
+    /// <em>document</em> pull already costs 1.3-1.7 s, and 30 projects took about a minute (C60). It
+    /// therefore runs on <c>CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS</c>, which is the user's own
+    /// statement of how long they are willing to wait for this solution, and falls back to this when
+    /// that is unset.
     /// </remarks>
-    internal static readonly TimeSpan FirstWorkspacePull = TimeSpan.FromSeconds(60);
+    internal static readonly TimeSpan DefaultFirstWorkspacePull = TimeSpan.FromSeconds(120);
 
     /// <summary>How long a later pull waits before it is treated as "Roslyn has nothing new" (C58).</summary>
     /// <remarks>
@@ -92,6 +99,9 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
 
     /// <summary>How long the confirming pull after a scope change waits, given a fallback exists.</summary>
     internal static readonly TimeSpan ScopeConfirmPull = TimeSpan.FromSeconds(4);
+
+    /// <summary>How long a confirming attempt waits for a <c>workspace/diagnostic/refresh</c>.</summary>
+    internal static readonly TimeSpan RefreshWait = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// How many fresh pulls a scope change is confirmed with before the first answer stands.
@@ -148,6 +158,7 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     private CompilerDiagnosticsScope? _compilerScope;
     private CompilerDiagnosticsScope? _analyzerScope;
     private WorkspaceDiagnosticReport? _lastWorkspaceReport;
+    private TaskCompletionSource _diagnosticsRefreshed = Completion();
     private bool _scopeChangedSincePull;
     private bool? _organizeImports;
     private int? _backendProcessId;
@@ -211,6 +222,26 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         // Mandatory, unlike in `lsp` mode: see the class remarks (C48, C33).
         _watching = new FileWatchBridge(() => _workspaceRoot, _mirror, this, time, logger);
         _registrations.Changed += () => _watching.Schedule(_registrations.Watchers);
+
+        // Roslyn's own "your diagnostics are stale, ask again" signal, which is what a scope change
+        // eventually produces (D83). Waiting for it beats guessing at a settle delay, and the guess
+        // stays as the fallback for a build that stops sending it.
+        _serverHandler.RefreshRequested += method =>
+        {
+            if (!string.Equals(method, "workspace/diagnostic/refresh", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            TaskCompletionSource refreshed;
+
+            lock (_stateLock)
+            {
+                refreshed = _diagnosticsRefreshed;
+            }
+
+            refreshed.TrySetResult();
+        };
 
         _gate.Opened += OnGateOpened;
         _gate.WorkspaceDescription = "the workspace";
@@ -521,11 +552,16 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         for (var attempt = 0; again && attempt < ScopeConfirmAttempts; attempt++)
         {
             // C57, and the shape of this loop is the whole of it. A scope change reaches Roslyn's
-            // analysis a second or two after the configuration pull that carried it was answered,
-            // and — this is the part that costs the retries — a pull already waiting when it lands
-            // is *not* woken by it. Roslyn computes the set when the request arrives, so what is
-            // needed is a fresh request a moment later, not a longer wait on the current one. Each
-            // attempt runs on a short budget because the first pull's answer is already in hand.
+            // analysis some seconds after the configuration pull that carried it was answered, and —
+            // this is the part that costs the retries — a pull already waiting when it lands is
+            // *not* woken by it. Roslyn computes the set when the request arrives, so what is needed
+            // is a fresh request afterwards, not a longer wait on the current one.
+            //
+            // "Afterwards" is established from Roslyn's own signal where it gives one: it sends
+            // `workspace/diagnostic/refresh` when a client's diagnostics have gone stale, which is
+            // exactly this event. The settle delay is the fallback for a build that does not, and
+            // for the window between the refresh and the analysis behind it finishing.
+            await WaitForRefreshAsync(cancellationToken).ConfigureAwait(false);
             await Task.Delay(ScopeSettle, _time, cancellationToken).ConfigureAwait(false);
 
             if (await PullWorkspaceAsync(previousResultIds, ScopeConfirmPull, cancellationToken)
@@ -547,6 +583,41 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         }
     }
 
+    /// <summary>
+    /// Waits, briefly, for Roslyn to say the client's diagnostics have gone stale.
+    /// </summary>
+    /// <remarks>
+    /// Consumes the signal and arms the next one, so two confirming attempts wait for two refreshes
+    /// rather than both returning on the first. A timeout is not a failure: it means Roslyn did not
+    /// send one, and the settle delay beside this call is what covers that.
+    /// </remarks>
+    private async Task WaitForRefreshAsync(CancellationToken cancellationToken)
+    {
+        TaskCompletionSource refreshed;
+
+        lock (_stateLock)
+        {
+            refreshed = _diagnosticsRefreshed;
+        }
+
+        try
+        {
+            await refreshed.Task.WaitAsync(RefreshWait, _time, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return;
+        }
+
+        lock (_stateLock)
+        {
+            if (ReferenceEquals(_diagnosticsRefreshed, refreshed))
+            {
+                _diagnosticsRefreshed = Completion();
+            }
+        }
+    }
+
     /// <summary>One bounded pull, or <see langword="null"/> when Roslyn was still holding it.</summary>
     /// <param name="previousResultIds">What the caller already has (C12).</param>
     /// <param name="warmBudget">How long to wait once a previous report exists to fall back on.</param>
@@ -563,7 +634,9 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             warm = _lastWorkspaceReport is not null;
         }
 
-        var budget = warm ? warmBudget : FirstWorkspacePull;
+        var budget = warm
+            ? warmBudget
+            : TimeSpan.FromSeconds(Math.Max(_options.ReadyTimeoutSeconds, DefaultFirstWorkspacePull.TotalSeconds));
 
         using var timeout = new CancellationTokenSource(budget, _time);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
@@ -585,6 +658,20 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             Log.WorkspacePullHeld(_logger, budget.TotalSeconds, warm);
+
+            if (!warm)
+            {
+                // Nothing to fall back on, so answering with an empty report would tell a model that
+                // a solution it has never looked at compiles cleanly. That is the confidently-wrong
+                // answer this product exists to remove; a refusal that names a cheaper scope is not.
+                throw new McpException(
+                    $"Roslyn did not finish the first solution-wide diagnostic pass within "
+                    + $"{budget.TotalSeconds:0} s, so there is no answer to give — an empty list here would "
+                    + "mean 'nothing was found', not 'nothing was looked at'. Ask for scope: \"project\" or "
+                    + "scope: \"file\", or raise CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS if this solution is "
+                    + "simply large.");
+            }
+
             return null;
         }
 

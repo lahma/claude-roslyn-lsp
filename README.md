@@ -51,7 +51,12 @@ invocation exits 2 with the usage text on stderr instead.
   crosses byte for byte.
 - **`mcp`** is the refactoring surface: `resolveSymbol`, `findReferences`, `getTypeMembers`,
   `getDiagnostics`, `getCodeActions`, `applyCodeAction`, `renameSymbol`, `fixDiagnostics`,
-  `formatCode`, `getWorkspaceStatus`. Four of them write files; all four take `preview`.
+  `formatCode`, `getWorkspaceStatus`. Four of them write files; all four take `preview`. It runs a
+  Roslyn of its own — launched, supervised and file-watched exactly as the `lsp` half's is — and it
+  starts loading the solution as soon as the client finishes the MCP handshake rather than when the
+  first tool is called, because a client starts its servers when a session starts and may not ask a
+  C# question for minutes. Until the workspace is loaded every tool answers `status: "loading"`
+  instead of hanging, and `getWorkspaceStatus` says how far it has got.
 - **`doctor`** is the support report and the exit code that means something: 0 only if Roslyn is
   runnable right now, established by launching it and completing a real handshake.
 
@@ -66,16 +71,25 @@ answered afterwards rather than answered empty. Measured through Claude Code on 
 | Workspace loaded | 5.9 s | 20 s warm, 46 s colder |
 | Go to definition, once loaded | 2 ms warm | 4 ms warm |
 | Find references | 11 s (278 hits) | 45 s (272 hits) |
-| Roslyn memory | 0.6-0.9 GB | 1.9-2.1 GB |
+| Roslyn memory, workstation GC (the default) | 0.30-0.34 GB | 0.44-0.47 GB |
+| Roslyn memory, `CLAUDE_ROSLYN_LSP_GC=server` | 0.6-0.9 GB | 1.9-2.1 GB |
 
 A repository that has never been restored takes longer, because Roslyn restores it itself before it
 can load anything.
 
-**If the Roslyn child is too large for your machine**, put `DOTNET_gcServer=0` in the environment the
-adapter is launched with — it is passed through to Roslyn, which by default uses the server garbage
-collector. On OrchardCore that took the peak from 1.9 GB to **577 MB**, at the cost of about eight
-seconds on the load. It is not the default because the trade goes both ways and two gigabytes is only
-a problem on a machine where it is a problem.
+**The child runs with the workstation garbage collector by default**, although Roslyn's own
+configuration asks for the server one. On OrchardCore that is the difference between about 1.9 GB
+and **577 MB**, for roughly eight seconds more on the load — and this adapter exists to be run
+beside a model's tool calls on the same machine, so the memory is the side worth taking. Set
+`CLAUDE_ROSLYN_LSP_GC=server` to buy the seconds back; an explicit `DOTNET_gcServer` in the
+environment wins over both and is never overwritten, and `doctor` prints which of the three is in
+effect.
+
+**A solution-wide `getDiagnostics` is not a one-second call.** The per-file pass is; the first
+solution-wide one compiles every project, which took about a minute on Quartz.NET's 30 and did not
+finish inside the 120-second budget on OrchardCore's 239 — where it is refused with a sentence
+naming `scope: "project"` rather than answered with an empty list. Use file or project scope after
+an edit, and solution scope when you actually want the whole picture.
 
 The 120-second readiness budget (`CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS`) has roughly 2.5x headroom
 on a 239-project solution; raise it if yours is larger or is being loaded for the first time.
@@ -443,7 +457,7 @@ project exists to replace.
 | `resolveSymbol` | Finds where a symbol is declared, semantically, with its hover signature and a 1-based position you can hand straight to an LSP tool. Ambiguity returns every candidate rather than a guess. | read-only, idempotent |
 | `getTypeMembers` | Lists a type's members and their signatures without reading the file — including for a type that comes from a NuGet package rather than the checkout. | read-only, idempotent |
 | `findReferences` | Every semantic reference across the solution, the source line beside each one, a per-file summary, de-duplicated across target frameworks, paged. | read-only, idempotent |
-| `getDiagnostics` | Compiler errors and warnings — and, on request, IDE and CA analyzer diagnostics — for a file, a project or the whole solution, in about a second. | read-only, idempotent |
+| `getDiagnostics` | Compiler errors and warnings — and, on request, IDE and CA analyzer diagnostics — for a file, a project or the whole solution. About a second for a file; the first solution-wide pass compiles every project and costs a minute or more. | read-only, idempotent |
 | `getCodeActions` | The quick fixes and refactorings Roslyn offers at a position: the lightbulb list, each with a short stable id, the diagnostic ids it addresses, and the scopes its fix-all accepts. | read-only, idempotent |
 | `applyCodeAction` | Applies one of them, optionally across the document, the project or the whole solution. | **destructive**, not idempotent |
 | `renameSymbol` | A solution-wide semantic rename: overrides, interface implementations, other projects. Not a search and replace, and not a file rename. | write, **not** destructive, idempotent |
@@ -758,9 +772,11 @@ front of it.
 
 Running both servers against the same solution starts **two** Roslyn instances, and each one loads
 the whole solution. On a large repository that is double the memory and double the load time. Both
-halves work; the cost is real and is stated here rather than discovered. Sharing one engine between
-the two verbs is the next work package, and until it ships the honest advice for a very large
-solution is to enable one of the two.
+halves work; the cost is real and is stated here rather than discovered, and `getWorkspaceStatus`
+reports `engine: "owned"` so it is visible in an answer as well as in this paragraph. Sharing one
+engine between the two verbs is the next work package, and until it ships the honest advice for a
+very large solution is to enable one of the two — the MCP half if you want the refactorings, the LSP
+half if you want push diagnostics in the editor.
 
 ## Environment variables
 
@@ -784,7 +800,8 @@ what is actually in effect and is the authority when this table and the binary d
 | `CLAUDE_ROSLYN_LSP_DIAGNOSTICS` | `1` | The pull-to-push diagnostics bridge. `lsp` only — an MCP client asks with `getDiagnostics`. |
 | `CLAUDE_ROSLYN_LSP_DIAGNOSTIC_MIN_SEVERITY` | `warning` | The severity floor applied before diagnostics are published to an LSP client. |
 | `CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS` | off | Opt-in workspace-wide diagnostics for files that are not open. Needs a full-solution compiler scope, which is the expensive setting. |
-| `CLAUDE_ROSLYN_LSP_FILE_WATCHER` | `1` | The file-watch bridge. Without it, a file created by a shell command or by git never joins its project and every later answer is silently stale. |
+| `CLAUDE_ROSLYN_LSP_FILE_WATCHER` | `1` | The file-watch bridge. Without it, a file created by a shell command or by git never joins its project and every later answer is silently stale. `lsp` only: the `mcp` half always watches, because it has no editor telling it what changed and because a repository that needs a restore does not finish loading without it. |
+| `CLAUDE_ROSLYN_LSP_GC` | `workstation` | Which garbage collector the Roslyn child runs with: `workstation` or `server`. Workstation peaks around 577 MB on a 239-project solution where server peaks around 2 GB, and costs about eight seconds of load time. An explicit `DOTNET_gcServer` in the environment wins over this and is left alone. |
 | `CLAUDE_ROSLYN_LSP_LOG_LEVEL` | `Information` | This adapter's own stderr logger: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`. |
 | `CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL` | `Warning` | The level handed to Roslyn. Its `Information` is about twenty lines of narration per start. |
 | `CLAUDE_ROSLYN_LSP_OPTIONS` | — | A JSON object merged into the answers given to Roslyn's `workspace/configuration` requests. A syntax error is a logged warning, never a startup failure. |

@@ -119,10 +119,10 @@ The plan names three things twice. Resolved once, here, so nobody re-resolves th
 
 ### Protocol gotchas
 
-Empty at the scaffold stage. This is where the **C-numbered** findings go: the things that cost a
-probe to discover and that fail *silently*, each with the date it was verified and the file or
-capture it came from. WP0's spike results and anything WP2–WP7 learns from a live Roslyn belong here,
-not in a commit message.
+The **C-numbered** findings live in [`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md):
+C1-C39 were observed on the wire against the pinned server on 2026-09-10 (WP0 spikes) and are cited
+from code comments and tests by number. Add to that file, never restate a fact here; a finding that
+changes on a pin bump gets re-verified there with the new date.
 
 ## Package budget
 

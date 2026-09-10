@@ -1,0 +1,152 @@
+# roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
+
+Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C39 and cited
+from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
+
+## Acquisition and launch
+
+- **C1** The tool-store path is ~290 characters and `Process.Start` fails with "file not found"
+  even though the file exists. Keep the cache layout flat (`<cache>/roslyn/<version>/<rid>/...`).
+- **C2** `dotnet tool install` rejects `--prerelease` together with `--version`; an exact
+  prerelease `--version` alone installs fine.
+- **C3** nuget.org's registration index has no `packageHash`; the catalog leaf reached through
+  `catalogEntry.@id` has `packageHash` (base64 SHA-512), `packageHashAlgorithm` and
+  `packageSize`. All eight RID hashes matched a local SHA-512 of the nupkg.
+- **C4** The `.nupkg.sha512` file inside a tool store is NOT the SHA-512 of the nupkg next to it.
+- **C5** There are eight RID packages, not seven: `DotnetToolSettings.xml` also lists
+  `linux-musl-arm64`.
+- **C6** `--extensionLogDirectory` produced no files at `--logLevel Information`; all logging
+  arrives as `window/logMessage` (21-22 lines during startup).
+- **C7** In `--stdio` mode stdout carries only LSP frames and stderr is empty. In `--pipe` mode a
+  646-byte startup banner is written to the child's stdout, so a pipe launcher must drain stdout
+  and never treat it as protocol.
+- **C8** `--pipe` accepts `name` and `\\.\pipe\name`, with or without `CurrentUserOnly` on the
+  server stream. Roslyn is the pipe client; the adapter creates
+  `NamedPipeServerStream(name, InOut, 1, Byte, Asynchronous | CurrentUserOnly)` and waits.
+  Connect plus `initialize` took 0.6-0.7 s.
+- **C29** `roslyn-language-server.exe` is a thin client that spawns its own
+  `Microsoft.CodeAnalysis.LanguageServer` daemon per instance; two clients gave four processes
+  and no shared workspace, even with a shared `ROSLYN_LANGUAGE_SERVER_DAEMON_PIPE_NAME`. Launch
+  `Microsoft.CodeAnalysis.LanguageServer.dll` directly.
+- **C30** Roslyn restores the solution itself server-side when `obj/` is missing (+3.3 s) and
+  never asks the client; no `_roslyn_*` message was ever sent and `_roslyn_projectNeedsRestore`
+  does not exist in this build.
+- **C31** Readiness: `initialize` answers in under 1 s; `workspace/projectInitializationComplete`
+  (a notification with no `params`) at 2.5-3.3 s for two projects, 6.3 s with a cold restore,
+  9.3 s on a contended machine. Exactly one `$/progress` stream (token = bare GUID, title
+  `Loading <solution>...`), preceded by `window/workDoneProgress/create`.
+- **C38** (re-measure) 253 MB working set with the shipped `System.GC.Server: true`, 247 MB with
+  `DOTNET_gcServer=0`; the env var overrides the runtimeconfig.
+- **C39** Custom methods present: `solution/open`, `project/open`,
+  `workspace/projectInitializationComplete`, `codeAction/resolveFixAll`,
+  `workspace/_roslyn_restore`, `workspace/_roslyn_restorableProjects`,
+  `workspace/_roslyn_refreshSourceGenerators`, `window/_roslyn_showToast`,
+  `roslyn/updateLogLevel`, `roslyn/resolveContext@2`, and a `textDocument/_vs_*` family.
+- CLI of this build: `--debug --brokeredServicePipeName --logLevel --telemetryLevel --sessionId
+  --extension --devKitDependencyPath --csharpDesignTimePath --extensionLogDirectory --pipe
+  --stdio --autoLoadProjects [max] --sourceGeneratorExecutionPreference <Automatic|Balanced>
+  --clientProcessId <pid> --daemon --daemonKeepAlive <s>`. `--stdio` and `--pipe` are mutually
+  exclusive and one is required.
+
+## Configuration
+
+- Roslyn issues two `workspace/configuration` requests asking for 80 sections; answering `null`
+  everywhere yields defaults. Sections are `csharp|<group>.<name>` / `visual_basic|...` except
+  `navigation.*`, `projects.*`, `code_style.formatting.new_line.insert_final_newline` and the
+  Razor/HTML ones. Notable: `csharp|background_analysis.dotnet_compiler_diagnostics_scope`,
+  `csharp|background_analysis.dotnet_analyzer_diagnostics_scope`,
+  `projects.dotnet_enable_automatic_restore`, `navigation.dotnet_navigate_to_decompiled_sources`,
+  `csharp|formatting.dotnet_organize_imports_on_format`,
+  `csharp|symbol_search.dotnet_search_reference_assemblies`.
+
+## Diagnostics
+
+- **C9** `textDocument/diagnostic` with no `identifier` returns the union of every source.
+- **C10** Only `DocumentCompilerSemantic` yields compiler errors and only
+  `DocumentAnalyzerSemantic` yields IDE/CA diagnostics; sources with nothing to say return
+  `{"kind":"full","items":[]}` without a `resultId`.
+- **C11** The ten `textDocument/diagnostic` registrations arrive in a different order every run;
+  key on `registerOptions.identifier` (the Razor one has none).
+- **C12** `previousResultId` yields `{"kind":"unchanged"}` but `resultId` changes on every full
+  report; store the latest per (uri, source).
+- **C13** `textDocument/diagnostic` on a file that is not open always returns 0 items regardless
+  of scope. Non-open files are only reachable via `workspace/diagnostic`.
+- **C14** `workspace/diagnostic` returns closed-file diagnostics only when
+  `csharp|background_analysis.dotnet_compiler_diagnostics_scope` is `fullSolution`, and only for
+  `identifier` omitted or `WorkspaceDocumentsAndProject`; analyzer diagnostics for closed files
+  additionally need `dotnet_analyzer_diagnostics_scope = fullSolution`.
+- **C15** `workspace/diagnostic` skips open documents, includes `obj/**/*.cs` and `.csproj`
+  entries, and lists a multi-targeted project once per TFM.
+- **C16** IDE0005 arrives at severity 4 (Hint) at position 0:0 for the whole using block; CA1822
+  at severity 3 (Information); `tags` mixes the LSP `Unnecessary` tag (1) with VS-private tags
+  2147483640-2147483645 that must not be forwarded.
+- **C17** About 90 ms from a full-text `didChange` to a clean pull; the first pull of a session
+  costs 1.3-1.7 s. Full-text `didChange` is accepted although the server advertises incremental.
+- **C27** Requests issued before `projectInitializationComplete` get empty successful results,
+  never `ContentModified`.
+- **C28** A `didOpen`ed file that belongs to no loaded project is served in misc-files mode with
+  wrong diagnostics (IDE0005 on usings the project needs). Gate diagnostics on readiness too.
+
+## Code actions, fix-all, rename
+
+- **C18** `codeAction` `data` is `CodeActionResolveData` with PascalCase members
+  `UniqueIdentifier, CustomTags, Range, TextDocument, CodeActionPath` plus `NestedCodeActions`
+  or `FixAllFlavors`. Fix-all entries are separate items titled `Fix All: <title>` with
+  `FixAllFlavors: ["Document","Project","Solution"]` and
+  `command.command = "roslyn.client.fixAllCodeAction"`.
+- **C19** `executeCommandProvider.commands` is `[]`; the `roslyn.client.*` commands are
+  client-side markers.
+- **C20** `codeAction/resolveFixAll` takes `{ "title", "data", "scope" }`; `scope` is
+  case-sensitive (`Document|Project|Solution`) and mandatory; the plain action's `data` is
+  accepted. `codeAction/resolve` on a `Fix All:` entry returns no `edit`.
+- **C21** Resolved edits always use `documentChanges`; every `TextDocumentEdit` has
+  `"version": null`. With `resourceOperations` advertised, `Move type to <X>.cs` resolves to a
+  `{"kind":"create"}` operation first, then edits into the not-yet-existing file.
+- **C22** A single `newText` can mix `\r\n` and `\n`; normalise incoming text, not only the file.
+- **C23** Rename returns minimal character diffs (`Compute` to `Calculate` replaces `ompu` with
+  `alcula`), crosses projects, one `TextDocumentEdit` per file; `prepareRename` returns a bare
+  `Range`.
+- Sites observed: IDE0005 gives `Remove unnecessary usings` (+ Fix All, + `Suppress or configure
+  issues` nested); CA1822 gives `Make static` (+ Fix All), `Use expression body`, `Extract base
+  class...`; an interface declaration gives only `Extract interface...`; a second type in a file
+  gives `Move type to <X>.cs`, `Convert to positional record`, `Extract interface/base class`.
+
+## Navigation
+
+- **C24** Call hierarchy duplicates results once per TFM of a multi-targeted project;
+  `workspace/symbol` and `rename` de-duplicate. De-duplicate by (uri, selectionRange).
+- **C25** Definition into a BCL symbol returns a real `file:` URI under
+  `%TEMP%\MetadataAsSource\<hash>\DecompilationMetadataAsSourceFileProvider\<hash>\<Type>.cs`.
+- **C26** Roslyn advertises `semanticTokensProvider`, `codeLensProvider`, `inlayHintProvider`
+  and `_vs_onAutoInsertProvider` statically even when the client declared none; an adapter that
+  authors its own capability document must filter what it forwards.
+- Call-hierarchy items carry opaque `data` (`SymbolKeyData`, `ProjectGuid`, `TextDocument`)
+  that must be round-tripped verbatim. `serverInfo.name` is
+  `CSharpVisualBasicLanguageServerFactory` with no version.
+
+## File watching
+
+- **C32** Roslyn registers 135-149 `workspace/didChangeWatchedFiles` watchers for a two-project
+  solution, one `client/registerCapability` each; 113 are one-per-reference-assembly under the
+  NuGet cache. Collapse by `baseUri`, ignore watchers rooted outside the workspace, compare glob
+  sets not strings (`**/*{.cs,.razor,.cshtml}` and `**/*{.cs,.cshtml,.razor}` both occur).
+  `client/unregisterCapability` uses the field name `unregisterations`.
+- **C33** A `Created` event for a new `.cs` file does nothing; a `Changed` event for the owning
+  `.csproj` (even with the file untouched on disk) triggers a re-evaluation and the symbol appears
+  1.6-2.1 s later. Map "a `.cs` file appeared or disappeared" onto a synthetic `Changed` for the
+  containing project file.
+- **C34** Without the `didChangeWatchedFiles` client capability Roslyn registers nothing and has
+  no in-process watcher fallback.
+
+## dnx (SDK 10.0.401)
+
+- **C35** `dnx` keeps stdout byte-clean cold and warm (1.8 s / 0.6 s); no prompt when stdout is
+  redirected.
+- **C36** `--yes` is consumed by `dnx` although `dnx --help` does not list it; position does not
+  matter.
+- **C37** `dnx` steals `--version`, `-v`, `--verbosity`, `--prerelease`, `--configfile`,
+  `--source`, `--add-source`, `--allow-roll-forward`, `--disable-parallel`,
+  `--ignore-failed-sources`, `--no-http-cache`, `--interactive`, `-?`, `-h`, `--help` from the
+  tool and prints its own usage to stdout on a parse error. Documentation must never suggest
+  `dnx claude-roslyn-lsp@x --version`; use `doctor`.

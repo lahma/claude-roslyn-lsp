@@ -80,6 +80,7 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
     private bool _shutdownRequested;
     private bool _stopping;
     private int _failureShown;
+    private int _generation;
 
     /// <summary>Creates a session over the client's streams.</summary>
     /// <param name="clientInput">The client's messages arrive here.</param>
@@ -639,6 +640,8 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
     /// <summary>Connects to the backend and drives its handshake, on its own task.</summary>
     private void StartBackend(CancellationToken cancellationToken)
     {
+        int generation;
+
         lock (_stateLock)
         {
             if (_backendTask is not null)
@@ -646,13 +649,33 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
                 return;
             }
 
+            generation = _generation;
             _gate.Start();
-            _backendTask = Task.Run(() => ConnectAsync(cancellationToken), CancellationToken.None);
+            _backendTask = Task.Run(() => ConnectAsync(generation, cancellationToken), CancellationToken.None);
+        }
+    }
+
+    /// <summary>Whether a connect attempt is still the one this session is waiting on.</summary>
+    /// <remarks>
+    /// The whole reason the generation exists. A backend that dies <em>during</em> its own handshake
+    /// produces two things at once: the pump's <see cref="OnBackendGone"/>, which decides to
+    /// relaunch, and the abandoned <c>initialize</c> wait, which throws. Without this check the
+    /// second one races the first and fails a session the supervisor had just decided to save — and
+    /// it wins often enough on a loaded machine to be a real failure, not a theoretical one.
+    /// </remarks>
+    /// <param name="generation">The generation the attempt was started under.</param>
+    private bool IsCurrentAttempt(int generation)
+    {
+        lock (_stateLock)
+        {
+            return _generation == generation;
         }
     }
 
     /// <summary>The whole backend startup: connect, initialize, replay, open the workspace.</summary>
-    private async Task ConnectAsync(CancellationToken cancellationToken)
+    /// <param name="generation">Which connect attempt this is, so a superseded one stays quiet.</param>
+    /// <param name="cancellationToken">Cancels the connection and the handshake.</param>
+    private async Task ConnectAsync(int generation, CancellationToken cancellationToken)
     {
         ServerEndpoint server;
 
@@ -664,16 +687,17 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            Fail($"the backend could not be started ({exception.Message})", exception);
+            FailIfCurrent(generation, $"the backend could not be started ({exception.Message})", exception);
             return;
         }
 
         lock (_stateLock)
         {
-            if (_stopping)
+            if (_stopping || _generation != generation)
             {
-                // A relaunch that raced the session's own teardown. Nothing here may adopt it, or
-                // the child outlives the adapter holding a whole solution in memory.
+                // A relaunch that raced the session's own teardown, or an attempt a newer one has
+                // already replaced. Nothing here may adopt it, or the child outlives the adapter
+                // holding a whole solution in memory.
                 _ = server.DisposeAsync().AsTask();
                 return;
             }
@@ -703,7 +727,16 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OperationCanceledException || cancellationToken.IsCancellationRequested)
         {
-            Fail($"Roslyn did not answer initialize within {budget.TotalSeconds:0} s", exception);
+            // The message names the exception rather than only the budget: the wait also ends when
+            // the backend went away underneath it, and "did not answer within 120 s" said 40 ms
+            // after a launch is a sentence that sends the reader looking in the wrong place.
+            FailIfCurrent(
+                generation,
+                exception is TimeoutException
+                    ? $"Roslyn did not answer initialize within {budget.TotalSeconds:0} s"
+                    : $"the Roslyn handshake failed ({exception.Message})",
+                exception);
+
             return;
         }
 
@@ -954,7 +987,14 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
                     + $"(attempt {attempt} of {RoslynSupervisor.MaxRestarts}). Requests are held "
                     + "until the workspace has loaded again.");
 
-                _ = Task.Run(() => ConnectAsync(CancellationToken.None), CancellationToken.None);
+                int generation;
+
+                lock (_stateLock)
+                {
+                    generation = ++_generation;
+                }
+
+                _ = Task.Run(() => ConnectAsync(generation, CancellationToken.None), CancellationToken.None);
                 break;
 
             case RestartDecision.GiveUp:
@@ -995,8 +1035,21 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
     /// find it. Sending them on every subsequent failure would train the reader to dismiss them.
     /// </para>
     /// </remarks>
+    /// <param name="generation">Which connect attempt is reporting; a superseded one is ignored.</param>
     /// <param name="reason">What went wrong, in a sentence the user can act on.</param>
     /// <param name="exception">The failure, when there was one.</param>
+    private void FailIfCurrent(int generation, string reason, Exception? exception)
+    {
+        if (!IsCurrentAttempt(generation))
+        {
+            Log.AttemptSuperseded(_logger, reason);
+            return;
+        }
+
+        Fail(reason, exception);
+    }
+
+    /// <inheritdoc cref="FailIfCurrent"/>
     private void Fail(string reason, Exception? exception)
     {
         Log.BackendFailed(_logger, reason, exception);
@@ -1378,5 +1431,12 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
             Level = LogLevel.Debug,
             Message = "The {Method} answer could not be read for de-duplication; it crosses unchanged.")]
         internal static partial void DeduplicationFailed(ILogger logger, string method, Exception exception);
+
+        [LoggerMessage(
+            EventId = 123,
+            Level = LogLevel.Debug,
+            Message = "A backend attempt that has already been replaced reported '{Reason}'; the " +
+                      "relaunch under way owns the session now.")]
+        internal static partial void AttemptSuperseded(ILogger logger, string reason);
     }
 }

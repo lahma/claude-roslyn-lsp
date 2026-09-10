@@ -207,8 +207,10 @@ internal sealed partial class FileWatchBridge : IDisposable
             }
         }
 
+        // No direct ProjectFilesChanged here: everything just queued IS a project file, so the
+        // batch flush raises it once with the rest. Raising it here as well would only make the
+        // diagnostics bridge arm its one-second debounce twice for the same event.
         Log.Resynchronised(_logger, count);
-        ProjectFilesChanged?.Invoke();
     }
 
     /// <inheritdoc />

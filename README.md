@@ -55,6 +55,14 @@ invocation exits 2 with the usage text on stderr instead.
 - **`doctor`** is the support report and the exit code that means something: 0 only if Roslyn is
   runnable right now, established by launching it and completing a real handshake.
 
+**What to expect on a first run.** The first `lsp` session for a machine downloads about 70 MB of
+Roslyn and extracts about 140 MB, reporting progress to the client as it goes; every later session
+starts from the cache. Then the solution loads — 5.9 s for Quartz.NET's 30 projects on a warm cache,
+longer on a repository that has never been restored, because Roslyn restores it itself. Everything
+asked during that window is held and answered afterwards rather than answered empty. Expect the
+Roslyn child to hold roughly 300 MB plus 10 MB per project once loaded, and about twice that during a
+solution-wide reference search.
+
 ## Prerequisites
 
 **A .NET 10 runtime, and in practice the .NET 10 SDK.** Roslyn is a .NET 10 application and this
@@ -609,9 +617,112 @@ the client wins over both.
 
 ### Diagnostics, file watching and crash recovery
 
-_Placeholder. The pull-to-push diagnostics bridge and its debounce, the opt-in workspace-wide mode,
-what happens when a file is created by a shell command or by git, and what happens when Roslyn dies
-mid-request, are described here._
+### Waiting for the workspace, instead of answering wrongly
+
+A request that reaches Roslyn before the solution has finished loading is answered with an **empty
+successful result** — never an error. So an ungated client silently reports "no definition found"
+for the first several seconds of every session, which is indistinguishable from a correct answer and
+teaches the agent that the language server is useless.
+
+The adapter therefore holds requests in arrival order and releases them, in that order, when
+`workspace/projectInitializationComplete` arrives. The client's own handshake is answered
+immediately out of a capability document written in this repository, so startup does not wait for
+the backend: on Quartz.NET's 30-project solution `initialize` comes back in 22 ms and the workspace
+is ready 5.9 s later, with everything asked in between held and then answered. If the load exceeds
+`CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS` the gate opens anyway — a partly loaded workspace answering
+some questions beats a server that has stopped answering — and says so. A client holding requests is
+told every ten seconds through `window/logMessage`, which is the one channel Claude Code renders.
+
+### Diagnostics: pulled from Roslyn, pushed at the client
+
+Roslyn reports diagnostics only when asked (`textDocument/diagnostic`). Claude Code only understands
+being told (`textDocument/publishDiagnostics`) and has no code path that asks. Pointed at each other
+unmediated, the result is a language server that never reports a single error and is silent about it.
+The bridge is that translation, and it is as much the reason this project exists as the readiness
+gate is.
+
+It pulls on open, on save, 400 ms after the last edit, when Roslyn asks for a refresh, and a second
+after a project file changes on disk; one pull is in flight per file at a time with a dirty flag
+behind it, and each published set carries the document version it was computed at, so a slow answer
+cannot paint diagnostics at positions that have moved.
+
+What is published is deliberately less than what Roslyn reports, because the client renders
+diagnostics as a text attachment and cuts it — every entry kept pushes another out:
+
+- **Warnings and errors only** by default. `CLAUDE_ROSLYN_LSP_DIAGNOSTIC_MIN_SEVERITY=information`
+  (or `hint`) lowers the floor.
+- **Anything tagged "unnecessary" that is not an error is dropped.** IDE0005 arrives as a hint at
+  line 0, column 0, for the whole `using` block; it is the least useful entry available and the one
+  most likely to read as "something is wrong at the top of this file".
+- **Visual Studio's private diagnostic tags are stripped**, because no client outside VS knows what
+  they mean and several drop a diagnostic that carries one.
+- **Sorted by severity, then position, and capped at fifty per file.**
+
+Closing a file publishes an empty set, so a diagnostic the user fixed and then closed does not stay
+in the transcript forever. `CLAUDE_ROSLYN_LSP_DIAGNOSTICS=off` turns the whole thing off, which
+leaves a navigation-only adapter.
+
+**Files nobody has open** are reachable only through a whole-solution pull, and only with the
+compiler analysis scope raised to `fullSolution` — the setting that makes a large solution expensive,
+because it puts every project's compilation in memory. So it is opt-in:
+`CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS=errors` raises that one scope (and no other), asks after
+each save, and publishes **compile errors only, for at most ten files, five each**, with the saved
+file's own project first. Build output, project files and the duplicate copy a multi-targeted project
+reports per framework are all filtered out, and a file that gets fixed is cleared explicitly.
+
+### Watching the disk, because nothing else will
+
+Roslyn has no file watcher of its own and no fallback: it registers watchers with its client and
+waits to be told. Claude Code refuses every one of those registrations and never sends a watched-file
+notification — so without this bridge, a file created by `git checkout` or by a shell command never
+joins its project, and every later answer is silently *wrong* rather than missing.
+
+Two things about it are worth knowing:
+
+- **A new `.cs` file is not enough.** Roslyn takes the event and carries on; the new type stays
+  invisible. What makes it re-evaluate is a *change* to the owning `.csproj`, so every appearance or
+  disappearance of a source file is accompanied by a synthetic change event for the nearest project
+  file above it. That single mapping is the difference between "a file created by Bash is found" and
+  "restart your editor". On the test fixture the new type is findable 1.4 s after the file is
+  written.
+- **`obj/` is excluded, except for `project.assets.json`.** That file *is* the restore result, and it
+  is load-bearing in a way that is easy to miss: on a freshly cloned repository Roslyn restores the
+  solution itself and then waits to be told the restore happened. Without that one event the load
+  never completes at all — three projects reported as loaded, a completed restore, and no readiness
+  notification for as long as you care to wait.
+
+Registrations rooted outside the workspace are dropped (on Quartz.NET that is 342 of 433, all in the
+NuGet package cache), events are batched for 200 ms, and files the client has open are skipped
+because it already owns their contents. Past 64 distinct directories the per-directory watchers are
+replaced by a single recursive one on the workspace root, which covers all of them for one handle.
+`CLAUDE_ROSLYN_LSP_FILE_WATCHER=off` disables it, and then the capability is withdrawn from the
+handshake entirely so Roslyn registers nothing — advertising it and then not delivering would look
+exactly like a working watcher until an answer turned out to be stale. On Linux, watching costs one
+inotify instance per directory (`fs.inotify.max_user_instances`, 128 by default); each directory that
+cannot be watched is reported by name with the sysctl to raise.
+
+### When Roslyn dies
+
+It is absorbed, not forwarded. The client's restart budget restarts *this* process, which throws away
+the session, the document mirror, the readiness state and every answer in flight — and Roslyn dying is
+not that kind of failure, because everything needed to rebuild the backend is held here.
+
+So the gate closes again, the child is relaunched, every open document is replayed at its latest
+text, the solution is re-opened, and requests that arrive in the gap are held exactly as they were at
+startup. The client sees a slow answer and a log line, not an error: in the live test, a `kill -9`
+mid-session is followed by a correct answer 2.9 s later. Two restarts are allowed per ten minutes —
+an accident comes back and works, and a server that dies three times on the same solution is
+deterministic, so a fourth attempt would be an infinite loop that also holds every request in it.
+After that the session moves to its failure state, where each request is refused with a sentence
+naming `claude-roslyn-lsp doctor`.
+
+### When Roslyn cannot be started at all
+
+Offline, no .NET 10 runtime, a proxy serving HTML where a package should be, a hash that does not
+match the pin: all ordinary, and none of them kills the adapter. The process stays up, the handshake
+stands, and every request is answered with an error naming `claude-roslyn-lsp doctor`; the client
+gets one message it will surface and one it will file. A server that exits during startup leaves its
+client with a dead pipe and no channel to be told why, because stdout **is** the channel.
 
 ### What is deliberately not advertised
 
@@ -715,8 +826,8 @@ pass instead of a build — and it teaches both tool families at once, including
 them compose: `resolveSymbol` reports the `path:line:col` the built-in LSP tool needs, so the model
 never greps for a line number first.
 
-The plugin installs it along with both servers. There is exactly one copy of the file, and everything
-below installs that copy.
+The chosen solution and its score are logged **and** sent to the client once, because "which
+solution did it open" is the first question of any report about a repository with more than one.
 
 ### Any other tool
 
@@ -835,6 +946,8 @@ cd claude-roslyn-lsp
 ./build.sh Test          # restore, compile, run the tests
 ./build.sh SmokeTest     # AOT publish, then three real stdio sessions against the binary
 ./build.sh Pack          # the NuGet tool package, into artifacts/packages
+
+CLAUDE_ROSLYN_LSP_LIVE_TESTS=1 ./build.sh Test LiveTest   # + the real Roslyn, downloaded
 ```
 
 ```powershell
@@ -842,6 +955,12 @@ cd claude-roslyn-lsp
 .\build.ps1 SmokeTest
 .\build.ps1 Pack
 ```
+
+`LiveTest` is the only thing here that talks to Microsoft's actual server: it acquires the pinned
+build, opens the never-restored fixture solution under `tests/fixtures/`, and waits for the
+deliberate compile error in it to arrive as a pushed diagnostic. Everything else speaks to a scripted
+backend, which proves the mediation and nothing at all about whether Roslyn still answers what this
+adapter believes it answers. Without the variable the target reports *skipped* rather than passing.
 
 The orchestrator is [Fallout](https://fallout.build); `build.ps1` / `build.sh` bootstrap the CLI from
 `.config/dotnet-tools.json`, so nothing needs installing globally. `dotnet fallout PublishAot

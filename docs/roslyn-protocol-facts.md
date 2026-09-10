@@ -1,8 +1,12 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C47 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C51 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
+
+C48-C51 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
+multi-targeted) and against **Quartz.NET** (`Quartz.slnx`, 30 projects) through a real Claude Code
+2.1.267 session.
 
 ## Acquisition and launch
 
@@ -36,8 +40,13 @@ from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) o
   (a notification with no `params`) at 2.5-3.3 s for two projects, 6.3 s with a cold restore,
   9.3 s on a contended machine. Exactly one `$/progress` stream (token = bare GUID, title
   `Loading <solution>...`), preceded by `window/workDoneProgress/create`.
-- **C38** (re-measure) 253 MB working set with the shipped `System.GC.Server: true`, 247 MB with
-  `DOTNET_gcServer=0`; the env var overrides the runtimeconfig.
+- **C38** (re-measured 2026-09-10, WP4) 253 MB working set with the shipped `System.GC.Server:
+  true`, 247 MB with `DOTNET_gcServer=0`; the env var overrides the runtimeconfig. Peak working set
+  scales with the solution, not with the server: **356 MB** for the three-project `HelloSolution`
+  through a full live session (load, pulls, a watcher reload, a relaunch), **576 MB** for
+  Quartz.NET's 30 projects during a load plus one diagnostic pull, and **948 MB** for the same
+  solution when the session also ran `findReferences` across 135 files. Plan for roughly
+  300 MB + 10 MB per project, and expect a solution-wide reference search to double it.
 - **C39** Custom methods present: `solution/open`, `project/open`,
   `workspace/projectInitializationComplete`, `codeAction/resolveFixAll`,
   `workspace/_roslyn_restore`, `workspace/_roslyn_restorableProjects`,
@@ -172,6 +181,53 @@ from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) o
   `--ignore-failed-sources`, `--no-http-cache`, `--interactive`, `-?`, `-h`, `--help` from the
   tool and prints its own usage to stdout on a parse error. Documentation must never suggest
   `dnx claude-roslyn-lsp@x --version`; use `doctor`.
+
+## Loading a real solution (WP4, 2026-09-10)
+
+- **C48** **Without watched-file events, a solution that needs a restore never finishes loading at
+  all.** Roslyn restores server-side when `obj/` is missing (C30) and logs `Restore complete`, and
+  then stops: all three projects say "Successfully completed load", and
+  `workspace/projectInitializationComplete` never arrives — observed for the full 120 s budget.
+  What unblocks it is the restore's own `project.assets.json` write coming back as a
+  `workspace/didChangeWatchedFiles` event, after which Roslyn logs
+  `[workspace/didChangeWatchedFiles] ... Completed (re)load of all projects` and reports
+  initialization complete. So the `obj/` exception in the watcher's exclusion list is not a nicety
+  for restore results: without it, a freshly cloned repository is a language server that answers
+  nothing and says nothing about why. With the watcher working, the same solution loads in **3.9 s
+  including the cold restore**.
+- **C49** A 30-project solution (Quartz.NET) registers **433** `workspace/didChangeWatchedFiles`
+  watchers: 342 rooted outside the workspace (the NuGet cache — C32's 113 for two projects scales
+  with the reference graph) and **91 distinct directories inside it**. One `FileSystemWatcher` per
+  directory is therefore not viable at that size; a single recursive watcher on the workspace root
+  covers all 91 for one handle, and every registered pattern has to be re-based (`Quartz.csproj`
+  becomes `**/Quartz.csproj`) to match from there.
+- **C50** Claude Code sends **`textDocument/didOpen` for a file it edits, and no `didChange` or
+  `didSave` afterwards** — one `didOpen` per session per file, carrying the text as it stands after
+  the Edit tool wrote it. So the trigger that actually produces the diagnostics an agent sees is
+  `didOpen`, not `didChange`: the debounce on `didChange` is for editors, and a `didOpen`-only
+  client would get nothing at all from a bridge that only pulled on change.
+- **C51** Roslyn keeps registering capabilities for a long time after the workspace is loaded —
+  516 live registrations were recorded on Quartz.NET, still arriving as `shutdown` was sent, and a
+  session that ends early leaves a `$/progress` stream ending in `Cancelled`. A registration count
+  is therefore not a readiness signal, and anything keyed off "registrations have settled" has to be
+  debounced rather than waited for.
+
+### Timings on Quartz.NET through Claude Code 2.1.267
+
+Measured through the real client, with the published Native AOT binary as a `--plugin-dir` LSP
+server. The client's `initialize` is answered by the adapter, not by Roslyn, which is why it is
+three orders of magnitude faster than everything else.
+
+| Exchange | Elapsed |
+|---|---|
+| `initialize` (adapter's own document, D45) | 22-30 ms |
+| `projectInitializationComplete` (30 projects, warm cache) | 5.9-6.2 s |
+| `textDocument/definition` (issued during the load, held by the gate) | 6.6 s |
+| `textDocument/definition` (workspace loaded) | 1.3 s cold, 2 ms warm |
+| `textDocument/prepareCallHierarchy` (held) | 6.8 s |
+| `callHierarchy/incomingCalls` (225 calls) | 3.6 s |
+| `textDocument/references` (278 references over 135 files) | 11.2 s |
+| `shutdown` | 15-26 ms |
 
 ## Claude Code 2.1.267 client (spike S3, 2026-09-10)
 

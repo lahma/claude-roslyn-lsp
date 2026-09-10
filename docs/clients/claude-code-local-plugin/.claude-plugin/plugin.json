@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "claude-roslyn-lsp-local",
+  "displayName": "Roslyn C# (local binary)",
+  "version": "0.1.0",
+  "description": "The claude-roslyn-lsp adapter, launched from a Native AOT binary on this machine instead of from the marketplace. Load it with: claude --plugin-dir <the directory holding this .claude-plugin folder>",
+  "author": {
+    "name": "lahma",
+    "url": "https://github.com/lahma"
+  },
+  "homepage": "https://github.com/lahma/claude-roslyn-lsp#readme",
+  "license": "MIT",
+  "lspServers": {
+    "roslyn": {
+      "command": "/usr/local/bin/claude-roslyn-lsp",
+      "args": ["lsp"],
+      "extensionToLanguage": {
+        ".cs": "csharp"
+      },
+      "startupTimeout": 120000,
+      "shutdownTimeout": 10000,
+      "restartOnCrash": true,
+      "maxRestarts": 3,
+      "diagnostics": true
+    }
+  },
+  "mcpServers": {
+    "roslyn": {
+      "command": "/usr/local/bin/claude-roslyn-lsp",
+      "args": ["mcp"]
+    }
+  }
+}

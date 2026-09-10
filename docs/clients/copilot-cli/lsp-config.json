@@ -1,0 +1,12 @@
+{
+  "lspServers": {
+    "csharp": {
+      "command": "/usr/local/bin/claude-roslyn-lsp",
+      "args": ["lsp"],
+      "fileExtensions": {
+        ".cs": "csharp"
+      },
+      "requestTimeoutMs": 180000
+    }
+  }
+}

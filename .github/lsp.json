@@ -1,0 +1,12 @@
+{
+  "lspServers": {
+    "csharp": {
+      "command": "dnx",
+      "args": ["claude-roslyn-lsp@0.1.0", "--yes", "lsp"],
+      "fileExtensions": {
+        ".cs": "csharp"
+      },
+      "requestTimeoutMs": 180000
+    }
+  }
+}

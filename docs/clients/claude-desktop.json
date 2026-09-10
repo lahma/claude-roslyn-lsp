@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "roslyn": {
+      "command": "/usr/local/bin/claude-roslyn-lsp",
+      "args": ["mcp"],
+      "env": {
+        "CLAUDE_ROSLYN_LSP_SOLUTION": "/home/you/src/YourApp/YourApp.slnx"
+      }
+    }
+  }
+}

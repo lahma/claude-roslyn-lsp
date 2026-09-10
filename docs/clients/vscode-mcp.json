@@ -1,0 +1,10 @@
+// .vscode/mcp.json - claude-roslyn-lsp as an MCP server for VS Code (Copilot agent mode).
+{
+  "servers": {
+    "roslyn": {
+      "type": "stdio",
+      "command": "/usr/local/bin/claude-roslyn-lsp",
+      "args": ["mcp"]
+    }
+  }
+}

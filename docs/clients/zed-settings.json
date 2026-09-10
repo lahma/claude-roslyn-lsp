@@ -1,0 +1,17 @@
+// ~/.config/zed/settings.json - Zed needs its own C# extension; this replaces the binary that
+// extension's "roslyn" server runs. A server id Zed does not already know is rejected.
+{
+  "lsp": {
+    "roslyn": {
+      "binary": {
+        "path": "/usr/local/bin/claude-roslyn-lsp",
+        "arguments": ["lsp"]
+      }
+    }
+  },
+  "languages": {
+    "C#": {
+      "language_servers": ["roslyn", "!omnisharp", "!csharp-ls"]
+    }
+  }
+}

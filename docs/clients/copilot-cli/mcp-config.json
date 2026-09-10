@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "roslyn": {
+      "type": "local",
+      "command": "/usr/local/bin/claude-roslyn-lsp",
+      "args": ["mcp"],
+      "tools": ["*"]
+    }
+  }
+}

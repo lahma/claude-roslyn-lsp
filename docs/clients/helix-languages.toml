@@ -1,0 +1,8 @@
+# ~/.config/helix/languages.toml - claude-roslyn-lsp as the only C# language server.
+[language-server.claude-roslyn-lsp]
+command = "/usr/local/bin/claude-roslyn-lsp"
+args = ["lsp"]
+
+[[language]]
+name = "c-sharp"
+language-servers = ["claude-roslyn-lsp"]

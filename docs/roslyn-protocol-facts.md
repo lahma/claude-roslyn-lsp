@@ -1,7 +1,7 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C61 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C62 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
 C48-C54 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
@@ -297,7 +297,12 @@ and never changes a setting mid-session.
   new one; a request that was already in flight when the option landed is simply held (C58) and
   never sees it. Roslyn computes the set when the request arrives, so the fix is another request
   rather than a longer wait — and one retry is not always enough: the same solution answered on the
-  first confirming pull in one run and on the second in the next.
+  first confirming pull in one run and on the second in the next. **On a contended machine it does
+  not answer at all**: six samples over thirty seconds, on a box running this repository's whole test
+  suite beside Roslyn, never produced the analyzer set for closed files. Retrying is therefore worth
+  a short budget and not a long one, and anything that must be reliable asks for the file instead —
+  a *document* pull always carries them (C13's other side), which is where `fixDiagnostics` looks
+  for the site of the diagnostic it is about to fix everywhere.
 - **C58** **`workspace/diagnostic` is a long poll: with nothing new to say, Roslyn holds the request
   indefinitely.** Two consecutive pulls with nothing changed in between were both still outstanding
   after 10 s and never returned. An unbounded pull therefore turns a second
@@ -341,6 +346,15 @@ would be re-verified from, so they share the numbering.
   the file name is now taken from the last segment after splitting on **both** separators, which is
   what the exclusion walk beside it always did. The test data drives both spellings on both
   platforms.
+- **C62** **A hand-moved clock only fires timers that already exist, and Linux loses that race where
+  Windows wins it.** `DiagnosticsBridgeTests.AContentModifiedRefusalIsRetriedExactlyOnce` waited for
+  the pull to be made and then advanced `TestTimeProvider` by the retry delay — but the bridge arms
+  the retry in the *continuation* that observes the refusal, so on Linux the advance fired nothing
+  and the timer, created a moment later, then waited out a delay that had already gone by. The test
+  failed on three runs out of three under WSL and had never failed on Windows. The fix is
+  `TestTimeProvider.WaitForTimerAsync`, which waits for the timer to exist before the clock moves; a
+  longer sleep would only have changed the odds. Anything else in this repository that advances the
+  test clock after triggering asynchronous work has the same shape and the same fix.
 - **C56** **A backend killed mid-request is ordered differently on Linux and on Windows.** The live
   recovery phase kills Roslyn and asks a question. On Windows the process exit is observed before
   the next request is forwarded almost every time, so the request is held by the readiness gate and

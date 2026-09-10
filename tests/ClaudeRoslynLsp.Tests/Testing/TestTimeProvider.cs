@@ -92,6 +92,44 @@ internal sealed class TestTimeProvider : TimeProvider
         }
     }
 
+    /// <summary>
+    /// Waits until something has scheduled a timer that would fire within <paramref name="window"/>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The other half of "the clock is under the test's control" (C62).</b> Moving the clock only
+    /// fires timers that already exist, so a test that advances before the code under test has armed
+    /// one fires nothing — and then the timer, created afterwards, waits out a delay that has already
+    /// gone by. That race is invisible on Windows, where the continuation that arms the timer usually
+    /// wins, and deterministic on Linux, where it usually does not. Waiting for the timer to appear
+    /// is the fix; a longer sleep would only change the odds.
+    /// </remarks>
+    /// <param name="window">How far ahead a timer counts as "armed for this step".</param>
+    /// <param name="cancellationToken">Cancels the wait.</param>
+    internal async Task WaitForTimerAsync(TimeSpan window, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (_gate)
+            {
+                var limit = _now + window;
+
+                foreach (var timer in _timers)
+                {
+                    if (timer.NextDue is { } due && due <= limit)
+                    {
+                        return;
+                    }
+                }
+            }
+
+            await Task.Delay(5, cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new TimeoutException($"Nothing scheduled a timer due within {window} on the test clock.");
+    }
+
     /// <summary>Forgets a disposed timer.</summary>
     private void Remove(TestTimer timer)
     {

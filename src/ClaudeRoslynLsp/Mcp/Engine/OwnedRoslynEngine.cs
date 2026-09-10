@@ -97,22 +97,37 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     /// </remarks>
     internal static readonly TimeSpan ScopeSettle = TimeSpan.FromSeconds(1.5);
 
-    /// <summary>How long the confirming pull after a scope change waits, given a fallback exists.</summary>
-    internal static readonly TimeSpan ScopeConfirmPull = TimeSpan.FromSeconds(4);
+    /// <summary>How long one confirming pull after a scope change waits, given a fallback exists.</summary>
+    internal static readonly TimeSpan ScopeConfirmPull = TimeSpan.FromSeconds(3);
 
     /// <summary>How long a confirming attempt waits for a <c>workspace/diagnostic/refresh</c>.</summary>
-    internal static readonly TimeSpan RefreshWait = TimeSpan.FromSeconds(5);
+    /// <remarks>
+    /// Roslyn sends one on an idle machine and does not always send one on a loaded machine, so this
+    /// is a shortcut rather than a dependency: when it arrives the next sample happens at once, and
+    /// when it does not the loop falls back to sampling on <see cref="ScopeSettle"/>.
+    /// </remarks>
+    internal static readonly TimeSpan RefreshWait = TimeSpan.FromSeconds(2);
 
     /// <summary>
-    /// How many fresh pulls a scope change is confirmed with before the first answer stands.
+    /// How long a scope change is given to show up in a pull before the first answer stands.
     /// </summary>
     /// <remarks>
-    /// Three, because two is not always enough and the cost is paid once per session per scope: the
-    /// same solution answered on the first confirming pull in one run and on the second in the next.
-    /// A pull that is held tells us nothing has changed <em>yet</em>, so the answer is another
-    /// request rather than a longer wait — see <see cref="WorkspaceDiagnosticAsync"/>.
+    /// <para>
+    /// A budget rather than a count of attempts, because what varies is how long Roslyn takes to run
+    /// every analyzer over every file, and that is a property of the machine and the solution rather
+    /// than of a number chosen here: the same three-project fixture confirmed on the first sample
+    /// idle and had not confirmed after six on a box running the rest of the test suite.
+    /// </para>
+    /// <para>
+    /// Eight seconds, deliberately short of what a contended machine needs. Sampling for longer does
+    /// not rescue that case — a box running a whole test suite beside Roslyn had not produced the
+    /// analyzer set after thirty — and it does make the common case, where the first pull was already
+    /// right, eight seconds slower for nothing. The answer to "a solution-wide pull may not carry
+    /// analyzer diagnostics for closed files on a busy machine" is `scope: "file"`, which always
+    /// does, and that is where `fixDiagnostics` looks for its site when it is given a path.
+    /// </para>
     /// </remarks>
-    internal const int ScopeConfirmAttempts = 3;
+    internal static readonly TimeSpan ScopeConfirmBudget = TimeSpan.FromSeconds(8);
 
     /// <summary>
     /// The <c>workspace/didChangeConfiguration</c> notification, written out rather than serialised.
@@ -545,31 +560,23 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
 
         lock (_stateLock)
         {
+            // Remembered before the confirming samples, not after them. It is what makes those
+            // samples "warm" — that is, entitled to the short budget and to answering `null` when
+            // Roslyn holds them — and without it the very first call of a session would spend the
+            // whole first-pull budget on each of them and then refuse.
+            if (report is not null)
+            {
+                _lastWorkspaceReport = report;
+            }
+
             again = _scopeChangedSincePull;
             _scopeChangedSincePull = false;
         }
 
-        for (var attempt = 0; again && attempt < ScopeConfirmAttempts; attempt++)
+        if (again)
         {
-            // C57, and the shape of this loop is the whole of it. A scope change reaches Roslyn's
-            // analysis some seconds after the configuration pull that carried it was answered, and —
-            // this is the part that costs the retries — a pull already waiting when it lands is
-            // *not* woken by it. Roslyn computes the set when the request arrives, so what is needed
-            // is a fresh request afterwards, not a longer wait on the current one.
-            //
-            // "Afterwards" is established from Roslyn's own signal where it gives one: it sends
-            // `workspace/diagnostic/refresh` when a client's diagnostics have gone stale, which is
-            // exactly this event. The settle delay is the fallback for a build that does not, and
-            // for the window between the refresh and the analysis behind it finishing.
-            await WaitForRefreshAsync(cancellationToken).ConfigureAwait(false);
-            await Task.Delay(ScopeSettle, _time, cancellationToken).ConfigureAwait(false);
-
-            if (await PullWorkspaceAsync(previousResultIds, ScopeConfirmPull, cancellationToken)
-                    .ConfigureAwait(false) is { } confirmed)
-            {
-                report = confirmed;
-                break;
-            }
+            report = await ConfirmScopeChangeAsync(previousResultIds, report, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         lock (_stateLock)
@@ -581,6 +588,85 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
 
             return report ?? _lastWorkspaceReport ?? new WorkspaceDiagnosticReport();
         }
+    }
+
+    /// <summary>
+    /// Keeps asking, after a scope change, until the answer actually changes or the budget runs out.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// C57 is why a single extra pull is not enough, and a loaded machine is why a fixed number of
+    /// them is not either. Raising the analyzer scope makes Roslyn run every analyzer over every
+    /// file, which takes seconds on a three-project fixture and much longer on a contended box; a
+    /// pull issued before that finishes answers with the set it had, and — the part that costs the
+    /// retries — a pull *waiting* when the new set lands is not woken by it. So the loop samples:
+    /// wait for Roslyn's own <c>workspace/diagnostic/refresh</c> where it sends one, settle, ask
+    /// again, and stop as soon as the report is no longer the one we started with.
+    /// </para>
+    /// <para>
+    /// "No longer the same" is measured as the number of diagnostics across the whole report. That
+    /// is a heuristic and it is the honest one available: the engine does not know which id the
+    /// caller is looking for, and a scope is only ever raised here, so more is the shape the change
+    /// takes. When the budget expires the first answer stands — a smaller true answer beats a call
+    /// that never returns.
+    /// </para>
+    /// </remarks>
+    private async Task<WorkspaceDiagnosticReport?> ConfirmScopeChangeAsync(
+        IReadOnlyList<PreviousResultId> previousResultIds,
+        WorkspaceDiagnosticReport? first,
+        CancellationToken cancellationToken)
+    {
+        var baseline = CountOf(first);
+        var started = _time.GetTimestamp();
+        var attempts = 0;
+
+        while (_time.GetElapsedTime(started) < ScopeConfirmBudget)
+        {
+            attempts++;
+
+            await WaitForRefreshAsync(cancellationToken).ConfigureAwait(false);
+            await Task.Delay(ScopeSettle, _time, cancellationToken).ConfigureAwait(false);
+
+            var confirmed = await PullWorkspaceAsync(previousResultIds, ScopeConfirmPull, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (confirmed is null)
+            {
+                continue;
+            }
+
+            if (CountOf(confirmed) != baseline)
+            {
+                var elapsed = _time.GetElapsedTime(started).TotalSeconds;
+                Log.ScopeConfirmed(_logger, attempts, elapsed);
+
+                return confirmed;
+            }
+
+            first ??= confirmed;
+        }
+
+        Log.ScopeUnconfirmed(_logger, attempts, ScopeConfirmBudget.TotalSeconds);
+
+        return first;
+    }
+
+    /// <summary>How many diagnostics a report carries, across every document in it.</summary>
+    private static int CountOf(WorkspaceDiagnosticReport? report)
+    {
+        if (report is null)
+        {
+            return -1;
+        }
+
+        var total = 0;
+
+        foreach (var document in report.Items)
+        {
+            total += document.Items.Length;
+        }
+
+        return total;
     }
 
     /// <summary>
@@ -1716,6 +1802,20 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
 
         [LoggerMessage(EventId = 5112, Level = LogLevel.Information, Message = "{Message}")]
         internal static partial void Notice(ILogger logger, string message);
+
+        [LoggerMessage(
+            EventId = 5114,
+            Level = LogLevel.Debug,
+            Message = "The diagnostic scope change showed up on sample {Attempts} after {Seconds:0.0} s (C57).")]
+        internal static partial void ScopeConfirmed(ILogger logger, int attempts, double seconds);
+
+        [LoggerMessage(
+            EventId = 5115,
+            Level = LogLevel.Warning,
+            Message = "A diagnostic scope change had not changed what a pull reports after {Attempts} " +
+                      "sample(s) over {Seconds:0} s; answering from what Roslyn has now, which may not " +
+                      "include analyzer diagnostics for files nobody has open (C14, C57).")]
+        internal static partial void ScopeUnconfirmed(ILogger logger, int attempts, double seconds);
 
         [LoggerMessage(
             EventId = 5113,

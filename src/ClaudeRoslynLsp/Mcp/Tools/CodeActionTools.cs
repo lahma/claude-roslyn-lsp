@@ -400,6 +400,41 @@ internal sealed class CodeActionTools
         string? project,
         CancellationToken cancellationToken)
     {
+        // The site exists only to obtain the action; how far the fix reaches travels separately, in
+        // the scope handed to codeAction/resolveFixAll. So it is looked for in the cheapest place
+        // that can answer: a file the caller named is a *document* pull, which always sees analyzer
+        // diagnostics, where a workspace pull sees them only once the analyzer scope has been raised
+        // and the full-solution analyzer pass has finished — which on a busy machine it may not have
+        // (C14, C57). Falling back to the asked-for scope keeps the no-path case working.
+        var narrowed = path is { Length: > 0 } ? DiagnosticScope.File : scope;
+
+        if (await LookForAsync(context, id, narrowed, path, project, cancellationToken).ConfigureAwait(false)
+            is { } site)
+        {
+            return site;
+        }
+
+        if (narrowed != scope
+            && await LookForAsync(context, id, scope, path, project, cancellationToken).ConfigureAwait(false)
+                is { } wider)
+        {
+            return wider;
+        }
+
+        throw ToolErrors.NotFound(
+            "fixDiagnostics",
+            $"occurrence of {id} in the {scope.ToString().ToLowerInvariant()} scope");
+    }
+
+    /// <summary>One diagnostic of an id in a scope, or <see langword="null"/> when there is none.</summary>
+    private static async Task<DiagnosticEntry?> LookForAsync(
+        RoslynToolContext context,
+        string id,
+        DiagnosticScope scope,
+        string? path,
+        string? project,
+        CancellationToken cancellationToken)
+    {
         var diagnostics = await DiagnosticTools.GetDiagnosticsAsync(
             context,
             scope.ToString().ToLowerInvariant(),
@@ -411,11 +446,7 @@ internal sealed class CodeActionTools
             maxResults: 1,
             cancellationToken).ConfigureAwait(false);
 
-        return diagnostics.Diagnostics is { Count: > 0 } found
-            ? found[0]
-            : throw ToolErrors.NotFound(
-                "fixDiagnostics",
-                $"occurrence of {id} in the {scope.ToString().ToLowerInvariant()} scope");
+        return diagnostics.Diagnostics is { Count: > 0 } found ? found[0] : null;
     }
 
     private static JsonElement DataOrThrow(CatalogedCodeAction action) =>

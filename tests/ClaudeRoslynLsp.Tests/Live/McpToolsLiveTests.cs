@@ -307,14 +307,16 @@ public class McpToolsLiveTests : IDisposable
 
         Assert.Contains("using System.Text;", File.ReadAllText(calculator), StringComparison.Ordinal);
 
-        // D82: a closed file's analyzer diagnostics need the analyzer scope raised as well as the
-        // compiler one (C14's second half). Asserted here rather than only inside fixDiagnostics,
-        // because "found no occurrence of IDE0005" is a symptom several things could cause.
+        // A document pull always sees analyzer diagnostics; a workspace one sees them only once the
+        // analyzer scope is raised (C14) *and* the full-solution analyzer pass has finished, which on
+        // a machine running the rest of this suite it may not have (C57). So the reliable assertion
+        // is the file one, and it is also what a model does: it has just been shown the site.
         var analyzers = await TimedAsync(
-            "getDiagnostics(scope: solution, ids: [IDE0005])",
+            "getDiagnostics(scope: file, ids: [IDE0005])",
             () => DiagnosticTools.GetDiagnosticsAsync(
                 Context,
-                scope: "solution",
+                scope: "file",
+                path: "Hello.Core/Calculator.cs",
                 minSeverity: "hint",
                 includeAnalyzers: true,
                 ids: ["IDE0005"],
@@ -323,31 +325,31 @@ public class McpToolsLiveTests : IDisposable
         _output.WriteLine("  IDE0005                       "
                           + string.Join(", ", (analyzers.Diagnostics ?? []).Select(entry => $"{entry.Path}:{entry.Line}")));
 
-        // The two halves of D82/D83 together: the analyzer scope raised as well as the compiler one
-        // (C14), and the second pull that a scope change needs before the new set appears (C57).
         Assert.Contains(analyzers.Diagnostics ?? [], entry => entry.Path == "Hello.Core/Calculator.cs");
 
-        // C58: with nothing changed since that pull, Roslyn holds the next one. It has to come back
-        // anyway, with the same answer, rather than hanging the tool call for ever.
+        // C58: with nothing changed since the last solution pull, Roslyn holds the next one. It has
+        // to come back anyway, with the answer it gave before, rather than hanging the tool call for
+        // ever — which is what an unbounded pull did.
         var repeated = await TimedAsync(
             "getDiagnostics(scope: solution) with nothing changed",
             () => DiagnosticTools.GetDiagnosticsAsync(
                 Context,
                 scope: "solution",
-                minSeverity: "hint",
-                includeAnalyzers: true,
-                ids: ["IDE0005"],
+                minSeverity: "error",
                 cancellationToken: Cancellation));
 
         Assert.Equal(ToolStatus.Ok, repeated.Status);
-        Assert.Contains(repeated.Diagnostics ?? [], entry => entry.Path == "Hello.Core/Calculator.cs");
+        Assert.Contains(repeated.Diagnostics ?? [], entry => entry.Id == "CS0029");
 
+        // The fix reaches the whole solution; the *site* is looked for in the file the caller named,
+        // which is the cheap and reliable half of the same question.
         var fixAll = await TimedAsync(
             "fixDiagnostics(IDE0005, scope: solution)",
             () => CodeActionTools.FixDiagnosticsAsync(
                 Context,
                 "IDE0005",
                 scope: "solution",
+                path: "Hello.Core/Calculator.cs",
                 cancellationToken: Cancellation));
 
         Assert.Equal(ToolStatus.Ok, fixAll.Status);

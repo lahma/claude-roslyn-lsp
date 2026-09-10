@@ -177,6 +177,11 @@ public class DiagnosticsBridgeTests
         harness.Bridge.OnDidSave(Uri);
         await harness.Channel.WaitForAskedAsync(1, Cancellation);
 
+        // "The pull was made" is not yet "the retry is armed": the bridge schedules it in the
+        // continuation that observes the refusal, and advancing the clock before that fires nothing
+        // at all (C62). Windows usually wins that race; Linux reliably loses it.
+        await harness.Time.WaitForTimerAsync(DiagnosticsBridge.RetryDelay, Cancellation);
+
         harness.Time.Advance(DiagnosticsBridge.RetryDelay);
         await harness.Channel.WaitForClientAsync(1, Cancellation);
 

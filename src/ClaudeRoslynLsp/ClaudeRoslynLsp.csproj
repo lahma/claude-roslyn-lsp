@@ -14,6 +14,12 @@
     <!-- Required for IDE0005 (unnecessary usings) to run under EnforceCodeStyleInBuild;
          CS1591 is silenced centrally. See https://github.com/dotnet/roslyn/issues/41640. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Not a licence to write unsafe code: the [LibraryImport] source generator emits `unsafe`
+         marshalling stubs and refuses to compile without this (SYSLIB1062). It is the price of
+         Roslyn/ChildProcessGuard.cs's job object being AOT-safe - [DllImport] would compile here
+         and then trip IL2026/IL3050, which this repository promotes to errors. No hand-written
+         `unsafe` block exists in the product, and adding one would need its own argument. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <!-- D4: the NuGet channel is what the Claude Code plugin launches. `dotnet pack` produces a

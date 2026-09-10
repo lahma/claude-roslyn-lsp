@@ -288,6 +288,56 @@ public class FileWatchBridgeTests
         Assert.Empty(channel.ToServer);
     }
 
+    /// <summary>
+    /// Past the threshold the per-directory scheme is abandoned for one recursive watcher on the
+    /// root, and every pattern is re-based so it still matches from there (C49).
+    /// </summary>
+    [Fact]
+    public async Task ManyDirectoriesCollapseIntoOneRecursiveRootWatcher()
+    {
+        using var workspace = TempWorkspace.Create("watch-collapse");
+
+        var watchers = new List<CollapsedWatcher>();
+
+        for (var index = 0; index <= FileWatchBridge.MaxWatchers; index++)
+        {
+            var project = $"P{index}";
+            workspace.File_($"{project}/{project}.csproj", "<Project />");
+
+            watchers.Add(new CollapsedWatcher(
+                new Uri(Path.Combine(workspace.Root, project) + Path.DirectorySeparatorChar).AbsoluteUri,
+                ["**/*.cs", $"{project}.csproj"]));
+        }
+
+        var channel = new StubAdapterChannel { WorkspaceRoot = workspace.Root };
+
+        using var bridge = new FileWatchBridge(
+            () => workspace.Root,
+            new DocumentMirror(NullLogger.Instance),
+            channel,
+            TimeProvider.System,
+            NullLogger.Instance);
+
+        bridge.Schedule(watchers);
+        await WaitAsync(() => bridge.WatcherCount > 0, Cancellation);
+
+        // One handle for all of them, rather than sixty-four of ninety-one and no word about the
+        // twenty-seven that were dropped.
+        Assert.Equal(1, bridge.WatcherCount);
+
+        // And a project file deep in the tree still reaches Roslyn, which a re-based bare pattern is
+        // the only reason for.
+        File.WriteAllText(Path.Combine(workspace.Root, "P3", "Late.cs"), "class Late { }");
+
+        await WaitAsync(() => channel.ToServer.Count > 0, Cancellation);
+        await Task.Delay(300, Cancellation);
+
+        var changes = channel.ToServer.SelectMany(Changes).ToArray();
+
+        Assert.Contains(changes, x => x.Uri.EndsWith("Late.cs", StringComparison.Ordinal));
+        Assert.Contains(changes, x => x.Uri.EndsWith("P3.csproj", StringComparison.Ordinal));
+    }
+
     /// <summary>Reads a <c>workspace/didChangeWatchedFiles</c> back into something assertable.</summary>
     private static (string Uri, int Type)[] Changes(JsonElement notification)
     {

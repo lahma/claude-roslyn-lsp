@@ -62,11 +62,18 @@ internal sealed partial class FileWatchBridge : IDisposable
     /// </remarks>
     internal static readonly TimeSpan RebuildDelay = TimeSpan.FromMilliseconds(500);
 
-    /// <summary>The most filesystem watchers this will stand up.</summary>
+    /// <summary>
+    /// The point at which per-directory watching is abandoned for one recursive watcher on the
+    /// workspace root.
+    /// </summary>
     /// <remarks>
-    /// A guard against a registration set nobody has seen yet, not a tuning value: a two-project
-    /// solution collapses to a handful of directories (C32) and a large one to a few dozen. Each
-    /// watcher costs a kernel handle and a buffer.
+    /// <b>A switch, not a cap.</b> It was a cap, and Quartz.NET showed why that was wrong: 30
+    /// projects produce 91 distinct watch directories inside the root (C49), so a limit of 64 left
+    /// 27 of them unwatched — silently, and in exactly the way this class exists to prevent. One
+    /// recursive watcher on the root covers all of them for one handle and one buffer; the extra
+    /// events it sees are removed by the same exclusion list and glob filter every other event goes
+    /// through. Per-directory watching is still preferred below the threshold because on a monorepo
+    /// the root subtree is far larger than the part Roslyn asked about.
     /// </remarks>
     internal const int MaxWatchers = 64;
 
@@ -392,14 +399,14 @@ internal sealed partial class FileWatchBridge : IDisposable
 
             DisposeWatchers();
 
+            if (kept.Count > MaxWatchers)
+            {
+                Log.CollapsingToRoot(_logger, kept.Count, MaxWatchers);
+                kept = [CollapseToRoot(root, kept)];
+            }
+
             foreach (var target in kept)
             {
-                if (_watchers.Count >= MaxWatchers)
-                {
-                    Log.TooManyWatchers(_logger, kept.Count, MaxWatchers);
-                    break;
-                }
-
                 if (Create(target) is { } created)
                 {
                     _watchers.Add(created);
@@ -408,6 +415,36 @@ internal sealed partial class FileWatchBridge : IDisposable
 
             Log.Watching(_logger, _watchers.Count, outside);
         }
+    }
+
+    /// <summary>
+    /// Folds every kept target into one recursive watcher on the workspace root.
+    /// </summary>
+    /// <remarks>
+    /// Each pattern is re-based rather than reused: a bare <c>Quartz.csproj</c> is relative to its
+    /// own project directory and would match nothing measured from the root, so anything that does
+    /// not already begin with <c>**/</c> gets one. That widens each pattern to "anywhere below the
+    /// root", which is exactly what a single root watcher can honour and is the same set the
+    /// per-directory watchers would have covered between them.
+    /// </remarks>
+    private static WatchTarget CollapseToRoot(string root, List<WatchTarget> kept)
+    {
+        var patterns = new List<string>();
+
+        foreach (var target in kept)
+        {
+            foreach (var pattern in target.Patterns)
+            {
+                var rebased = pattern.StartsWith("**/", StringComparison.Ordinal) ? pattern : "**/" + pattern;
+
+                if (!patterns.Contains(rebased, StringComparer.OrdinalIgnoreCase))
+                {
+                    patterns.Add(rebased);
+                }
+            }
+        }
+
+        return new WatchTarget(root, patterns, Recursive: true);
     }
 
     /// <summary>Stands up one <see cref="FileSystemWatcher"/>, or reports why it could not.</summary>
@@ -802,9 +839,10 @@ internal sealed partial class FileWatchBridge : IDisposable
 
         [LoggerMessage(
             EventId = 1408,
-            Level = LogLevel.Warning,
+            Level = LogLevel.Information,
             Message = "Roslyn registered {Requested} distinct watch directories, more than the {Limit} " +
-                      "this adapter will open; the rest are not watched.")]
-        internal static partial void TooManyWatchers(ILogger logger, int requested, int limit);
+                      "this adapter opens individually; watching the workspace root recursively " +
+                      "instead, which covers all of them for one handle.")]
+        internal static partial void CollapsingToRoot(ILogger logger, int requested, int limit);
     }
 }

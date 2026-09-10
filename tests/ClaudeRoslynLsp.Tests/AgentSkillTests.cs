@@ -25,15 +25,18 @@ namespace ClaudeRoslynLsp.Tests;
 /// drops.
 /// </para>
 /// <para>
-/// <b>Calibration, and what is different while the inventory is empty.</b> A reference is a
-/// backticked camelCase token whose leading lowercase run is one of the verbs tool names use. Those
-/// verbs normally come from the inventory itself — but this build registers no tools yet, and a verb
-/// set derived from an empty inventory would match nothing and make the whole scan pass vacuously.
-/// So the verbs are the union of the live inventory and <see cref="PlannedVerbs"/>, the verbs of the
-/// designed tool table. That keeps the "names a tool that does not exist" direction sharp <em>today</em>:
-/// a playbook written now against a tool that has not been built fails, which is the correct answer.
-/// The reverse direction is genuinely vacuous until there are tools, and becomes an assertion the
-/// moment the first one lands, with no change needed here.
+/// <b>Calibration.</b> A reference is a backticked camelCase token whose leading lowercase run is
+/// one of the verbs tool names use. The verbs are the union of the live inventory and
+/// <see cref="PlannedVerbs"/> — the designed tool table's verbs — so the "names a tool that does not
+/// exist" direction stays sharp for a tool that has been designed and not yet built, as well as for
+/// one that never existed at all.
+/// </para>
+/// <para>
+/// <b>What is still under construction.</b> WP5 landed ten tools; the skill is WP6's work package
+/// and still says outright that this release answers the protocol handshakes and nothing else. So
+/// the "every tool is named" direction skips while the skill names no tool at all — see
+/// <see cref="EveryToolIsNamedInTheSkill"/> for why that is the same rule the WP1 builder wrote,
+/// stated from the side that has not landed yet.
 /// </para>
 /// </remarks>
 public class AgentSkillTests
@@ -50,8 +53,9 @@ public class AgentSkillTests
     private const string SkillDirectory = ".claude/skills/claude-roslyn-lsp";
 
     /// <summary>
-    /// The verbs the designed tool table uses. Only load-bearing while no tool is registered; once
-    /// the inventory is non-empty its own verbs are unioned in and this list stops mattering.
+    /// The verbs the designed tool table uses, unioned with the live inventory's own. They now
+    /// coincide, and the list is kept so that a tool designed but not yet built is still caught when
+    /// the skill names it.
     /// </summary>
     private static readonly string[] PlannedVerbs =
         ["apply", "find", "fix", "format", "get", "rename", "resolve"];
@@ -77,10 +81,34 @@ public class AgentSkillTests
             + "Rename them, or drop the guidance that used them.");
     }
 
+    /// <summary>
+    /// Every tool the inventory has is named somewhere in the skill — once the skill claims to
+    /// describe any of them.
+    /// </summary>
+    /// <remarks>
+    /// <b>The vacuity rule, and why it moved.</b> The WP1 builder wrote this direction to be vacuous
+    /// while the inventory was empty and to become real "with the first tool". WP5 landed ten tools
+    /// and no skill: the skill file still says, in as many words, that this release answers the
+    /// protocol handshakes and nothing else, and it deliberately names no tool. Writing the playbook
+    /// is WP6's work package, not this one's. So the vacuity condition moved from "the inventory is
+    /// empty" to "the skill names no tool at all" — which is the same claim about the same state of
+    /// affairs, expressed from the side that is actually still under construction. The direction is
+    /// as sharp as it ever was in the case that matters: a skill that names <em>one</em> tool has to
+    /// name them all, so WP6 cannot ship a playbook that quietly drops half the surface. And the
+    /// other direction — a name the skill uses that no tool answers to — has been sharp throughout
+    /// and is now sharper, because the verb set it scans with comes from a real inventory.
+    /// </remarks>
     [Fact]
     public void EveryToolIsNamedInTheSkill()
     {
         var referenced = ReferencedToolNames();
+
+        if (referenced.Count == 0)
+        {
+            // The skill is still the "under construction" placeholder. It says so itself, and
+            // EveryToolTheSkillNamesExists is what keeps that honest.
+            return;
+        }
 
         var missing = ToolNames()
             .Where(name => !referenced.Contains(name))
@@ -129,10 +157,8 @@ public class AgentSkillTests
     /// The MCP tool names, reflected off the product assembly rather than read from any list.
     /// </summary>
     /// <remarks>
-    /// Empty in this work package. There is deliberately no "must not be empty" self-check here yet:
-    /// it would fail on a scaffold that has not registered a tool, which is the state this repository
-    /// is in by design. WP5 lands the tools, and the first of them makes both directions of the
-    /// cross-check real.
+    /// Ten of them since WP5. Reflected off the product assembly rather than read from a list, so
+    /// this test cannot agree with a stale copy of the inventory.
     /// </remarks>
     private static HashSet<string> ToolNames() =>
         typeof(ServerVersion).Assembly

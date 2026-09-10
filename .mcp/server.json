@@ -25,25 +25,97 @@
       "environmentVariables": [
         {
           "name": "CLAUDE_ROSLYN_LSP_SOLUTION",
-          "description": "Path to the .slnx, .sln or .csproj to load. Optional: the adapter discovers one from the working directory. Set it in a monorepo, where discovery picks a solution that is often not the one being worked in.",
-          "isRequired": false,
-          "isSecret": false
-        },
-        {
-          "name": "CLAUDE_ROSLYN_LSP_ROSLYN_VERSION",
-          "description": "Overrides the pinned roslyn-language-server version the adapter downloads from nuget.org. Optional; the pin is the only version this release is tested against.",
+          "description": "Path to the .slnx, .sln or .csproj to load. Optional: the adapter discovers one from the working directory, honouring .vscode/settings.json's dotnet.defaultSolution. Set it in a monorepo, where discovery picks a solution that is often not the one being worked in. A path that does not exist is a startup failure rather than a fall back to discovery.",
           "isRequired": false,
           "isSecret": false
         },
         {
           "name": "CLAUDE_ROSLYN_LSP_ROSLYN_PATH",
-          "description": "Directory holding an already-installed Microsoft.CodeAnalysis.LanguageServer.dll, used instead of downloading one. Optional; set it to run air-gapped or against a locally built server.",
+          "description": "Directory holding an already-installed Microsoft.CodeAnalysis.LanguageServer.dll, used instead of downloading one. Optional; set it to run air-gapped or against a locally built server. Its version is not checked. Alias: CLAUDE_ROSLYN_LSP_SERVER_PATH.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_ROSLYN_VERSION",
+          "description": "Overrides the pinned roslyn-language-server version the adapter downloads from nuget.org. Optional; the pin is the only version this release is tested against, an override has no hash to verify against, and doctor reports it as unverified. Alias: CLAUDE_ROSLYN_LSP_SERVER_VERSION.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_ROSLYN_ARGS",
+          "description": "Extra arguments for the Roslyn child process, split on whitespace with no quoting. Development only: it exists so the smoke test can point the launcher at this binary's own scripted backend.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_CACHE_DIR",
+          "description": "Where downloaded Roslyn servers are extracted. Optional; defaults to a directory under the adapter's home. Moves the payloads only - logs and staged downloads stay under the home.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_HOME",
+          "description": "The adapter's per-user state directory: downloads, logs and lock files. Optional; unset, it falls back to CLAUDE_PLUGIN_DATA and then to the platform cache location (%LOCALAPPDATA%, ~/Library/Caches, $XDG_CACHE_HOME or ~/.cache). Around 140 MB extracted per Roslyn version per platform, so it belongs on a disk with room and outside a roaming profile.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_OFFLINE",
+          "description": "Set to 1 to refuse to download a Roslyn server. A missing cache entry becomes an immediate, explained failure instead of a 70 MB fetch. Accepts 1/true/yes/on and 0/false/no/off; default 0.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_TRANSPORT",
+          "description": "How the adapter talks to the Roslyn child process: pipe (default) or stdio. The named pipe is preferred because Roslyn writes a startup banner to its own stdout, which under stdio shares a stream with the protocol.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS",
+          "description": "How long a call waits for the workspace to finish loading before it is answered anyway, 1-3600, default 120. Tools report status \"loading\" rather than hanging while they wait.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_DIAGNOSTICS",
+          "description": "The pull-to-push diagnostics bridge, on by default. Applies to the lsp verb only: an MCP client asks for diagnostics with getDiagnostics instead. Accepts 1/true/yes/on and 0/false/no/off.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_DIAGNOSTIC_MIN_SEVERITY",
+          "description": "The severity floor applied before diagnostics are pushed to an LSP client: error, warning (default), information or hint. The MCP getDiagnostics tool takes its own minSeverity argument instead.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS",
+          "description": "Opt-in workspace-wide diagnostics for files that are not open, for the lsp verb. Off unless set, because it needs a full-solution compiler scope, which is what makes a large solution slow.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_FILE_WATCHER",
+          "description": "The file-watch bridge, on by default. Without it a file created by a shell command or by git never joins its project and every later answer is silently stale. Accepts 1/true/yes/on and 0/false/no/off.",
           "isRequired": false,
           "isSecret": false
         },
         {
           "name": "CLAUDE_ROSLYN_LSP_LOG_LEVEL",
           "description": "Trace, Debug, Information, Warning, Error, Critical or None (default Information). Logs go to stderr only - stdout is the JSON-RPC channel.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL",
+          "description": "The level handed to the Roslyn child process, default Warning. Its Information level is about twenty lines of narration per start, all of it on this adapter's stderr.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_OPTIONS",
+          "description": "A JSON object merged into the answers the adapter gives Roslyn's workspace/configuration requests, for the sections the defaults get wrong for your repository. A syntax error is a logged warning, never a startup failure.",
           "isRequired": false,
           "isSecret": false
         }

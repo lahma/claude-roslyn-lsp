@@ -193,6 +193,17 @@ public class PluginManifestTests
         {
             if (name.StartsWith(ClaudeRoslynLspOptions.PluginOptionPrefix, StringComparison.Ordinal))
             {
+                // The prefix is only half of it: the suffix has to be a variable the adapter
+                // actually reads. A misspelling here fails nowhere — the launcher writes the value,
+                // the reader looks for a different name, and the user's answer to the prompt is
+                // discarded in silence.
+                var suffix = name[ClaudeRoslynLspOptions.PluginOptionPrefix.Length..];
+
+                Assert.True(
+                    EnvironmentSurface.Accepted.Contains(suffix),
+                    $"{section} maps an option onto '{name}', but nothing in ClaudeRoslynLspOptions reads "
+                    + $"'{suffix}'. The prompt would be answered and thrown away.");
+
                 continue;
             }
 

@@ -51,13 +51,13 @@
     "solution": {
       "type": "string",
       "title": "Solution or project file",
-      "description": "Absolute or repository-relative path to the .slnx, .sln or .csproj to load. Leave blank and the adapter discovers one; set it in a monorepo, where the discovered solution is often not the one you are working in.",
+      "description": "Absolute or repository-relative path to the .slnx, .sln or .csproj to load. Leave blank and the adapter discovers one, honouring .vscode/settings.json's dotnet.defaultSolution; set it in a monorepo, where the discovered solution is often not the one you are working in. A path that is not there fails with a message rather than falling back to a guess.",
       "default": ""
     },
     "roslyn_version": {
       "type": "string",
       "title": "Roslyn language server version",
-      "description": "Overrides the pinned roslyn-language-server version the adapter downloads. Blank uses the version this release was tested against; anything else is unsupported and may not speak the same protocol.",
+      "description": "Overrides the pinned roslyn-language-server version the adapter downloads. Blank uses the version this release was tested against; anything else has no hash to verify against, is reported by doctor as unverified, and may not accept the same command line.",
       "default": ""
     },
     "roslyn_path": {

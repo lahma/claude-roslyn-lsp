@@ -146,6 +146,46 @@ public class McpServerManifestTests
         }
     }
 
+    /// <summary>
+    /// The manifest lists every variable the adapter reads, under its canonical spelling, and
+    /// nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the configuration contract a client reads <em>before</em> it runs the server, and for
+    /// several clients it is what generates the environment block a user then edits. A knob missing
+    /// from it is a knob nobody discovers; a knob in it that nothing reads is a knob a user sets and
+    /// then cannot work out why it did nothing. Both are silent, and neither fails anywhere else in
+    /// the build.
+    /// </para>
+    /// <para>
+    /// The expected set comes from <see cref="EnvironmentSurface"/>, which recovers it from
+    /// <c>FromEnvironment</c>'s own source, so this test cannot agree with a stale list — adding a
+    /// variable to the options record fails here until the manifest describes it. The two accepted
+    /// aliases are deliberately <em>not</em> listed: they are read so that following the other half
+    /// of the design document is not a silent no-op, not advertised as a second way to spell a
+    /// setting.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ManifestDescribesEveryVariableTheAdapterReads()
+    {
+        var root = FindRepositoryRoot();
+        using var manifest = ReadManifest(root);
+
+        var declared = SingleNuGetPackage(manifest)
+            .GetProperty("environmentVariables")
+            .EnumerateArray()
+            .Select(variable => variable.GetProperty("name").GetString()!)
+            .ToList();
+
+        Assert.Equal(declared.Count, declared.Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Equal(
+            EnvironmentSurface.Canonical.OrderBy(name => name, StringComparer.Ordinal),
+            declared.OrderBy(name => name, StringComparer.Ordinal));
+    }
+
     private static JsonElement SingleNuGetPackage(JsonDocument manifest)
     {
         var packages = manifest.RootElement.GetProperty("packages")

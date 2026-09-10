@@ -43,7 +43,7 @@ from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) o
   `workspace/_roslyn_restore`, `workspace/_roslyn_restorableProjects`,
   `workspace/_roslyn_refreshSourceGenerators`, `window/_roslyn_showToast`,
   `roslyn/updateLogLevel`, `roslyn/resolveContext@2`, and a `textDocument/_vs_*` family.
-- **C40** (2026-09-10, WP3) A bare handshake — `initialize` with an **empty** `capabilities` object,
+- **C43** (2026-09-10, WP3) A bare handshake — `initialize` with an **empty** `capabilities` object,
   no `initialized`, then `shutdown`/`exit` — answers in 0.33-0.63 s, sends **zero**
   `window/logMessage` notifications, and the process exits 0 within 18-27 ms of `exit`. Peak working
   set at that point is 84 MB; C38's 253 MB is a *loaded solution*, not a started server. It still
@@ -51,7 +51,7 @@ from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) o
   `inlayHintProvider`, `_vs_onAutoInsertProvider` and the rest), which is C26 restated from the
   other direction: the client declaring nothing changes nothing. Pipe connect was 0.18-0.62 s;
   stdio "connect" is 5 ms because there is nothing to connect.
-- **C41** (2026-09-10, WP3) The flat container lower-cases both id and version in the path, and a
+- **C44** (2026-09-10, WP3) The flat container lower-cases both id and version in the path, and a
   request for a mixed-case version is a 404 rather than a redirect. `tools/net10.0/<rid>/` extracts
   to 163 files at the top level plus `BuildHost-net472/`, `BuildHost-netcore/`, `Targets/` and 13
   culture folders; `Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json` asks for `net10.0`

@@ -232,19 +232,35 @@ partial class Build : FalloutBuild,
         });
 
     Target SmokeTest => _ => _
-        .Description("Drives a real LSP handshake and a real MCP handshake against the published AOT binary")
+        .Description("Drives three real protocol exchanges against the published AOT binary")
         .DependsOn(PublishAot)
         .Executes(() =>
         {
-            // Leg 1: the LSP verb. This is the leg that proves the framing, the id echo and the
-            // shutdown/exit contract survived Native AOT compilation on this architecture.
-            RunLspHandshake();
+            // Leg 1: the LSP verb against the scripted backend running INSIDE the server process.
+            // This is the leg that proves the mediation itself survived Native AOT compilation on
+            // this architecture - framing, the readiness gate, the id map, shutdown ordering.
+            RunLspHandshake("in-process fake backend", new Dictionary<string, string>
+            {
+                ["CLAUDE_ROSLYN_LSP_SOLUTION"] = SmokeSolutionPath,
+            }, arguments: "lsp --smoke");
 
-            // Leg 2: the MCP verb, same binary, different argument.
+            // Leg 2: the same exchange with the scripted backend in a CHILD PROCESS, which is the
+            // only leg that proves the plumbing: that this RID can spawn a child at all, that its
+            // three redirected handles are wired the right way round, and that nothing the child
+            // writes at startup lands on what is now a protocol channel. The real server does
+            // exactly that in one of its transports (C7), so it is not a hypothetical.
+            RunLspHandshake("child-process fake backend", new Dictionary<string, string>
+            {
+                ["CLAUDE_ROSLYN_LSP_SOLUTION"] = SmokeSolutionPath,
+                ["CLAUDE_ROSLYN_LSP_FAKE_BACKEND"] = "child",
+            }, arguments: "lsp");
+
+            // Leg 3: the MCP verb, same binary, different argument.
             var toolNames = Handshake(environment: null, ExpectedToolNames, arguments: "mcp");
 
             ReportSummary(_ => _
                 .AddPair("Runtime", Runtime)
+                .AddPair("LSP legs", "2")
                 .AddPair("Tools", toolNames.Length.ToString()));
         });
 
@@ -253,11 +269,33 @@ partial class Build : FalloutBuild,
     // ---------------------------------------------------------------------------------------
 
     const int LspInitializeId = 1;
-    const int LspShutdownId = 2;
+    const int LspDefinitionId = 2;
+    const int LspShutdownId = 3;
+
+    /// <summary>How long the LSP leg waits for a request that the readiness gate is holding.</summary>
+    /// <remarks>
+    /// The scripted backend reports the workspace loaded a fraction of a second after
+    /// <c>solution/open</c>, so this is generous by two orders of magnitude. It is a deadlock
+    /// detector, not a budget.
+    /// </remarks>
+    static readonly TimeSpan LspAnswerTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>
-    /// Spawns the published binary as an LSP server and drives
-    /// <c>initialize</c> / <c>initialized</c> / <c>shutdown</c> / <c>exit</c> over stdio.
+    /// A solution path handed to the smoke legs so the adapter sends <c>solution/open</c> and the
+    /// scripted backend starts its load timeline.
+    /// </summary>
+    /// <remarks>
+    /// It deliberately does not exist. Nothing here opens a real solution - the fake answers
+    /// <c>solution/open</c> from a script - and what the path is for is to take the adapter down the
+    /// configured branch rather than the misc-files one (C28), so that the readiness gate is actually
+    /// exercised instead of opening immediately.
+    /// </remarks>
+    string SmokeSolutionPath => (PublishDirectory / "SmokeTest.slnx").ToString();
+
+    /// <summary>
+    /// Spawns the published binary as an LSP server and drives a whole session over stdio:
+    /// <c>initialize</c>, <c>initialized</c>, a <c>didOpen</c> and a <c>textDocument/definition</c>;
+    /// then, once the definition has been answered, <c>shutdown</c> and <c>exit</c>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -268,50 +306,77 @@ partial class Build : FalloutBuild,
     /// message. A source scan cannot prove that; a running binary can.
     /// </para>
     /// <para>
+    /// The definition request is what proves the <em>mediation</em> rather than the transport. It is
+    /// sent immediately after <c>initialized</c>, while the scripted backend is still loading, and
+    /// that backend answers navigation with an empty successful result until it reports the workspace
+    /// loaded - exactly as the real server does (C27). So a non-empty answer here can only mean the
+    /// readiness gate held the request and released it afterwards; a gate that had been "simplified"
+    /// away would produce a well-formed, successful, empty answer and fail this assertion.
+    /// </para>
+    /// <para>
+    /// <c>shutdown</c> is deliberately <b>not</b> sent until that answer has arrived. Writing the
+    /// whole exchange up front would let a correct server shut down with the request still held, and
+    /// the leg would then be asserting nothing about the gate at all.
+    /// </para>
+    /// <para>
     /// stderr is captured and folded into every failure message, because a server that dies during
     /// startup says why there and nowhere else.
     /// </para>
     /// </remarks>
-    void RunLspHandshake()
+    /// <param name="legName">What this leg is called in the log and in failure messages.</param>
+    /// <param name="environment">Extra environment variables that select the backend.</param>
+    /// <param name="arguments">The verb and its flags.</param>
+    void RunLspHandshake(string legName, IReadOnlyDictionary<string, string> environment, string arguments)
     {
         // Written out verbatim rather than interpolated so each one reads exactly as it goes on the
-        // wire. The ids must stay in step with LspInitializeId / LspShutdownId.
-        var requests = new[]
+        // wire. The ids must stay in step with the Lsp*Id constants.
+        var session = new[]
         {
-            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}""",
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"file:///smoke","capabilities":{}}}""",
             """{"jsonrpc":"2.0","method":"initialized","params":{}}""",
-            """{"jsonrpc":"2.0","id":2,"method":"shutdown"}""",
+            """{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///smoke/Program.cs","languageId":"csharp","version":1,"text":"class Program { }"}}}""",
+            """{"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///smoke/Program.cs"},"position":{"line":0,"character":6}}}""",
+        };
+
+        var goodbye = new[]
+        {
+            """{"jsonrpc":"2.0","id":3,"method":"shutdown"}""",
             """{"jsonrpc":"2.0","method":"exit"}""",
         };
 
         var diagnostics = new List<string>();
 
-        using var process = new Process { StartInfo = StartInfoFor(arguments: "lsp", environment: null) };
+        using var process = new Process { StartInfo = StartInfoFor(arguments, environment) };
         process.ErrorDataReceived += (_, e) => Collect(diagnostics, e.Data);
 
-        Log.Information("Starting {Executable} lsp", PublishedExecutable);
+        Log.Information("Starting {Executable} {Arguments} ({Leg})", PublishedExecutable, arguments, legName);
         process.Start();
         process.BeginErrorReadLine();
 
-        // Drained on a thread so a server that answers before we finish writing cannot fill the pipe
-        // buffer and deadlock us both.
-        var stdout = new MemoryStream();
-        Exception readerFailure = null;
+        // Drained on its own thread so a server that answers before we finish writing cannot fill the
+        // pipe buffer and deadlock us both. It keeps every byte for the byte-exact frame check at the
+        // end and, as it goes, records which ids have been answered so the exchange can wait for one.
+        var collector = new LspFrameCollector(process.StandardOutput.BaseStream);
 
-        var reader = new Thread(() =>
+        foreach (var request in session)
         {
-            try
-            {
-                process.StandardOutput.BaseStream.CopyTo(stdout);
-            }
-            catch (Exception exception)
-            {
-                readerFailure = exception;
-            }
-        }) { IsBackground = true };
-        reader.Start();
+            WriteLspFrame(process.StandardInput.BaseStream, request);
+        }
 
-        foreach (var request in requests)
+        var answered = collector.WaitForId(LspDefinitionId, LspAnswerTimeout);
+
+        if (!answered)
+        {
+            process.Kill(entireProcessTree: true);
+            collector.Join();
+
+            Assert.Fail(
+                $"[{legName}] textDocument/definition (id {LspDefinitionId}) was never answered within " +
+                $"{LspAnswerTimeout.TotalSeconds:0} s. A request the readiness gate holds must still be " +
+                $"answered once the workspace loads.{FormatDiagnostics(diagnostics)}");
+        }
+
+        foreach (var request in goodbye)
         {
             WriteLspFrame(process.StandardInput.BaseStream, request);
         }
@@ -321,46 +386,252 @@ partial class Build : FalloutBuild,
         if (!exited)
         {
             process.Kill(entireProcessTree: true);
-            reader.Join(TimeSpan.FromSeconds(5));
+            collector.Join();
 
             Assert.Fail(
-                $"The LSP server did not exit within {LspExitTimeout.TotalSeconds:0} s of being sent " +
-                $"shutdown and exit.{FormatDiagnostics(diagnostics)}");
+                $"[{legName}] The LSP server did not exit within {LspExitTimeout.TotalSeconds:0} s of " +
+                $"being sent shutdown and exit.{FormatDiagnostics(diagnostics)}");
         }
 
-        reader.Join(TimeSpan.FromSeconds(5));
+        collector.Join();
 
-        Assert.True(readerFailure == null,
-            $"Reading the LSP server's stdout failed: {readerFailure?.Message}{FormatDiagnostics(diagnostics)}");
+        Assert.True(collector.Failure == null,
+            $"[{legName}] Reading the LSP server's stdout failed: {collector.Failure?.Message}" +
+            FormatDiagnostics(diagnostics));
 
         // The specification's rule, and the reason the exchange sends shutdown before exit: exit
         // after shutdown is 0, exit without one is 1.
         Assert.True(process.ExitCode == 0,
-            $"The LSP server exited with code {process.ExitCode} after a shutdown/exit sequence, " +
-            $"expected 0.{FormatDiagnostics(diagnostics)}");
+            $"[{legName}] The LSP server exited with code {process.ExitCode} after a shutdown/exit " +
+            $"sequence, expected 0.{FormatDiagnostics(diagnostics)}");
 
-        var responses = ParseLspFrames(stdout.ToArray(), diagnostics);
+        var responses = ParseLspFrames(collector.Bytes, diagnostics);
 
         Assert.True(responses.ContainsKey(LspInitializeId),
-            $"The LSP server never answered initialize (id {LspInitializeId}).{FormatDiagnostics(diagnostics)}");
+            $"[{legName}] The LSP server never answered initialize (id {LspInitializeId})." +
+            FormatDiagnostics(diagnostics));
         Assert.True(responses.ContainsKey(LspShutdownId),
-            $"The LSP server never answered shutdown (id {LspShutdownId}).{FormatDiagnostics(diagnostics)}");
+            $"[{legName}] The LSP server never answered shutdown (id {LspShutdownId})." +
+            FormatDiagnostics(diagnostics));
 
         var result = responses[LspInitializeId].GetProperty("result");
         var serverName = result.GetProperty("serverInfo").GetProperty("name").GetString();
 
         Assert.True(serverName == ProductName,
-            $"initialize returned serverInfo.name '{serverName}', expected '{ProductName}'.");
+            $"[{legName}] initialize returned serverInfo.name '{serverName}', expected '{ProductName}'.");
+
+        // C26: the capability document is this repository's own, not the backend's. The scripted
+        // backend answers with Roslyn's real one, which advertises all three of these.
+        var capabilities = result.GetProperty("capabilities");
+
+        foreach (var provider in new[] { "semanticTokensProvider", "codeLensProvider", "inlayHintProvider" })
+        {
+            Assert.True(!capabilities.TryGetProperty(provider, out _),
+                $"[{legName}] The adapter advertised '{provider}', which it bridges nothing for.");
+        }
+
+        Assert.True(capabilities.TryGetProperty("definitionProvider", out _),
+            $"[{legName}] The adapter did not advertise definitionProvider.");
+
+        AssertDefinitionWasHeldUntilReady(legName, responses, diagnostics);
 
         var shutdown = responses[LspShutdownId];
 
         Assert.True(shutdown.TryGetProperty("result", out var shutdownResult)
                     && shutdownResult.ValueKind == JsonValueKind.Null,
-            "shutdown must answer with a result member that is present and null; JSON-RPC identifies a " +
-            "response by the presence of result or error.");
+            $"[{legName}] shutdown must answer with a result member that is present and null; JSON-RPC " +
+            "identifies a response by the presence of result or error.");
 
-        Log.Information("LSP handshake OK: {Server} answered {Count} request(s) and exited 0",
-            serverName, responses.Count);
+        Log.Information("LSP handshake OK ({Leg}): {Server} answered {Count} request(s) and exited 0",
+            legName, serverName, responses.Count);
+    }
+
+    /// <summary>
+    /// Asserts that the definition answer is the one the backend only gives once the workspace is
+    /// loaded - which is the whole of the readiness gate, proved on a real binary.
+    /// </summary>
+    /// <param name="legName">Which leg is being checked.</param>
+    /// <param name="responses">Everything the server wrote, keyed by id.</param>
+    /// <param name="diagnostics">The server's stderr, folded into any failure.</param>
+    static void AssertDefinitionWasHeldUntilReady(
+        string legName,
+        IReadOnlyDictionary<int, JsonElement> responses,
+        List<string> diagnostics)
+    {
+        var definition = responses[LspDefinitionId];
+
+        Assert.True(!definition.TryGetProperty("error", out var error),
+            $"[{legName}] textDocument/definition failed: {error}.{FormatDiagnostics(diagnostics)}");
+
+        var locations = definition.GetProperty("result");
+
+        Assert.True(locations.ValueKind == JsonValueKind.Array,
+            $"[{legName}] textDocument/definition returned a '{locations.ValueKind}', expected an array.");
+
+        Assert.True(locations.GetArrayLength() > 0,
+            $"[{legName}] textDocument/definition returned an EMPTY array. The scripted backend answers " +
+            "navigation empty until it reports the workspace loaded (C27), so an empty answer here means " +
+            "the request was forwarded before the readiness gate should have released it." +
+            FormatDiagnostics(diagnostics));
+    }
+
+    /// <summary>
+    /// Reads a server's stdout on its own thread, keeping every byte and noting which JSON-RPC ids
+    /// have been answered so far.
+    /// </summary>
+    /// <remarks>
+    /// Two jobs in one class because they have to share the read: the byte-exact frame check at the
+    /// end needs the whole stream, and the exchange needs to know when a particular answer has
+    /// arrived so it can send the next message. A second reader on the same pipe would race the first.
+    /// </remarks>
+    sealed class LspFrameCollector
+    {
+        readonly MemoryStream _buffer = new();
+        readonly HashSet<int> _answered = [];
+        readonly Thread _thread;
+        readonly object _gate = new();
+
+        internal LspFrameCollector(Stream stdout)
+        {
+            _thread = new Thread(() => Read(stdout)) { IsBackground = true };
+            _thread.Start();
+        }
+
+        /// <summary>What went wrong while reading, if anything.</summary>
+        internal Exception Failure { get; private set; }
+
+        /// <summary>Every byte the server wrote.</summary>
+        internal byte[] Bytes
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _buffer.ToArray();
+                }
+            }
+        }
+
+        /// <summary>Blocks until a response with <paramref name="id"/> has been seen, or gives up.</summary>
+        /// <param name="id">The JSON-RPC id being waited for.</param>
+        /// <param name="timeout">How long to wait.</param>
+        internal bool WaitForId(int id, TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+
+            while (DateTime.UtcNow < deadline)
+            {
+                lock (_gate)
+                {
+                    if (_answered.Contains(id))
+                    {
+                        return true;
+                    }
+
+                    if (Failure != null || !_thread.IsAlive)
+                    {
+                        return false;
+                    }
+                }
+
+                Thread.Sleep(20);
+            }
+
+            return false;
+        }
+
+        /// <summary>Waits for the reader to finish, which happens when the server closes stdout.</summary>
+        internal void Join() => _thread.Join(TimeSpan.FromSeconds(5));
+
+        void Read(Stream stdout)
+        {
+            var pending = new List<byte>();
+            var chunk = new byte[4096];
+
+            try
+            {
+                int read;
+
+                while ((read = stdout.Read(chunk, 0, chunk.Length)) > 0)
+                {
+                    lock (_gate)
+                    {
+                        _buffer.Write(chunk, 0, read);
+                    }
+
+                    for (var index = 0; index < read; index++)
+                    {
+                        pending.Add(chunk[index]);
+                    }
+
+                    NoteCompleteFrames(pending);
+                }
+            }
+            catch (Exception exception)
+            {
+                Failure = exception;
+            }
+        }
+
+        /// <summary>Pulls whole frames off the front of the buffer and records their ids.</summary>
+        void NoteCompleteFrames(List<byte> pending)
+        {
+            while (true)
+            {
+                var wire = pending.ToArray();
+                var separator = wire.AsSpan().IndexOf("\r\n\r\n"u8);
+
+                if (separator < 0)
+                {
+                    return;
+                }
+
+                var header = Encoding.ASCII.GetString(wire, 0, separator);
+                var length = -1;
+
+                foreach (var line in header.Split("\r\n"))
+                {
+                    var colon = line.IndexOf(':');
+
+                    if (colon > 0
+                        && line.Substring(0, colon).Trim()
+                            .Equals("Content-Length", StringComparison.OrdinalIgnoreCase)
+                        && int.TryParse(line.Substring(colon + 1).Trim(), out var parsed))
+                    {
+                        length = parsed;
+                    }
+                }
+
+                var start = separator + 4;
+
+                if (length < 0 || wire.Length < start + length)
+                {
+                    return;
+                }
+
+                try
+                {
+                    using var document = JsonDocument.Parse(wire.AsMemory(start, length));
+
+                    if (document.RootElement.TryGetProperty("id", out var id)
+                        && id.TryGetInt32(out var value)
+                        && !document.RootElement.TryGetProperty("method", out _))
+                    {
+                        lock (_gate)
+                        {
+                            _answered.Add(value);
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // The final ParseLspFrames pass is what reports a malformed body; this pass only
+                    // has to know which ids have come back.
+                }
+
+                pending.RemoveRange(0, start + length);
+            }
+        }
     }
 
     /// <summary>Writes one <c>Content-Length</c>-framed message.</summary>

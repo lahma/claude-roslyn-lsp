@@ -39,7 +39,7 @@ namespace ClaudeRoslynLsp.Adapter;
 /// here.
 /// </para>
 /// </remarks>
-internal sealed partial class AdapterSession : IAsyncDisposable
+internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
 {
     /// <summary>How long <c>shutdown</c> waits for Roslyn to answer before answering the client anyway.</summary>
     /// <remarks>
@@ -69,12 +69,17 @@ internal sealed partial class AdapterSession : IAsyncDisposable
     private readonly ReadinessGate _gate;
     private readonly ServerRequestHandler _serverHandler;
     private readonly WorkspaceOpener _opener;
+    private readonly RoslynSupervisor _supervisor;
+    private readonly DiagnosticsBridge? _diagnostics;
+    private readonly FileWatchBridge? _watching;
+    private readonly bool _watchFiles;
 
     private ServerEndpoint? _server;
     private Task? _backendTask;
     private Task? _serverPump;
     private bool _shutdownRequested;
     private bool _stopping;
+    private int _failureShown;
 
     /// <summary>Creates a session over the client's streams.</summary>
     /// <param name="clientInput">The client's messages arrive here.</param>
@@ -87,6 +92,11 @@ internal sealed partial class AdapterSession : IAsyncDisposable
     /// </param>
     /// <param name="time">The clock, so the readiness timeout is testable.</param>
     /// <param name="logger">The stderr log. Never the client's stream.</param>
+    /// <param name="selectWorkspace">
+    /// What to open, when discovery has already decided. Null falls back to
+    /// <paramref name="resolveSolution"/>'s single path, which is what the mediation's own tests
+    /// drive the session with.
+    /// </param>
     internal AdapterSession(
         Stream clientInput,
         Stream clientOutput,
@@ -94,7 +104,8 @@ internal sealed partial class AdapterSession : IAsyncDisposable
         ClaudeRoslynLspOptions options,
         Func<string?> resolveSolution,
         TimeProvider time,
-        ILogger logger)
+        ILogger logger,
+        Func<WorkspaceSelection>? selectWorkspace = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         ArgumentNullException.ThrowIfNull(options);
@@ -106,12 +117,30 @@ internal sealed partial class AdapterSession : IAsyncDisposable
         _options = options;
         _time = time;
         _logger = logger;
+        _watchFiles = options.FileWatcher;
 
         _client = new ClientEndpoint(clientInput, clientOutput, logger);
         _mirror = new DocumentMirror(logger);
         _registrations = new RegistrationTracker(logger);
-        _configuration = new ConfigurationResponder(options.RoslynOptionsJson, logger);
         _progress = new ProgressTracker(logger);
+        _supervisor = new RoslynSupervisor(time, logger);
+
+        if (options.Diagnostics)
+        {
+            _diagnostics = new DiagnosticsBridge(_mirror, this, options, time, logger);
+        }
+        else
+        {
+            Log.DiagnosticsOff(logger);
+        }
+
+        // The scope is raised only when the opt-in mode is on, and only for the compiler (C14).
+        // Deciding it here rather than inside the responder keeps the one expensive setting tied to
+        // the one feature that needs it.
+        _configuration = new ConfigurationResponder(
+            options.RoslynOptionsJson,
+            logger,
+            fullSolutionCompilerScope: _diagnostics?.WorkspaceMode ?? false);
 
         _gate = new ReadinessGate(
             time,
@@ -120,7 +149,25 @@ internal sealed partial class AdapterSession : IAsyncDisposable
             notice => _client.Log(LogMessageType.Info, $"{ServerVersion.Name}: {notice}"));
 
         _serverHandler = new ServerRequestHandler(_registrations, _configuration, _progress, _gate, logger);
-        _opener = new WorkspaceOpener(resolveSolution, logger);
+
+        _opener = new WorkspaceOpener(
+            selectWorkspace ?? (() => WorkspaceSelection.FromPath(resolveSolution())),
+            logger,
+            explanation => _client.Log(LogMessageType.Info, $"{ServerVersion.Name}: {explanation}"));
+
+        if (_watchFiles)
+        {
+            _watching = new FileWatchBridge(WorkspaceRootPath, _mirror, this, time, logger);
+            _watching.ProjectFilesChanged += () => _diagnostics?.OnProjectFilesChanged();
+            _registrations.Changed += () => _watching.Schedule(_registrations.Watchers);
+        }
+        else
+        {
+            Log.WatcherOff(logger);
+        }
+
+        _gate.Opened += OnGateOpened;
+        _serverHandler.RefreshRequested += method => _diagnostics?.OnRefreshRequested(method);
     }
 
     /// <summary>The readiness gate, exposed for tests and for WP4's bridges.</summary>
@@ -134,6 +181,48 @@ internal sealed partial class AdapterSession : IAsyncDisposable
 
     /// <summary>The table that answers Roslyn's requests, exposed for WP4's refresh subscription.</summary>
     internal ServerRequestHandler ServerRequests => _serverHandler;
+
+    /// <summary>The pull-to-push diagnostics bridge, or null when it is switched off.</summary>
+    internal DiagnosticsBridge? Diagnostics => _diagnostics;
+
+    /// <summary>The filesystem watch bridge, or null when it is switched off.</summary>
+    internal FileWatchBridge? Watching => _watching;
+
+    /// <summary>What decides whether a dead backend gets another go.</summary>
+    internal RoslynSupervisor Supervisor => _supervisor;
+
+    /// <inheritdoc />
+    bool IAdapterChannel.BackendConnected => Server is not null;
+
+    /// <inheritdoc />
+    ReadinessState IAdapterChannel.Readiness => _gate.State;
+
+    /// <inheritdoc />
+    string? IAdapterChannel.WorkspaceRoot => WorkspaceRootPath;
+
+    /// <summary>The client's workspace root as a local path, or null when it sent none usable.</summary>
+    private string? WorkspaceRootPath
+    {
+        get
+        {
+            if (_client.RootUri is not { Length: > 0 } uri
+                || !Uri.TryCreate(uri, UriKind.Absolute, out var parsed)
+                || !parsed.IsFile)
+            {
+                return null;
+            }
+
+            try
+            {
+                return Path.GetFullPath(parsed.LocalPath);
+            }
+            catch (Exception exception) when (exception is ArgumentException or PathTooLongException
+                                                  or NotSupportedException)
+            {
+                return null;
+            }
+        }
+    }
 
     /// <summary>Runs the session until <c>exit</c>, end of stream, or a framing failure.</summary>
     /// <param name="cancellationToken">Cancels the read loop.</param>
@@ -184,6 +273,8 @@ internal sealed partial class AdapterSession : IAsyncDisposable
     {
         await StopAsync().ConfigureAwait(false);
 
+        _diagnostics?.Dispose();
+        _watching?.Dispose();
         _gate.Dispose();
 
         if (_server is { } server)
@@ -391,20 +482,33 @@ internal sealed partial class AdapterSession : IAsyncDisposable
     }
 
     /// <summary>Records a document notification in the mirror, then forwards it if it can.</summary>
+    /// <remarks>
+    /// The order is deliberate: mirror, then forward, then tell the diagnostics bridge. The bridge
+    /// posts its pull onto the same outbound queue, which is FIFO with a single writer, so Roslyn
+    /// always has the document before it is asked about it.
+    /// </remarks>
     private void HandleDocumentNotification(byte[] body, string method)
     {
+        string? uri = null;
+
         switch (method)
         {
             case "textDocument/didOpen":
-                _mirror.Open(body);
+                uri = _mirror.Open(body)?.Uri;
                 break;
 
             case "textDocument/didChange":
-                _mirror.Change(body);
+                uri = _mirror.Change(body)?.Uri;
                 break;
 
             case "textDocument/didClose":
-                _mirror.Close(body);
+                uri = _mirror.Close(body);
+                break;
+
+            case "textDocument/didSave":
+                // Not a mirror event — a save changes the disk, not the buffer — but it is the
+                // strongest signal an agent gives that it wants to know whether the file compiles.
+                uri = UriOf(body);
                 break;
 
             default:
@@ -414,13 +518,64 @@ internal sealed partial class AdapterSession : IAsyncDisposable
         if (Server is { } server && _gate.NotificationsAllowed)
         {
             server.Post(body);
+            NotifyDiagnostics(method, uri);
             return;
         }
+
+        NotifyDiagnostics(method, uri);
 
         // Not queued as raw bytes: the mirror already holds the latest text, and replaying one
         // didOpen per document is both smaller and correct in the case a queue gets wrong — three
         // edits before the backend was up become one didOpen at the third text.
         Log.DocumentBuffered(_logger, method, _mirror.Count);
+    }
+
+    /// <summary>Tells the diagnostics bridge what the client just did to a document.</summary>
+    private void NotifyDiagnostics(string method, string? uri)
+    {
+        if (_diagnostics is null || uri is not { Length: > 0 })
+        {
+            return;
+        }
+
+        switch (method)
+        {
+            case "textDocument/didOpen":
+                _diagnostics.OnDidOpen(uri);
+                break;
+
+            case "textDocument/didChange":
+                _diagnostics.OnDidChange(uri);
+                break;
+
+            case "textDocument/didSave":
+                _diagnostics.OnDidSave(uri);
+                break;
+
+            case "textDocument/didClose":
+                _diagnostics.OnDidClose(uri);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /// <summary>Reads a document notification's URI, treating anything unreadable as absent.</summary>
+    private static string? UriOf(byte[] body)
+    {
+        try
+        {
+            var envelope = JsonSerializer.Deserialize(body, LspJsonContext.Default.RawParamsNotification);
+
+            return envelope?.Params.ValueKind == JsonValueKind.Object
+                ? envelope.Params.Deserialize(LspJsonContext.Default.TextDocumentParams)?.TextDocument?.Uri
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Stores a <c>didChangeConfiguration</c>'s settings for the configuration responder.</summary>
@@ -515,6 +670,14 @@ internal sealed partial class AdapterSession : IAsyncDisposable
 
         lock (_stateLock)
         {
+            if (_stopping)
+            {
+                // A relaunch that raced the session's own teardown. Nothing here may adopt it, or
+                // the child outlives the adapter holding a whole solution in memory.
+                _ = server.DisposeAsync().AsTask();
+                return;
+            }
+
             _server = server;
             _serverPump = Task.Run(() => PumpServerAsync(server), CancellationToken.None);
         }
@@ -529,7 +692,8 @@ internal sealed partial class AdapterSession : IAsyncDisposable
             server.Post(ServerEndpoint.BuildInitialize(
                 IdMap.TokenFor(initializeId),
                 _client.RootUri,
-                _client.WorkspaceFolders));
+                _client.WorkspaceFolders,
+                _watchFiles));
 
             // The same budget the readiness gate spends, spent earlier: a backend that has not
             // answered initialize inside it is not going to load a solution inside it either.
@@ -636,7 +800,52 @@ internal sealed partial class AdapterSession : IAsyncDisposable
             return;
         }
 
+        if (info.Kind == LspMessageKind.Response && CallHierarchyDeduplicator.Applies(pending.Method))
+        {
+            _client.Post(DeduplicateCallHierarchy(body, pending));
+            return;
+        }
+
         _client.Post(LspMessageScanner.RewriteId(body, info, pending.OriginalIdToken!));
+    }
+
+    /// <summary>
+    /// Rewrites a call-hierarchy answer without its per-target-framework duplicates (C24).
+    /// </summary>
+    /// <remarks>
+    /// The only place the adapter rewrites a <em>result</em> rather than an id, and it is worth the
+    /// exception. A multi-targeted project reports every call once per framework, which an agent
+    /// reads as several distinct call sites: it reports the wrong number of callers, and a walk down
+    /// the tree does every branch twice. Reserialisation is confined to the array itself — each
+    /// surviving entry is copied verbatim, opaque <c>data</c> and all — and an answer with nothing to
+    /// remove keeps its original bytes.
+    /// </remarks>
+    private byte[] DeduplicateCallHierarchy(byte[] body, PendingRequest pending)
+    {
+        var info = LspMessageScanner.Scan(body);
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+
+            if (document.RootElement.TryGetProperty("result", out var result)
+                && CallHierarchyDeduplicator.Deduplicate(pending.Method, result) is { } reduced)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    var before = result.GetArrayLength();
+                    Log.Deduplicated(_logger, pending.Method, before);
+                }
+
+                return JsonRpcErrors.RawResult(pending.OriginalIdToken!, reduced);
+            }
+        }
+        catch (JsonException exception)
+        {
+            Log.DeduplicationFailed(_logger, pending.Method, exception);
+        }
+
+        return LspMessageScanner.RewriteId(body, info, pending.OriginalIdToken!);
     }
 
     /// <summary>Delivers an answer to a question the adapter asked itself.</summary>
@@ -648,8 +857,10 @@ internal sealed partial class AdapterSession : IAsyncDisposable
     {
         if (info.Kind == LspMessageKind.ErrorResponse)
         {
-            completion.TrySetException(new InvalidOperationException(
-                $"Roslyn refused '{pending.Method}': {ErrorTextOf(body)}"));
+            // The code, not only the sentence: -32801 means "the document moved, ask again" and the
+            // diagnostics bridge acts on that differently from every other refusal.
+            var (code, message) = ErrorOf(body);
+            completion.TrySetException(new RoslynRequestException(pending.Method, code, message));
 
             return;
         }
@@ -721,22 +932,87 @@ internal sealed partial class AdapterSession : IAsyncDisposable
             }
         }
 
-        if (!stopping)
+        if (stopping)
         {
-            Log.BackendGone(_logger, pending.Count);
-            _gate.MarkFailed("the Roslyn backend exited");
+            return;
+        }
+
+        Log.BackendGone(_logger, pending.Count);
+
+        switch (_supervisor.Decide(stopping: false, out var attempt))
+        {
+            case RestartDecision.Restart:
+                // Held first, relaunched second. A request that arrives in the gap must not reach a
+                // backend that has not loaded the solution, because that answer would be empty and
+                // successful (C27) — the exact failure the gate exists to prevent, arriving late.
+                _gate.MarkRestarting();
+                _diagnostics?.Reset();
+
+                _client.Log(
+                    LogMessageType.Info,
+                    $"{ServerVersion.Name}: the Roslyn backend exited; relaunching it "
+                    + $"(attempt {attempt} of {RoslynSupervisor.MaxRestarts}). Requests are held "
+                    + "until the workspace has loaded again.");
+
+                _ = Task.Run(() => ConnectAsync(CancellationToken.None), CancellationToken.None);
+                break;
+
+            case RestartDecision.GiveUp:
+            default:
+                Fail(RoslynSupervisor.GiveUpReason, exception: null);
+                break;
         }
     }
 
-    /// <summary>Records a startup failure and refuses everything that was waiting.</summary>
-    private void Fail(string reason, Exception exception)
+    /// <summary>The gate opened, or gave up. Either way the bridges stop waiting.</summary>
+    private void OnGateOpened(ReadinessState state)
+    {
+        if (state is ReadinessState.ProjectsLoaded or ReadinessState.LoadTimedOut)
+        {
+            _diagnostics?.OnProjectsLoaded();
+
+            // The registrations arrived while the solution was loading; this is the first moment
+            // they are complete enough to be worth standing watchers up for.
+            _watching?.Schedule(_registrations.Watchers);
+        }
+    }
+
+    /// <summary>
+    /// Records a startup failure and refuses everything that was waiting.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The adapter stays alive.</b> Every reason this is reached is ordinary — an offline laptop,
+    /// a machine with no .NET 10 runtime, a proxy serving HTML where a nupkg should be, a hash that
+    /// does not match the pin — and a process that exits over one leaves its client with a dead pipe
+    /// and no channel to be told why, because stdout <em>is</em> the channel. So the session keeps
+    /// answering: the handshake stands, and every request gets <c>-32603</c> with a sentence naming
+    /// <c>doctor</c>.
+    /// </para>
+    /// <para>
+    /// Both message kinds, and each exactly once. <c>window/showMessage</c> is what a client
+    /// surfaces; <c>window/logMessage</c> is what it files where somebody looking for the reason will
+    /// find it. Sending them on every subsequent failure would train the reader to dismiss them.
+    /// </para>
+    /// </remarks>
+    /// <param name="reason">What went wrong, in a sentence the user can act on.</param>
+    /// <param name="exception">The failure, when there was one.</param>
+    private void Fail(string reason, Exception? exception)
     {
         Log.BackendFailed(_logger, reason, exception);
         _gate.MarkFailed(reason);
 
-        _client.Log(
-            LogMessageType.Error,
-            $"{ServerVersion.Name}: {reason}. Run `{ServerVersion.Name} doctor` for the resolution chain.");
+        var message =
+            $"{ServerVersion.Name}: {reason}. Run `{ServerVersion.Name} doctor` for the resolution chain "
+            + "and what to do about it. C# navigation and diagnostics are unavailable until it is fixed; "
+            + "the adapter itself is still running.";
+
+        _client.Log(LogMessageType.Error, message);
+
+        if (Interlocked.Exchange(ref _failureShown, 1) == 0)
+        {
+            _client.ShowMessage(LogMessageType.Error, message);
+        }
     }
 
     /// <summary>Sends <c>shutdown</c> to Roslyn and waits, briefly, for its answer.</summary>
@@ -886,23 +1162,88 @@ internal sealed partial class AdapterSession : IAsyncDisposable
         Log.BackendReady(_logger, name, version.Length == 0 ? "(no version)" : version);
     }
 
-    /// <summary>Pulls the message out of an error response, for a log line.</summary>
-    private static string ErrorTextOf(byte[] body)
+    /// <summary>Pulls the code and the message out of an error response.</summary>
+    private static (int Code, string Message) ErrorOf(byte[] body)
     {
         try
         {
             using var document = JsonDocument.Parse(body);
 
-            return document.RootElement.TryGetProperty("error", out var error)
-                   && error.TryGetProperty("message", out var message)
-                   && message.ValueKind == JsonValueKind.String
-                ? message.GetString() ?? "(no message)"
+            if (!document.RootElement.TryGetProperty("error", out var error)
+                || error.ValueKind != JsonValueKind.Object)
+            {
+                return (JsonRpcErrors.InternalError, "(no error object)");
+            }
+
+            var code = error.TryGetProperty("code", out var codeValue)
+                       && codeValue.ValueKind == JsonValueKind.Number
+                       && codeValue.TryGetInt32(out var parsed)
+                ? parsed
+                : JsonRpcErrors.InternalError;
+
+            var message = error.TryGetProperty("message", out var messageValue)
+                          && messageValue.ValueKind == JsonValueKind.String
+                ? messageValue.GetString() ?? "(no message)"
                 : "(no message)";
+
+            return (code, message);
         }
         catch (JsonException)
         {
-            return "(unreadable)";
+            return (JsonRpcErrors.InternalError, "(unreadable)");
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // IAdapterChannel - what the bridges are allowed to do
+    // -----------------------------------------------------------------------------------------
+
+    /// <inheritdoc />
+    void IAdapterChannel.NotifyServer(ReadOnlyMemory<byte> body) => Server?.Post(body);
+
+    /// <inheritdoc />
+    void IAdapterChannel.NotifyClient(ReadOnlyMemory<byte> body) => _client.Post(body);
+
+    /// <inheritdoc />
+    void IAdapterChannel.LogToClient(int type, string message) => _client.Log(type, message);
+
+    /// <summary>Sends a <c>window/logMessage</c> from outside the session.</summary>
+    /// <remarks>
+    /// The one thing the <c>lsp</c> verb needs that the channel interface does not give it: the
+    /// factory reports download progress, and it exists before the session does.
+    /// </remarks>
+    /// <param name="type">The severity: 1 error, 2 warning, 3 info, 4 log.</param>
+    /// <param name="message">The text.</param>
+    internal void TellClient(int type, string message) => _client.Log(type, message);
+
+    /// <inheritdoc />
+    async Task<JsonElement> IAdapterChannel.AskAsync(
+        string method,
+        ReadOnlyMemory<byte> rawParams,
+        CancellationToken cancellationToken)
+    {
+        if (Server is not { } server)
+        {
+            throw new IOException($"there is no Roslyn backend to ask '{method}'.");
+        }
+
+        var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var outboundId = _serverBound.Register(method, completion);
+
+        server.Post(JsonRpcErrors.Request(IdMap.TokenFor(outboundId), method, rawParams.Span));
+
+        // Cancelling both forgets the pending entry and tells Roslyn to stop: a diagnostic pull the
+        // bridge abandoned is a compilation Roslyn would otherwise finish for nobody.
+        await using var registration = cancellationToken.Register(() =>
+        {
+            if (_serverBound.TryComplete(outboundId, out _))
+            {
+                Server?.Post(BuildCancelRequest(outboundId));
+                completion.TrySetCanceled(cancellationToken);
+            }
+        }).ConfigureAwait(false);
+
+        return await completion.Task.ConfigureAwait(false);
     }
 
     /// <summary>The <c>window/logMessage</c> severities, so the numbers are not bare.</summary>
@@ -946,7 +1287,7 @@ internal sealed partial class AdapterSession : IAsyncDisposable
         internal static partial void BackendReady(ILogger logger, string name, string version);
 
         [LoggerMessage(EventId = 106, Level = LogLevel.Error, Message = "The Roslyn backend is unusable: {Reason}.")]
-        internal static partial void BackendFailed(ILogger logger, string reason, Exception exception);
+        internal static partial void BackendFailed(ILogger logger, string reason, Exception? exception);
 
         [LoggerMessage(
             EventId = 107,
@@ -1009,5 +1350,33 @@ internal sealed partial class AdapterSession : IAsyncDisposable
 
         [LoggerMessage(EventId = 118, Level = LogLevel.Information, Message = "Exiting with code {ExitCode} ({Reason}).")]
         internal static partial void Exiting(ILogger logger, int exitCode, string reason);
+
+        [LoggerMessage(
+            EventId = 119,
+            Level = LogLevel.Warning,
+            Message = "CLAUDE_ROSLYN_LSP_DIAGNOSTICS is off; this session is navigation-only and will " +
+                      "never publish a diagnostic.")]
+        internal static partial void DiagnosticsOff(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 120,
+            Level = LogLevel.Warning,
+            Message = "CLAUDE_ROSLYN_LSP_FILE_WATCHER is off, so the didChangeWatchedFiles capability is " +
+                      "not declared and Roslyn will register no watchers at all (C34). A file created " +
+                      "outside the editor will not join its project until the session restarts.")]
+        internal static partial void WatcherOff(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 121,
+            Level = LogLevel.Debug,
+            Message = "De-duplicated the {Method} answer, which carried {Count} entries before the " +
+                      "per-target-framework copies were removed (C24).")]
+        internal static partial void Deduplicated(ILogger logger, string method, int count);
+
+        [LoggerMessage(
+            EventId = 122,
+            Level = LogLevel.Debug,
+            Message = "The {Method} answer could not be read for de-duplication; it crosses unchanged.")]
+        internal static partial void DeduplicationFailed(ILogger logger, string method, Exception exception);
     }
 }

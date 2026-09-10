@@ -156,6 +156,36 @@ internal sealed partial class ReadinessGate : IDisposable
     }
 
     /// <summary>
+    /// Whether the workspace has loaded far enough for an answer to mean anything.
+    /// </summary>
+    /// <remarks>
+    /// The diagnostics bridge asks this before every pull. A pull issued earlier is answered out of
+    /// misc-files mode, where Roslyn compiles the file alone and reports diagnostics against a
+    /// project that is not there (C28) — publishing those would be worse than publishing nothing.
+    /// </remarks>
+    internal bool IsOpen
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _state is ReadinessState.ProjectsLoaded or ReadinessState.LoadTimedOut;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Raised when the gate opens, with the state it opened into.
+    /// </summary>
+    /// <remarks>
+    /// Raised for <see cref="ReadinessState.Failed"/> too, because a bridge that was waiting for the
+    /// workspace has to stop waiting either way. Raised <em>after</em> the held requests have been
+    /// released, so a subscriber that issues its own request cannot get in front of a client request
+    /// that has been waiting longer.
+    /// </remarks>
+    internal event Action<ReadinessState>? Opened;
+
+    /// <summary>
     /// Whether notifications may be forwarded. True from the moment Roslyn has answered
     /// <c>initialize</c>: a notification sent before that is simply lost, because Roslyn refuses
     /// everything until it is initialised.
@@ -300,6 +330,39 @@ internal sealed partial class ReadinessGate : IDisposable
     /// </remarks>
     internal void MarkProjectsLoaded() => Open(ReadinessState.ProjectsLoaded, GateOutcome.Pass);
 
+    /// <summary>
+    /// Puts the gate back to <see cref="ReadinessState.Starting"/> for a backend that is being
+    /// relaunched.
+    /// </summary>
+    /// <remarks>
+    /// The whole point of absorbing a crash (D57): a request that arrives while Roslyn is coming
+    /// back is held, exactly as it would have been at startup, rather than answered empty by a
+    /// backend that has not loaded the solution. The clock restarts too, because the budget is
+    /// "how long this load may take" and this is a new load.
+    /// </remarks>
+    internal void MarkRestarting()
+    {
+        lock (_lock)
+        {
+            if (_state == ReadinessState.Failed)
+            {
+                // A session that has already given up does not un-give-up.
+                return;
+            }
+
+            _state = ReadinessState.Starting;
+            _startedAt = 0;
+
+            _timeoutTimer?.Dispose();
+            _noticeTimer?.Dispose();
+            _timeoutTimer = null;
+            _noticeTimer = null;
+        }
+
+        Log.Restarting(_logger);
+        Start();
+    }
+
     /// <summary>Records that there is no usable backend, and refuses everything held.</summary>
     /// <param name="reason">What went wrong, in a sentence the user can act on.</param>
     internal void MarkFailed(string reason)
@@ -368,6 +431,8 @@ internal sealed partial class ReadinessGate : IDisposable
         {
             request.Release(outcome);
         }
+
+        Opened?.Invoke(state);
     }
 
     /// <summary>The load budget ran out.</summary>
@@ -442,5 +507,12 @@ internal sealed partial class ReadinessGate : IDisposable
             Level = LogLevel.Debug,
             Message = "The client cancelled {Method} (id {Id}) while it was held.")]
         internal static partial void Cancelled(ILogger logger, string method, JsonRpcId id);
+
+        [LoggerMessage(
+            EventId = 404,
+            Level = LogLevel.Information,
+            Message = "The readiness gate is closed again while the Roslyn backend is relaunched; " +
+                      "requests will be held rather than answered from a workspace that is not loaded.")]
+        internal static partial void Restarting(ILogger logger);
     }
 }

@@ -59,10 +59,16 @@ internal sealed class ServerEndpoint : IAsyncDisposable
     /// <param name="idToken">The id it is issued under, minted by the id map.</param>
     /// <param name="rootUri">The workspace root, taken from the client.</param>
     /// <param name="workspaceFolders">The client's folders, when it sent any.</param>
+    /// <param name="watchFiles">
+    /// Whether the adapter will actually deliver watched-file events. False drops the capability
+    /// from the document entirely, so Roslyn registers nothing (C34) rather than registering 140
+    /// watchers and waiting to be told about changes that will never arrive.
+    /// </param>
     internal static byte[] BuildInitialize(
         ReadOnlySpan<byte> idToken,
         string? rootUri,
-        IReadOnlyList<WorkspaceFolder>? workspaceFolders)
+        IReadOnlyList<WorkspaceFolder>? workspaceFolders,
+        bool watchFiles = true)
     {
         var folders = workspaceFolders;
 
@@ -83,6 +89,13 @@ internal sealed class ServerEndpoint : IAsyncDisposable
             ClientInfo = new ServerInfo { Name = ServerVersion.Name, Version = ServerVersion.Value },
             RootUri = rootUri,
             WorkspaceFolders = folders,
+            Capabilities = new RoslynClientCapabilities
+            {
+                Workspace = new RoslynWorkspaceCapabilities
+                {
+                    DidChangeWatchedFiles = watchFiles ? new WatchedFilesCapability() : null,
+                },
+            },
         };
 
         return JsonRpcErrors.Request(

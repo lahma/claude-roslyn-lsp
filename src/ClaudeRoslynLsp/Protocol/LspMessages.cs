@@ -707,12 +707,22 @@ internal sealed record RoslynWorkspaceCapabilities
     /// Dynamic registration for watched files, with relative patterns.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Without this capability Roslyn registers no watchers at all and has no in-process fallback
     /// (C34) — a file created by Bash or by git would then never join its project, and every later
     /// answer would be silently stale.
+    /// </para>
+    /// <para>
+    /// Nullable, and omitted entirely when <c>CLAUDE_ROSLYN_LSP_FILE_WATCHER=off</c>. Declaring it
+    /// and then not delivering events would be the worst of both: Roslyn would stand up 140
+    /// registrations, wait to be told about changes, and never be — which looks exactly like a
+    /// working watcher until an answer turns out to be stale. Omitting it makes the state explicit
+    /// on the wire, and C34 is what makes that honest rather than merely tidy.
+    /// </para>
     /// </remarks>
     [JsonPropertyName("didChangeWatchedFiles")]
-    public WatchedFilesCapability DidChangeWatchedFiles { get; init; } = new();
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public WatchedFilesCapability? DidChangeWatchedFiles { get; init; } = new();
 
     /// <summary>Workspace symbol search.</summary>
     [JsonPropertyName("symbol")]

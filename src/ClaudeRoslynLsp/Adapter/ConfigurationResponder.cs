@@ -86,9 +86,16 @@ internal sealed partial class ConfigurationResponder
 
     private static readonly byte[] NullValue = "null"u8.ToArray();
 
+    /// <summary>The section the opt-in workspace mode has to raise (C14).</summary>
+    internal const string CompilerDiagnosticsScopeSection =
+        "csharp|background_analysis.dotnet_compiler_diagnostics_scope";
+
+    private static readonly byte[] FullSolutionValue = "\"fullSolution\""u8.ToArray();
+
     private readonly Lock _lock = new();
     private readonly ILogger _logger;
     private readonly Dictionary<string, byte[]> _fromEnvironment;
+    private readonly bool _fullSolutionCompilerScope;
 
     private JsonElement _clientSettings;
 
@@ -98,12 +105,26 @@ internal sealed partial class ConfigurationResponder
     /// names. Malformed content is a logged warning, never a startup failure (D10).
     /// </param>
     /// <param name="logger">The stderr log.</param>
-    internal ConfigurationResponder(string? optionsJson, ILogger logger)
+    /// <param name="fullSolutionCompilerScope">
+    /// Whether the compiler diagnostics scope is raised to <c>fullSolution</c>. Set only by
+    /// <c>CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS=errors</c>: closed files are unreachable at any
+    /// lower scope (C13, C14), and this is the setting that makes a large solution expensive, so it
+    /// moves with the feature that needs it and with nothing else. The analyser scope stays at
+    /// <c>openFiles</c> — the mode reports compile errors, and raising both is what turns a
+    /// hundred-project solution into a machine that is busy for minutes.
+    /// </param>
+    internal ConfigurationResponder(string? optionsJson, ILogger logger, bool fullSolutionCompilerScope = false)
     {
         ArgumentNullException.ThrowIfNull(logger);
 
         _logger = logger;
         _fromEnvironment = ParseOptions(optionsJson, logger);
+        _fullSolutionCompilerScope = fullSolutionCompilerScope;
+
+        if (fullSolutionCompilerScope)
+        {
+            Log.FullSolutionScope(logger);
+        }
     }
 
     /// <summary>How many sections the environment override supplies.</summary>
@@ -172,6 +193,12 @@ internal sealed partial class ConfigurationResponder
         if (_fromEnvironment.TryGetValue(section, out var fromEnvironment))
         {
             return fromEnvironment;
+        }
+
+        if (_fullSolutionCompilerScope
+            && string.Equals(section, CompilerDiagnosticsScopeSection, StringComparison.Ordinal))
+        {
+            return FullSolutionValue;
         }
 
         if (ExactDefaults.TryGetValue(section, out var exact))
@@ -279,5 +306,13 @@ internal sealed partial class ConfigurationResponder
             Message = "CLAUDE_ROSLYN_LSP_OPTIONS is a JSON {Kind}, not an object of section names, and is " +
                       "being ignored.")]
         internal static partial void OptionsNotAnObject(ILogger logger, string kind);
+
+        [LoggerMessage(
+            EventId = 704,
+            Level = LogLevel.Information,
+            Message = "The compiler diagnostics scope is raised to fullSolution because " +
+                      "CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS asked for closed-file errors (C14). " +
+                      "Roslyn will hold every project's compilation in memory.")]
+        internal static partial void FullSolutionScope(ILogger logger);
     }
 }

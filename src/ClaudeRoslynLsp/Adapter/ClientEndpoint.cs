@@ -79,6 +79,24 @@ internal sealed class ClientEndpoint : IAsyncDisposable
             new LogMessageNotification { Params = new LogMessageParams { Type = type, Message = message } },
             LspJsonContext.Default.LogMessageNotification);
 
+    /// <summary>
+    /// Sends a <c>window/showMessage</c>, which a client surfaces rather than files away.
+    /// </summary>
+    /// <remarks>
+    /// Reserved for the one thing a user has to act on: the backend could not be acquired or
+    /// launched. <c>window/logMessage</c> carries everything else — a server that shows a modal on
+    /// every hiccup is a server whose messages get dismissed unread, including the one that
+    /// mattered.
+    /// </remarks>
+    /// <param name="type">The severity: 1 error, 2 warning, 3 info, 4 log.</param>
+    /// <param name="message">The text.</param>
+    internal void ShowMessage(int type, string message) =>
+        _outbound.Post(JsonRpcErrors.Notification(
+            "window/showMessage",
+            JsonSerializer.SerializeToUtf8Bytes(
+                new LogMessageParams { Type = type, Message = message },
+                LspJsonContext.Default.LogMessageParams)));
+
     /// <summary>Stops accepting outbound messages and waits for the queue to drain.</summary>
     internal async Task DrainAsync()
     {

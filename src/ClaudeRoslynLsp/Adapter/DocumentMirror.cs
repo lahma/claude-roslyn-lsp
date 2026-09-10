@@ -152,6 +152,24 @@ internal sealed partial class DocumentMirror
         return uri;
     }
 
+    /// <summary>One open document, or null when the client does not have it open.</summary>
+    /// <remarks>
+    /// The diagnostics bridge reads the version here at the moment a pull starts, so the published
+    /// set can be tagged with the text it is actually about; the watch bridge reads it to find out
+    /// that a file on disk is one the client already owns, and must therefore not be reported as a
+    /// watched-file change (which would make Roslyn re-read the saved copy over the live buffer).
+    /// </remarks>
+    /// <param name="uri">The document URI.</param>
+    internal MirroredDocument? Find(string uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+
+        lock (_lock)
+        {
+            return _documents.GetValueOrDefault(uri);
+        }
+    }
+
     /// <summary>The open documents, in the order they were opened.</summary>
     internal IReadOnlyList<MirroredDocument> Snapshot()
     {

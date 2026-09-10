@@ -70,6 +70,17 @@ internal sealed partial class RegistrationTracker
         _logger = logger;
     }
 
+    /// <summary>
+    /// Raised after every registration or unregistration, so the watch bridge can rebuild.
+    /// </summary>
+    /// <remarks>
+    /// An event rather than a poll because the ~140 registrations arrive over a couple of seconds
+    /// during startup and there is no message that says "that was the last one" — a consumer that
+    /// polled would either rebuild constantly or miss the tail. The bridge debounces on its own
+    /// side, which is where the cost of rebuilding is known.
+    /// </remarks>
+    internal event Action? Changed;
+
     /// <summary>How many registrations are live.</summary>
     internal int Count
     {
@@ -173,6 +184,7 @@ internal sealed partial class RegistrationTracker
         }
 
         Log.Registered(_logger, registrations.Count, Count);
+        Changed?.Invoke();
     }
 
     /// <summary>Records a <c>client/unregisterCapability</c>.</summary>
@@ -198,6 +210,11 @@ internal sealed partial class RegistrationTracker
         }
 
         Log.Unregistered(_logger, removed, Count);
+
+        if (removed > 0)
+        {
+            Changed?.Invoke();
+        }
     }
 
     /// <summary>Reads a diagnostic registration's identifier and flags, when this is one.</summary>

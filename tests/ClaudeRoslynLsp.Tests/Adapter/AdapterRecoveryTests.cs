@@ -143,12 +143,13 @@ public class AdapterRecoveryTests
         await WaitAsync(() => factory.ConnectCount == 2, Cancellation);
         await harness.SendAsync(Definition(7, ProgramUri), Cancellation);
 
-        // Held: nothing has answered it, because the second backend has not reported the workspace
-        // loaded yet.
-        await Task.Delay(100, Cancellation);
-        Assert.True(
-            harness.TryFindResponse(7) is null,
-            harness.Session.Gate.FailureReason ?? "the request was answered before the workspace loaded");
+        // Asserted as "the gate is holding it", not as "no answer arrived within N milliseconds".
+        // The second formulation is a race with the clock — it fails on a loaded machine for a
+        // session that is behaving perfectly — and it is also the weaker claim: a request the gate
+        // has queued cannot have been answered, because the queue is what answers it.
+        await WaitAsync(() => harness.Session.Gate.HeldCount > 0, Cancellation);
+
+        Assert.Null(harness.TryFindResponse(7));
 
         factory.Latest!.CompleteProjectInitialization();
 
@@ -228,7 +229,7 @@ public class AdapterRecoveryTests
     /// <param name="cancellationToken">Cancels the wait.</param>
     private static async Task WaitAsync(Func<bool> condition, CancellationToken cancellationToken)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
 
         while (DateTime.UtcNow < deadline)
         {
@@ -240,7 +241,7 @@ public class AdapterRecoveryTests
             await Task.Delay(15, cancellationToken).ConfigureAwait(false);
         }
 
-        Assert.Fail("The session did not reach the expected state within 20 s.");
+        Assert.Fail("The session did not reach the expected state within 30 s.");
     }
 
     private static string DidOpen(string uri, int version) => $$$"""

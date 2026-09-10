@@ -941,11 +941,19 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
     private void OnBackendGone()
     {
         bool stopping;
+        int generation;
 
         lock (_stateLock)
         {
             stopping = _stopping;
             _server = null;
+
+            // Bumped here, before the drain, and that ordering is the whole point. The drain is
+            // what faults an in-flight handshake, so a connect attempt whose backend has just died
+            // is superseded from this instant — bumping it later (say, in the Restart branch) leaves
+            // a window in which the abandoned attempt reports a failure, is still "current", and
+            // fails a session the supervisor is in the middle of saving.
+            generation = stopping ? _generation : ++_generation;
         }
 
         var pending = _serverBound.DrainAll();
@@ -988,13 +996,6 @@ internal sealed partial class AdapterSession : IAdapterChannel, IAsyncDisposable
                     $"{ServerVersion.Name}: the Roslyn backend exited; relaunching it "
                     + $"(attempt {attempt} of {RoslynSupervisor.MaxRestarts}). Requests are held "
                     + "until the workspace has loaded again.");
-
-                int generation;
-
-                lock (_stateLock)
-                {
-                    generation = ++_generation;
-                }
 
                 _ = Task.Run(() => ConnectAsync(generation, CancellationToken.None), CancellationToken.None);
                 break;

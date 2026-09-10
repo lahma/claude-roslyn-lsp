@@ -142,6 +142,7 @@ internal sealed partial class FileWatchBridge : IDisposable
     private ITimer? _rebuildTimer;
     private ITimer? _catchUpTimer;
     private IReadOnlyList<CollapsedWatcher> _registered = [];
+    private List<WatchTarget> _applied = [];
     private string? _root;
     private bool _rebuildPending;
     private bool _caughtUp;
@@ -287,6 +288,7 @@ internal sealed partial class FileWatchBridge : IDisposable
         {
             _disposed = true;
             DisposeWatchers();
+            _applied = [];
             _batchTimer?.Dispose();
             _rebuildTimer?.Dispose();
             _catchUpTimer?.Dispose();
@@ -430,6 +432,12 @@ internal sealed partial class FileWatchBridge : IDisposable
             kept.Add(new WatchTarget(directory, watcher.Patterns, recursive));
         }
 
+        if (kept.Count > MaxWatchers)
+        {
+            Log.CollapsingToRoot(_logger, kept.Count, MaxWatchers);
+            kept = [CollapseToRoot(root, kept)];
+        }
+
         lock (_lock)
         {
             if (_disposed)
@@ -437,13 +445,17 @@ internal sealed partial class FileWatchBridge : IDisposable
                 return;
             }
 
-            DisposeWatchers();
-
-            if (kept.Count > MaxWatchers)
+            if (SameTargets(_applied, kept))
             {
-                Log.CollapsingToRoot(_logger, kept.Count, MaxWatchers);
-                kept = [CollapseToRoot(root, kept)];
+                // Nothing about the watch set changed. Tearing the watchers down and standing them
+                // up again would be pure cost — and worse than cost: OrchardCore's 245 projects
+                // register for 45 seconds (C53), so a rebuild every debounce would open forty-odd
+                // windows during the one load where a missed event matters most (C48).
+                Log.WatchSetUnchanged(_logger, _watchers.Count);
+                return;
             }
+
+            DisposeWatchers();
 
             foreach (var target in kept)
             {
@@ -453,9 +465,64 @@ internal sealed partial class FileWatchBridge : IDisposable
                 }
             }
 
+            _applied = kept;
+
             Log.Watching(_logger, _watchers.Count, outside);
             ArmCatchUp();
         }
+    }
+
+    /// <summary>
+    /// Rewrites one registered pattern so it still matches when measured from the workspace root.
+    /// </summary>
+    /// <remarks>
+    /// A pattern with no wildcard is a project file's own name — <c>OrchardCore.Users.csproj</c>,
+    /// relative to that project's directory — and there is one per project. Prefixing each with
+    /// <c>**/</c> would be correct and would also give a 245-project solution 245 patterns that
+    /// arrive a few at a time over the whole load, so the collapsed watch set would never stop
+    /// changing and would be rebuilt on every debounce. Generalising it to <c>**/*.csproj</c> makes
+    /// the set converge after the first few projects. The widening is free: the root watcher already
+    /// sees every one of those files, the exclusion list and the open-document filter still apply,
+    /// and reporting a project file Roslyn did not ask about is a no-op for it — which is exactly
+    /// what a lost-event resynchronisation already does deliberately.
+    /// </remarks>
+    /// <param name="pattern">The pattern as registered, relative to its own base directory.</param>
+    private static string Rebase(string pattern)
+    {
+        if (pattern.StartsWith("**/", StringComparison.Ordinal))
+        {
+            return pattern;
+        }
+
+        if (pattern.AsSpan().IndexOfAny('*', '?', '{') >= 0)
+        {
+            return "**/" + pattern;
+        }
+
+        var extension = Path.GetExtension(pattern);
+
+        return extension.Length > 1 ? "**/*" + extension : "**/" + pattern;
+    }
+
+    /// <summary>Whether two watch-target sets would produce the same watchers.</summary>
+    private static bool SameTargets(List<WatchTarget> left, List<WatchTarget> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (!string.Equals(left[index].Directory, right[index].Directory, StringComparison.OrdinalIgnoreCase)
+                || left[index].Recursive != right[index].Recursive
+                || !left[index].Patterns.SequenceEqual(right[index].Patterns, StringComparer.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Arms the one-shot catch-up, the first time there is anything to catch up from.</summary>
@@ -517,7 +584,7 @@ internal sealed partial class FileWatchBridge : IDisposable
         {
             foreach (var pattern in target.Patterns)
             {
-                var rebased = pattern.StartsWith("**/", StringComparison.Ordinal) ? pattern : "**/" + pattern;
+                var rebased = Rebase(pattern);
 
                 if (!patterns.Contains(rebased, StringComparer.OrdinalIgnoreCase))
                 {
@@ -525,6 +592,8 @@ internal sealed partial class FileWatchBridge : IDisposable
                 }
             }
         }
+
+        patterns.Sort(StringComparer.Ordinal);
 
         return new WatchTarget(root, patterns, Recursive: true);
     }
@@ -918,6 +987,13 @@ internal sealed partial class FileWatchBridge : IDisposable
             Message = "The client sent no workspace root, so nothing can be watched; a file created " +
                       "outside the editor will not join its project.")]
         internal static partial void NoRoot(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 1410,
+            Level = LogLevel.Debug,
+            Message = "Roslyn registered more capabilities, but the watch set is unchanged; the " +
+                      "{Count} watcher(s) already up stay up.")]
+        internal static partial void WatchSetUnchanged(ILogger logger, int count);
 
         [LoggerMessage(
             EventId = 1409,

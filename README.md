@@ -57,11 +57,28 @@ invocation exits 2 with the usage text on stderr instead.
 
 **What to expect on a first run.** The first `lsp` session for a machine downloads about 70 MB of
 Roslyn and extracts about 140 MB, reporting progress to the client as it goes; every later session
-starts from the cache. Then the solution loads — 5.9 s for Quartz.NET's 30 projects on a warm cache,
-longer on a repository that has never been restored, because Roslyn restores it itself. Everything
-asked during that window is held and answered afterwards rather than answered empty. Expect the
-Roslyn child to hold roughly 300 MB plus 10 MB per project once loaded, and about twice that during a
-solution-wide reference search.
+starts from the cache. Then the solution loads, and everything asked during that window is held and
+answered afterwards rather than answered empty. Measured through Claude Code on this machine:
+
+| | Quartz.NET, 30 projects | OrchardCore, 239 projects |
+|---|---|---|
+| Handshake (answered by the adapter, not by Roslyn) | 22-30 ms | 24-63 ms |
+| Workspace loaded | 5.9 s | 20 s warm, 46 s colder |
+| Go to definition, once loaded | 2 ms warm | 4 ms warm |
+| Find references | 11 s (278 hits) | 45 s (272 hits) |
+| Roslyn memory | 0.6-0.9 GB | 1.9-2.1 GB |
+
+A repository that has never been restored takes longer, because Roslyn restores it itself before it
+can load anything.
+
+**If the Roslyn child is too large for your machine**, put `DOTNET_gcServer=0` in the environment the
+adapter is launched with — it is passed through to Roslyn, which by default uses the server garbage
+collector. On OrchardCore that took the peak from 1.9 GB to **577 MB**, at the cost of about eight
+seconds on the load. It is not the default because the trade goes both ways and two gigabytes is only
+a problem on a machine where it is a problem.
+
+The 120-second readiness budget (`CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS`) has roughly 2.5x headroom
+on a 239-project solution; raise it if yours is larger or is being loaded for the first time.
 
 ## Prerequisites
 

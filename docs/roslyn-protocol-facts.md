@@ -1,12 +1,13 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C52 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C54 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
-C48-C52 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
-multi-targeted) and against **Quartz.NET** (`Quartz.slnx`, 30 projects) through a real Claude Code
-2.1.267 session.
+C48-C54 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
+multi-targeted), against **Quartz.NET** (`Quartz.slnx`, 30 projects) and against **OrchardCore**
+(`OrchardCore.slnx`, 239 projects, 7,711 `.cs` files) — the last two through a real Claude Code
+2.1.267 session driving the published Native AOT binary as a `--plugin-dir` LSP server.
 
 ## Acquisition and launch
 
@@ -223,6 +224,46 @@ multi-targeted) and against **Quartz.NET** (`Quartz.slnx`, 30 projects) through 
   session that ends early leaves a `$/progress` stream ending in `Cancelled`. A registration count
   is therefore not a readiness signal, and anything keyed off "registrations have settled" has to be
   debounced rather than waited for.
+
+### OrchardCore: the first large-solution measurements (2026-09-10, WP4)
+
+- **C53** **A 239-project solution loads in 20-46 s and registers 719 distinct watch directories.**
+  `OrchardCore.slnx` on a warm cache: `workspace/projectInitializationComplete` at **20.4 s**
+  (a colder run in the same series took 45.5 s), against a 120 s readiness default — so the default
+  holds with roughly 2.5x headroom, and the recommendation is to leave it where it is. Roslyn
+  registers **2,154-2,226** capabilities over the whole session and never stops (C51); the
+  watched-file registrations are 719 distinct directories inside the workspace plus 279-394 rooted
+  in the NuGet cache. Because the registrations arrive over the entire 45-second load, a watcher
+  bridge that rebuilds per debounce rebuilds ~45 times; comparing the computed watch set against the
+  applied one and generalising a project's own file name to `**/*.csproj` brings that to **4
+  rebuilds and 27 skips**, which matters because every rebuild is a window in which an event is
+  missed (C48).
+- **C54** **Workstation GC cuts Roslyn's memory by about 3.4x on a large solution and costs load
+  time.** OrchardCore with the shipped `System.GC.Server: true`: **1,931-2,089 MB** peak working set,
+  **1,763-2,012 MB** peak private bytes. The same solution with `DOTNET_gcServer=0` in the child's
+  environment: **577 MB** peak working set, **409 MB** peak private bytes, with the load at 28.2 s
+  instead of 20.4 s. The variable reaches the child because the adapter passes its own environment
+  through, so a Claude Code plugin can set it in its `env` block with no adapter change — which is
+  exactly how this was measured. It is deliberately **not** the default: the trade is real in both
+  directions, and 2 GB is only a problem on a machine where it is a problem.
+
+| Measurement | Quartz.NET (30 projects) | OrchardCore (239 projects) |
+|---|---|---|
+| `doctor`, cold | — | 0.7 s, exit 0 |
+| Solution chosen, score | `Quartz.slnx`, 40 | `OrchardCore.slnx`, 349 |
+| `initialize` (answered by the adapter) | 22-30 ms | 24-63 ms |
+| `projectInitializationComplete` | 5.9-6.2 s | 20.4 s warm, 45.5 s colder |
+| `definition` (held by the gate) | 6.6 s | 20.9 s |
+| `definition` (workspace loaded) | 1.3 s cold, 2 ms warm | 4 ms warm |
+| `references` | 11.2 s (278 refs, 135 files) | 44.9 s (272 refs, 156 files) |
+| `incomingCalls` | 3.6 s (225 calls) | 26.7 s (36 calls) |
+| `shutdown` | 15-26 ms | 18 ms |
+| Live capability registrations | 516 | 2,154-2,226 |
+| Watch directories inside the root | 91 | 719 |
+| Watch registrations outside the root | 342 | 279-394 |
+| `FileSystemWatcher`s actually opened | 1 (collapsed) | 1 (collapsed) |
+| Roslyn peak working set | 576-948 MB | 1,931-2,089 MB |
+| Same, with `DOTNET_gcServer=0` | not measured | 577 MB (409 MB private) |
 
 ### Timings on Quartz.NET through Claude Code 2.1.267
 

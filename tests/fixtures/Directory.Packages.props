@@ -1,0 +1,21 @@
+<Project>
+
+  <!--
+    Central package management is switched OFF for the fixture, and this file exists only to say so.
+
+    The repository's own Directory.Packages.props turns CPM on with transitive pinning, and NuGet
+    walks upwards for that file exactly as MSBuild does for Directory.Build.props. Inherited, it
+    would make every PackageReference in the fixture an error ("the package reference must not
+    specify a version") unless the version were also declared up there - which would put the
+    fixture's test dependencies into the package budget of the product, where they emphatically do
+    not belong (AGENTS.md hard rule 3).
+
+    So the fixture declares its versions inline, like most repositories do. They are deliberately
+    the same versions the test project uses, so a restore of the fixture finds a warm package cache
+    rather than downloading three packages inside the live test's budget.
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+</Project>

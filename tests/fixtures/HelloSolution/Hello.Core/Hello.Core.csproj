@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Multi-targeted on purpose. Roslyn loads a multi-targeted project once per target framework, and
+    that is what produces the duplicate call-hierarchy results the adapter has to remove (C24) and
+    the per-TFM duplicates the workspace diagnostics filter has to collapse (C15). A single-target
+    fixture would let both of those regress silently.
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net10.0;netstandard2.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+  </PropertyGroup>
+
+</Project>

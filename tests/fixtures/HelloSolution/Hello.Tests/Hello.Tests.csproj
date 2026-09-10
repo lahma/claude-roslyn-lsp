@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A real test project, not a third library called "Tests". The fixture exists to be shaped like a
+    repository somebody actually has, and every one of those has a test project: it is what puts a
+    second reference edge on the graph, what makes the project fallback's "keep the tests" rule
+    (D42) observable, and what a solution scan has to not mistake for the repository's own solution.
+
+    Versions are declared inline because central package management is switched off for the fixture
+    (see ../../Directory.Packages.props), and they are deliberately the same ones the adapter's own
+    test project uses so a restore here finds a warm cache.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Hello.Core\Hello.Core.csproj" />
+    <ProjectReference Include="..\Hello.App\Hello.App.csproj" />
+  </ItemGroup>
+
+</Project>

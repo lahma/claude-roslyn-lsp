@@ -1,0 +1,17 @@
+<Project>
+
+  <!--
+    Deliberately empty, and load-bearing.
+
+    MSBuild walks upwards for the first Directory.Build.props it finds, so without this file the
+    repository's own would reach the fixture and impose TargetFramework net10.0 (the fixture
+    multi-targets on purpose), TreatWarningsAsErrors (the fixture contains a deliberate CS0029),
+    EnforceCodeStyleInBuild and a NoWarn list. Every one of those would make the fixture a copy of
+    this repository's conventions rather than what it is for: an ordinary solution, shaped the way
+    somebody else's repository is shaped, that the live tests point a real Roslyn at.
+
+    Nothing may be added here. A property that made the fixture build more cleanly would be a
+    property that removed one of the diagnostics the tests assert on.
+  -->
+
+</Project>

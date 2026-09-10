@@ -197,6 +197,15 @@ public class SharedRoslynHostTests
         await WaitUntilAsync(() => harness.OpensOf(Uri) == 1);
 
         await second.SendAsync(DidOpen(Uri, "class Shared;"));
+
+        // Fenced on the second client's own connection before the first one closes. Two attached
+        // clients are two independent streams and nothing orders one against the other: a close that
+        // overtook the second open would be correct for the messages the host had actually seen, and
+        // the test would be asserting an interleaving rather than a rule. It failed exactly that way
+        // on Linux and never on Windows, which is C56's shape again.
+        await second.SendAsync(Request(20, "textDocument/definition", Position()));
+        await second.AwaitResponseAsync(20);
+
         await first.SendAsync(Notification("textDocument/didClose", TextDocument(Uri)));
 
         // Nothing new should reach Roslyn: the second open is redundant and the first close is not

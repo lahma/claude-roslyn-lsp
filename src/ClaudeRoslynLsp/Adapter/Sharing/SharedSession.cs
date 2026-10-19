@@ -22,6 +22,14 @@ namespace ClaudeRoslynLsp.Adapter.Sharing;
 /// rather than a refused connection. Refusing to attach across versions costs one extra Roslyn on
 /// the day of an upgrade and costs nothing afterwards.
 /// </para>
+/// <para>
+/// <b>D102 — everything after <see cref="StartedAt"/> is optional in both directions.</b> A reader
+/// from before those fields ignores members it does not know, which System.Text.Json does by
+/// default; a reader from after them tolerates their absence, because a constructor parameter with a
+/// default is filled from the default when the member is missing. So a file written by either can be
+/// read by either, which is what keeps one build from deleting another's live session as unreadable.
+/// They are rewritten while the host runs, which is why the write is atomic (D102).
+/// </para>
 /// </remarks>
 /// <param name="ProcessId">The hosting process. Checked for liveness before anything is attempted.</param>
 /// <param name="Version">The host's adapter version; an attacher refuses anything but its own.</param>
@@ -29,13 +37,27 @@ namespace ClaudeRoslynLsp.Adapter.Sharing;
 /// <param name="PipeName">The named pipe the host is accepting on.</param>
 /// <param name="Solution">The solution the host has open, for <c>doctor</c> and for a human reading the file.</param>
 /// <param name="StartedAt">When the host published itself, for <c>doctor</c>'s age column.</param>
+/// <param name="RoslynProcessId">Roslyn's own process id (C45), while there is one (D102).</param>
+/// <param name="State"><c>starting</c>, <c>running</c> or <c>dormant</c> (<see cref="BackendStatus.StateName"/>).</param>
+/// <param name="LastActivityAt">When any client last asked the shared Roslyn for anything (D95).</param>
+/// <param name="BaselineMegabytes">Its memory once the workspace had settled (D100).</param>
+/// <param name="Recycles">How many times the host has recycled it.</param>
+/// <param name="LastRecycleAt">When it last did.</param>
+/// <param name="AttachedClients">How many other processes are attached right now.</param>
 internal sealed record SharedSession(
     [property: JsonPropertyName("pid")] int ProcessId,
     [property: JsonPropertyName("version")] string Version,
     [property: JsonPropertyName("transport")] string Transport,
     [property: JsonPropertyName("pipeName")] string PipeName,
     [property: JsonPropertyName("solution")] string Solution,
-    [property: JsonPropertyName("startedAt")] DateTimeOffset StartedAt)
+    [property: JsonPropertyName("startedAt")] DateTimeOffset StartedAt,
+    [property: JsonPropertyName("roslynProcessId")] int? RoslynProcessId = null,
+    [property: JsonPropertyName("state")] string? State = null,
+    [property: JsonPropertyName("lastActivityAt")] DateTimeOffset? LastActivityAt = null,
+    [property: JsonPropertyName("baselineMegabytes")] int? BaselineMegabytes = null,
+    [property: JsonPropertyName("recycles")] int Recycles = 0,
+    [property: JsonPropertyName("lastRecycleAt")] DateTimeOffset? LastRecycleAt = null,
+    [property: JsonPropertyName("attachedClients")] int AttachedClients = 0)
 {
     /// <summary>The only transport this version knows how to attach over.</summary>
     internal const string PipeTransport = "pipe";
@@ -76,6 +98,6 @@ internal sealed record SharedSessionReport(
 /// product's own on-disk format, and giving it its own contract keeps it out of both of the
 /// vocabularies that already have a reason not to meet.
 /// </remarks>
-[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSourceGenerationOptions(WriteIndented = true, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(SharedSession))]
 internal sealed partial class SharedSessionJsonContext : System.Text.Json.Serialization.JsonSerializerContext;

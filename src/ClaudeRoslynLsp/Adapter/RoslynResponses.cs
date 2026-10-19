@@ -87,6 +87,25 @@ internal static class RoslynResponses
         }
     }
 
+    /// <summary>
+    /// Reads C45's <c>_roslyn_processId</c> out of an <c>initialize</c> result: the process that
+    /// actually holds the workspace, which is not always the one that was launched.
+    /// </summary>
+    /// <remarks>
+    /// Both owners need it for the same reason since the idle policy arrived: that process's memory is
+    /// what the baseline and the threshold are measured on (D100), and measuring the launcher's child
+    /// instead would be measuring the wrong process whenever the two differ.
+    /// </remarks>
+    /// <param name="result">The <c>initialize</c> result.</param>
+    /// <returns>The process id, or null when the result does not carry one.</returns>
+    internal static int? ProcessIdOf(JsonElement result) =>
+        result.ValueKind == JsonValueKind.Object
+        && result.TryGetProperty("_roslyn_processId", out var pid)
+        && pid.ValueKind == JsonValueKind.Number
+        && pid.TryGetInt32(out var parsed)
+            ? parsed
+            : null;
+
     /// <summary>Builds a <c>$/cancelRequest</c> naming the id Roslyn knows the request by.</summary>
     /// <param name="outboundId">The id the request was sent under.</param>
     internal static byte[] BuildCancelRequest(int outboundId)

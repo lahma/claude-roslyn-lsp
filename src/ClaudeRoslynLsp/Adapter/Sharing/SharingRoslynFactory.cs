@@ -44,7 +44,18 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
     /// </remarks>
     internal const int LockAttempts = 50;
 
+    /// <summary>
+    /// How often the session file is rewritten to carry the last activity, at most (D102).
+    /// </summary>
+    /// <remarks>
+    /// Once a minute, and only when there was activity since the last write. The field is for a human
+    /// reading <c>doctor</c> — "last used three hours ago" — not for a decision, so minute resolution
+    /// is all it needs and an idle host writes nothing at all.
+    /// </remarks>
+    internal static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMinutes(1);
+
     private readonly Lock _lock = new();
+    private readonly Lock _publishLock = new();
     private readonly IRoslynConnectionFactory _inner;
     private readonly SessionRegistry _registry;
     private readonly Func<string?> _resolveSolution;
@@ -53,6 +64,9 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
 
     private ISharedEngineHost? _owner;
     private SharedRoslynHost? _host;
+    private SharedSession? _published;
+    private ITimer? _heartbeat;
+    private DateTimeOffset _publishedActivity;
     private string? _solutionPath;
     private string? _key;
     private int _connectionGeneration;
@@ -224,23 +238,38 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
     internal async ValueTask StopHostingAsync()
     {
         SharedRoslynHost? host;
+        ISharedEngineHost? owner;
 
-        lock (_lock)
+        // Under the publish lock, so a rewrite that was about to happen cannot land after the delete
+        // below and resurrect a file naming a pipe that is closing.
+        lock (_publishLock)
         {
-            host = _host;
-            _host = null;
-        }
+            lock (_lock)
+            {
+                host = _host;
+                owner = _owner;
+                _host = null;
+                _published = null;
+            }
 
-        if (host is null)
-        {
-            return;
-        }
+            if (host is null)
+            {
+                return;
+            }
 
-        // The file first: a process reading it while the pipe is being torn down would connect and
-        // then immediately see the connection close, which costs it a whole attach cycle.
-        if (Key is { } key)
-        {
-            _registry.Delete(key);
+            _heartbeat?.Dispose();
+            _heartbeat = null;
+
+            host.ClientsChanged -= OnClientsChanged;
+
+            owner?.Recycler.StatusChanged -= OnStatusChanged;
+
+            // The file first: a process reading it while the pipe is being torn down would connect and
+            // then immediately see the connection close, which costs it a whole attach cycle.
+            if (Key is { } key)
+            {
+                _registry.Delete(key);
+            }
         }
 
         await host.DisposeAsync().ConfigureAwait(false);
@@ -358,15 +387,15 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
             return false;
         }
 
-        var published = _registry.Write(
-            Key!,
-            new SharedSession(
-                Environment.ProcessId,
-                ServerVersion.Value,
-                SharedSession.PipeTransport,
-                pipeName,
-                _solutionPath ?? string.Empty,
-                _time.GetUtcNow()));
+        var session = new SharedSession(
+            Environment.ProcessId,
+            ServerVersion.Value,
+            SharedSession.PipeTransport,
+            pipeName,
+            _solutionPath ?? string.Empty,
+            _time.GetUtcNow());
+
+        var published = _registry.Write(Key!, Describe(session, owner.Recycler.Status, attachedClients: 0));
 
         if (!published)
         {
@@ -377,11 +406,109 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
         lock (_lock)
         {
             _host = host;
+            _published = session;
             _attached = false;
         }
 
+        // D102: the file says what the backend is doing, not only where to find it — rewritten when
+        // that changes, and once a minute while anybody is using it.
+        host.ClientsChanged += OnClientsChanged;
+        owner.Recycler.StatusChanged += OnStatusChanged;
+
+        lock (_publishLock)
+        {
+            _publishedActivity = owner.Recycler.Status.LastActivityAt;
+            _heartbeat = _time.CreateTimer(
+                static state => ((SharingRoslynFactory) state!).Heartbeat(),
+                this,
+                HeartbeatInterval,
+                HeartbeatInterval);
+        }
+
+        // D103: a process that has just become a host is the one that pays for tidying up after the
+        // ones that went before it. This file is live and the lock is held by the caller right now,
+        // so the sweep cannot touch either.
+        _registry.Sweep(apply: true);
+
         return true;
     }
+
+    /// <summary>The session file's full content: where the host is, and what its backend is doing.</summary>
+    private static SharedSession Describe(SharedSession session, BackendStatus status, int attachedClients) =>
+        session with
+        {
+            RoslynProcessId = status.ProcessId,
+            State = status.StateName,
+            LastActivityAt = status.LastActivityAt,
+            BaselineMegabytes = BackendMemory.Megabytes(status.BaselineBytes),
+            Recycles = status.Recycles,
+            LastRecycleAt = status.LastRecycleAt,
+            AttachedClients = attachedClients,
+        };
+
+    /// <summary>Rewrites the session file from the owner's status, while this process is hosting.</summary>
+    private void Publish()
+    {
+        lock (_publishLock)
+        {
+            SharedRoslynHost? host;
+            SharedSession? session;
+            ISharedEngineHost? owner;
+
+            lock (_lock)
+            {
+                host = _host;
+                session = _published;
+                owner = _owner;
+            }
+
+            if (host is null || session is null || owner is null || Key is not { } key)
+            {
+                return;
+            }
+
+            var status = owner.Recycler.Status;
+
+            if (_registry.Update(key, Describe(session, status, host.ClientCount)))
+            {
+                _publishedActivity = status.LastActivityAt;
+            }
+        }
+    }
+
+    /// <summary>Rewrites the file when there was activity since the last write.</summary>
+    private void Heartbeat()
+    {
+        ISharedEngineHost? owner;
+
+        lock (_lock)
+        {
+            owner = _owner;
+        }
+
+        if (owner is null)
+        {
+            return;
+        }
+
+        bool due;
+
+        lock (_publishLock)
+        {
+            due = owner.Recycler.Status.LastActivityAt > _publishedActivity;
+        }
+
+        if (due)
+        {
+            Publish();
+        }
+    }
+
+    /// <summary>The backend changed state; say so in the file.</summary>
+    private void OnStatusChanged(BackendStatus status) => Publish();
+
+    /// <summary>A client attached or detached; say so in the file.</summary>
+    private void OnClientsChanged() => Publish();
 
     /// <summary>Launches the real Roslyn and wraps it so that losing it also stops the sharing.</summary>
     private async Task<RoslynConnection> HostAsync(CancellationToken cancellationToken)
@@ -419,7 +546,12 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
                 {
                     await StopHostingAsync().ConfigureAwait(false);
                 }
-            });
+            })
+        {
+            // Passed straight through, and that is the point of having it (D97): killing a Roslyn that
+            // ignored `exit` must not take the sharing down the way disposing this wrapper does.
+            Terminate = inner.Terminate,
+        };
     }
 
     /// <summary>Source-generated log methods (CA1873).</summary>

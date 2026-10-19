@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
+using ClaudeRoslynLsp.Adapter;
 using ClaudeRoslynLsp.Adapter.Sharing;
 using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Roslyn;
@@ -113,19 +114,14 @@ internal static class DoctorCommand
             options.Solution,
             options.SolutionVariable);
 
-        // The shared-engine registry (D94). Reported always, and tidied only by the verb whose whole
-        // job is to change things: a diagnostic that deletes files nobody asked it to is a diagnostic
-        // people stop running.
-        var registry = SessionRegistry.ForHome(paths.Home, logger);
-        var sessions = registry.List();
-
-        if (fix)
-        {
-            foreach (var stale in sessions.Where(static session => !session.Usable))
-            {
-                registry.Delete(stale.Key);
-            }
-        }
+        // The shared-engine registry (D94, D103, D107). Reported always, and tidied only by the verb
+        // whose whole job is to change things: a diagnostic that deletes files nobody asked it to is a
+        // diagnostic people stop running.
+        var sharing = SharedEngineReport.Gather(
+            SessionRegistry.ForHome(paths.Home, logger),
+            options.Share,
+            fix,
+            BackendMemory.Sample);
 
         RoslynHandshakeResult? handshake = null;
 
@@ -151,8 +147,7 @@ internal static class DoctorCommand
             Locator = locator,
             Resolution = resolution,
             Solution = solution,
-            Sessions = sessions,
-            SessionsDirectory = registry.Directory_,
+            Sharing = sharing,
             Integration = IntegrationState.Read(),
             Handshake = handshake,
             Fix = fix,
@@ -231,6 +226,12 @@ internal static class DoctorCommand
 
         Item(text, "cache", report.Paths.RoslynCacheRoot + FormatFreeSpace(report.FreeBytes));
         Item(text, "garbage collector", DescribeGarbageCollector(report.Options));
+
+        var conserve = DescribeGcConserve(
+            report.Options,
+            Environment.GetEnvironmentVariable(RoslynProcessLauncher.GcConserveMemoryVariable));
+
+        Item(text, "gc conserve memory", conserve.Text);
         text.AppendLine();
 
         Section(text, "Solution");
@@ -260,33 +261,10 @@ internal static class DoctorCommand
         text.AppendLine();
 
         Section(text, "Shared engines");
-        Item(text, "sharing", report.Options.Share ? "on" : "off (CLAUDE_ROSLYN_LSP_SHARE)");
-        Item(text, "sessions", report.SessionsDirectory);
 
-        if (report.Sessions.Count == 0)
+        foreach (var (label, value) in report.Sharing.Lines(DateTimeOffset.UtcNow))
         {
-            Item(text, "state", "no claude-roslyn-lsp process is hosting a Roslyn for any solution");
-        }
-
-        foreach (var session in report.Sessions)
-        {
-            Item(
-                text,
-                session.Usable ? "session *" : "session",
-                string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"{session.Key}  {DescribeSession(session)}"));
-        }
-
-        if (report.StaleSessions > 0)
-        {
-            Item(
-                text,
-                report.Fix ? "cleaned" : "hint",
-                report.Fix
-                    ? $"removed {report.StaleSessions} stale session file(s)"
-                    : $"{report.StaleSessions} stale session file(s); `{ServerVersion.Name} doctor --fix` "
-                      + "removes them (a process starting now removes them by itself, too)");
+            Item(text, label, value);
         }
 
         text.AppendLine();
@@ -411,6 +389,21 @@ internal static class DoctorCommand
             WriteNullableString(writer, "launchTarget", report.Resolution.LaunchTarget);
             writer.WriteBoolean("verified", report.Resolution.Verified);
             writer.WriteString("garbageCollector", DescribeGarbageCollector(report.Options));
+
+            var conserve = DescribeGcConserve(
+                report.Options,
+                Environment.GetEnvironmentVariable(RoslynProcessLauncher.GcConserveMemoryVariable));
+
+            if (conserve.Level is { } level)
+            {
+                writer.WriteNumber("gcConserveMemory", level);
+            }
+            else
+            {
+                writer.WriteNull("gcConserveMemory");
+            }
+
+            writer.WriteString("gcConserveMemorySource", conserve.Source);
             WriteNullableString(writer, "failure", report.Resolution.Failure);
             writer.WriteStartArray("chain");
 
@@ -456,33 +449,7 @@ internal static class DoctorCommand
             writer.WriteEndArray();
             writer.WriteEndObject();
 
-            writer.WriteStartObject("sharing");
-            writer.WriteBoolean("enabled", report.Options.Share);
-            writer.WriteString("sessionsDirectory", report.SessionsDirectory);
-            writer.WriteStartArray("sessions");
-
-            foreach (var session in report.Sessions)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("key", session.Key);
-                writer.WriteString("path", session.Path);
-                writer.WriteBoolean("usable", session.Usable);
-                writer.WriteString("verdict", session.Verdict);
-
-                if (session.Session is { } published)
-                {
-                    writer.WriteNumber("pid", published.ProcessId);
-                    writer.WriteString("version", published.Version);
-                    writer.WriteString("solution", published.Solution);
-                    writer.WriteString("pipeName", published.PipeName);
-                    writer.WriteString("startedAt", published.StartedAt.ToString("O", CultureInfo.InvariantCulture));
-                }
-
-                writer.WriteEndObject();
-            }
-
-            writer.WriteEndArray();
-            writer.WriteEndObject();
+            report.Sharing.WriteJson(writer, DateTimeOffset.UtcNow);
 
             writer.WriteStartObject("claudeCode");
             writer.WriteString("settingsPath", report.Integration.SettingsPath);
@@ -553,21 +520,49 @@ internal static class DoctorCommand
         }
     }
 
-    /// <summary>One session file's line in the report: who, what, and how long ago.</summary>
-    /// <param name="session">The inspected session file.</param>
-    private static string DescribeSession(SharedSessionReport session)
+    /// <summary>
+    /// Says which <c>DOTNET_GCConserveMemory</c> level the child will run with, and where it came from
+    /// (D104).
+    /// </summary>
+    /// <remarks>
+    /// The same three-way answer as the garbage collector line beside it — this adapter's default, the
+    /// <c>CLAUDE_ROSLYN_LSP_GC_CONSERVE</c> variable, or a <c>DOTNET_GCConserveMemory</c> already in the
+    /// environment, which wins over both and is passed through untouched.
+    /// </remarks>
+    /// <param name="options">The resolved configuration.</param>
+    /// <param name="inherited">The <c>DOTNET_GCConserveMemory</c> in this process's environment, if any.</param>
+    internal static (int? Level, string Source, string Text) DescribeGcConserve(
+        ClaudeRoslynLspOptions options,
+        string? inherited)
     {
-        if (session.Session is not { } published)
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (inherited is { Length: > 0 })
         {
-            return session.Verdict;
+            int? level = int.TryParse(inherited, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                ? parsed
+                : null;
+
+            return (
+                level,
+                RoslynProcessLauncher.GcConserveMemoryVariable,
+                inherited + "  (" + RoslynProcessLauncher.GcConserveMemoryVariable
+                + " in this environment overrides CLAUDE_ROSLYN_LSP_GC_CONSERVE and is passed through)");
         }
 
-        var age = DateTimeOffset.UtcNow - published.StartedAt;
+        if (options.GcConserveMemory == 0)
+        {
+            return (
+                null,
+                options.GcConserveMemoryVariable ?? "CLAUDE_ROSLYN_LSP_GC_CONSERVE",
+                "not set  (CLAUDE_ROSLYN_LSP_GC_CONSERVE=0; the runtime's own default applies)");
+        }
 
-        return string.Create(
-            CultureInfo.InvariantCulture,
-            $"{session.Verdict}, pid {published.ProcessId}, version {published.Version}, "
-            + $"started {age.TotalMinutes:0} min ago, {published.Solution}");
+        var rendered = options.GcConserveMemory.ToString(CultureInfo.InvariantCulture);
+
+        return options.GcConserveMemoryVariable is { } source
+            ? (options.GcConserveMemory, source, rendered + "  (from " + source + ")")
+            : (options.GcConserveMemory, "default", rendered + "  (this adapter's default - D104)");
     }
 
     private static void Section(StringBuilder text, string title) =>
@@ -654,11 +649,7 @@ internal static class DoctorCommand
 
         internal required SolutionDiscoveryResult Solution { get; init; }
 
-        internal required IReadOnlyList<SharedSessionReport> Sessions { get; init; }
-
-        internal required string SessionsDirectory { get; init; }
-
-        internal int StaleSessions => Sessions.Count(static session => !session.Usable);
+        internal required SharedEngineReport Sharing { get; init; }
 
         internal required IntegrationState Integration { get; init; }
 

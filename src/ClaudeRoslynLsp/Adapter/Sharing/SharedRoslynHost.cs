@@ -87,13 +87,19 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
     /// </remarks>
     internal const string SetOptionMethod = "claude-roslyn-lsp/setOption";
 
-    /// <summary>Notifications from Roslyn that every attached client is given verbatim.</summary>
+    /// <summary>Notifications every attached client is given verbatim.</summary>
+    /// <remarks>
+    /// Four from Roslyn, and one this host originates itself (D105): the readiness and diagnostics
+    /// rules are D89's, and <see cref="BackendChange.Method"/> is here too so that this set stays the
+    /// one place that says what an attached client sees.
+    /// </remarks>
     private static readonly HashSet<string> FannedOut = new(StringComparer.Ordinal)
     {
         "window/logMessage",
         "window/showMessage",
         "workspace/projectInitializationComplete",
         "workspace/diagnostic/refresh",
+        BackendChange.Method,
     };
 
     /// <summary>The readiness notification, replayed to a client that attached after the load.</summary>
@@ -110,6 +116,7 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
     private Task? _accepting;
     private int _nextClientId;
     private bool _projectsLoaded;
+    private (string State, int? ProcessId, int Recycles)? _lastAnnounced;
     private int _disposed;
 
     /// <summary>Creates a host over an owner's backend. Nothing is accepted until <see cref="Listen"/>.</summary>
@@ -127,10 +134,16 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
         PipeName = pipeName;
 
         _owner.BackendMessage += OnBackendMessage;
+        _owner.Recycler.StatusChanged += OnBackendStatusChanged;
     }
 
     /// <summary>The pipe this host accepts on.</summary>
     internal string PipeName { get; }
+
+    /// <summary>
+    /// Raised after a client attaches or detaches, so the session file can say how many are (D102).
+    /// </summary>
+    internal event Action? ClientsChanged;
 
     /// <summary>How many clients are attached right now. Used by the tests and by <c>doctor</c>.</summary>
     internal int ClientCount
@@ -202,8 +215,10 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
             _clients.Add(client);
         }
 
-        Log.Attached(_logger, client.Id, _clients.Count);
+        Log.Attached(_logger, client.Id, ClientCount);
         client.Pump = Task.Run(() => ServeAsync(client), CancellationToken.None);
+
+        ClientsChanged?.Invoke();
     }
 
     /// <inheritdoc />
@@ -215,6 +230,7 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
         }
 
         _owner.BackendMessage -= OnBackendMessage;
+        _owner.Recycler.StatusChanged -= OnBackendStatusChanged;
         await _stopping.CancelAsync().ConfigureAwait(false);
 
         SharedClient[] clients;
@@ -363,6 +379,15 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
         var isRequest = info.Kind == LspMessageKind.Request;
         var idToken = info.IdToken(body).ToArray();
 
+        // D95: an attached client's activity is the host's activity — one clock, so the shared Roslyn
+        // is recycled only when everybody using it has been quiet. Stamped before the switch so that
+        // an initialize from a new attacher wakes a dormant backend before AnswerInitializeAsync waits
+        // on that backend's handshake.
+        if (CountsAsActivity(method, isRequest))
+        {
+            _owner.Recycler.RecordActivity();
+        }
+
         switch (method)
         {
             case "initialize":
@@ -434,6 +459,34 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Whether one attached client's message counts as somebody using the shared Roslyn (D95).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same three exclusions the host's own client has — <c>shutdown</c>, <c>exit</c> and
+    /// <c>$/cancelRequest</c> — and two more that only an attached client sends:
+    /// <c>textDocument/diagnostic</c> and <c>workspace/diagnostic</c>. An attached LSP session's
+    /// diagnostics bridge sends those in response to the <c>workspace/diagnostic/refresh</c> this host
+    /// fans out (D89), and Roslyn sends a refresh whenever background analysis finishes or a project
+    /// file changes on disk. Counting the pulls would let Roslyn keep itself awake through its client:
+    /// the session goes quiet, the analysis settles, the refresh goes out, the pull comes back, and
+    /// the idle clock starts again.
+    /// </para>
+    /// <para>
+    /// Excluding them from the clock does not let them wait for ever: a pull that arrives while the
+    /// backend is dormant is held, and a held request wakes it (D96).
+    /// </para>
+    /// </remarks>
+    /// <param name="method">The message's method.</param>
+    /// <param name="isRequest">Whether it is a request.</param>
+    private static bool CountsAsActivity(string method, bool isRequest) => method switch
+    {
+        "shutdown" or "exit" or "$/cancelRequest" => false,
+        "textDocument/diagnostic" or "workspace/diagnostic" when isRequest => false,
+        _ => true,
+    };
+
     /// <summary>Answers an attached client's handshake out of the host's own (rule 1).</summary>
     private async Task AnswerInitializeAsync(SharedClient client, byte[] idToken)
     {
@@ -443,6 +496,10 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
 
             client.Post(JsonRpcErrors.RawResult(idToken, RenameServer(result)));
             Log.Handshake(_logger, client.Id);
+
+            // D105: a client that attaches after a recycle would otherwise know the backend only from
+            // the handshake, which says nothing about how many times it has been replaced.
+            client.Post(BackendChange.Build(_owner.Recycler.Status));
 
             ReplayReadiness(client);
         }
@@ -863,6 +920,48 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
         Broadcast(info.Kind == LspMessageKind.Request ? JsonRpcErrors.Notification(method, default) : body);
     }
 
+    /// <summary>
+    /// The owner's backend changed: forget that the workspace was loaded, and tell the attached
+    /// clients who is behind the pipe now (D105).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The reset is the bug this fixes.</b> <c>_projectsLoaded</c> used to be set by the first
+    /// <c>projectInitializationComplete</c> and never cleared, so a client attaching while the backend
+    /// was being relaunched — after a crash, or now after a recycle — was told the workspace was
+    /// loaded, opened its own gate, and forwarded requests that the reload then answered empty
+    /// (C27). Cleared whenever the backend is anything but running, it is set again by the reloaded
+    /// workspace's own notification, which is fanned out like the first one was.
+    /// </para>
+    /// <para>
+    /// Announced only when the state, the process or the recycle count actually moved: the status
+    /// also changes when a baseline is taken, and an attached client has nothing to do about that.
+    /// </para>
+    /// </remarks>
+    private void OnBackendStatusChanged(BackendStatus status)
+    {
+        (string State, int? ProcessId, int Recycles) announced = (status.StateName, status.ProcessId, status.Recycles);
+        bool changed;
+
+        lock (_lock)
+        {
+            if (status.Phase != BackendPhase.Running)
+            {
+                _projectsLoaded = false;
+            }
+
+            changed = _lastAnnounced != announced;
+            _lastAnnounced = announced;
+        }
+
+        if (changed)
+        {
+            // Through the same filter as Roslyn's own notifications, so the fan-out list stays the
+            // one place that decides what an attached client sees.
+            OnBackendMessage(BackendChange.Build(status));
+        }
+    }
+
     /// <summary>Sends one message to every attached client.</summary>
     private void Broadcast(byte[] body)
     {
@@ -909,6 +1008,7 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
         await client.DisposeAsync().ConfigureAwait(false);
 
         Log.Detached(_logger, client.Id, ClientCount);
+        ClientsChanged?.Invoke();
     }
 
     /// <summary>Who has one document open, and whether Roslyn has it because of them.</summary>

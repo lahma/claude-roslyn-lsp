@@ -11,7 +11,8 @@ namespace ClaudeRoslynLsp.Adapter.Sharing;
 /// launched Roslyn, and D75 declined to extract a common session out of them on the evidence that
 /// their glue does different jobs. This interface is the seam that WP5b's note said was the one
 /// worth cutting: it is six members wide, every one of them something both classes already do for
-/// themselves, and neither class had to be restructured to expose them.
+/// themselves, and neither class had to be restructured to expose them. WP10 added one more, the
+/// owner's <see cref="BackendRecycler"/>, for the idle policy (D95).
 /// </para>
 /// <para>
 /// The members deliberately do <em>not</em> include anything about serving a peer. The multiplexer
@@ -88,6 +89,18 @@ internal interface ISharedEngineHost
     /// <param name="rawValue">The raw JSON value.</param>
     /// <param name="cancellationToken">Abandons the round trip.</param>
     Task SetOptionAsync(string section, byte[] rawValue, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The owner's idle policy: the one activity clock an attached client's requests are stamped on,
+    /// and the status the session file and the attached clients are told about (D95, D102, D105).
+    /// </summary>
+    /// <remarks>
+    /// One member rather than three, and an object the owner already has rather than a new callback,
+    /// so the seam grows by the least it can. The host stamps activity on it — which also wakes a
+    /// dormant backend — and reads and subscribes to its status; it decides nothing, because whether
+    /// to recycle is a question about the process that owns the child.
+    /// </remarks>
+    BackendRecycler Recycler { get; }
 
     /// <summary>
     /// Raised for every message Roslyn sends that is not a response — the stream the host filters its

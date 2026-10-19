@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
@@ -54,7 +53,8 @@ namespace ClaudeRoslynLsp.Mcp.Engine;
 /// progress streams go to stderr.
 /// </para>
 /// </remarks>
-internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel, ISharedEngineHost, IAsyncDisposable
+internal sealed partial class OwnedRoslynEngine
+    : IRoslynEngine, IAdapterChannel, ISharedEngineHost, IRecycleTarget, IAsyncDisposable
 {
     /// <summary>How long <c>shutdown</c> waits for Roslyn to acknowledge before the process is closed.</summary>
     internal static readonly TimeSpan ShutdownWait = TimeSpan.FromSeconds(5);
@@ -140,11 +140,15 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     private readonly WorkspaceOpener _opener;
     private readonly RoslynSupervisor _supervisor;
     private readonly FileWatchBridge _watching;
+    private readonly BackendRecycler _recycler;
     private readonly WorkspaceLoadTracker _load = new();
 
     private ServerEndpoint? _server;
+    private ServerEndpoint? _retired;
     private Task? _startTask;
     private Task? _serverPump;
+    private int? _recyclingGeneration;
+    private bool _reloadingAfterRecycle;
     private TaskCompletionSource _opened = Completion();
     private WorkspaceSelection? _selection;
     private IReadOnlyList<WorkspaceProject>? _projects;
@@ -172,6 +176,10 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     /// What to report about the backend when the wire does not say: the pinned version, and the
     /// launched process id as a fallback for the one <c>initialize</c> names (C45).
     /// </param>
+    /// <param name="sampleMemory">
+    /// Measures a process by the idle policy's metric (D100). Null measures the real process.
+    /// </param>
+    /// <param name="compactor">What asks the child to give memory back before a recycle (D101).</param>
     internal OwnedRoslynEngine(
         IRoslynConnectionFactory factory,
         ClaudeRoslynLspOptions options,
@@ -179,7 +187,9 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         string workspaceRoot,
         TimeProvider time,
         ILogger logger,
-        Func<RoslynBackendIdentity>? identity = null)
+        Func<RoslynBackendIdentity>? identity = null,
+        Func<int, long?>? sampleMemory = null,
+        IBackendCompactor? compactor = null)
     {
         ArgumentNullException.ThrowIfNull(factory);
         ArgumentNullException.ThrowIfNull(options);
@@ -241,10 +251,37 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
 
         _gate.Opened += OnGateOpened;
         _gate.WorkspaceDescription = "the workspace";
+
+        // The idle policy (D96): the same component the lsp verb runs, fed here by tool calls (D95)
+        // and, when this process hosts, by every attached client through the shared host.
+        _recycler = new BackendRecycler(
+            time,
+            RecyclePolicy.From(options),
+            this,
+            sampleMemory ?? BackendMemory.PolicyBytes,
+            compactor ?? NoBackendCompactor.Instance,
+            logger);
+
+        _gate.HeldWhileDormant += _recycler.RecordActivity;
     }
 
     /// <summary>The readiness gate, exposed for the live tests.</summary>
     internal ReadinessGate Gate => _gate;
+
+    /// <summary>The idle policy, exposed for the tests.</summary>
+    internal BackendRecycler Recycler => _recycler;
+
+    /// <summary>Whether a workspace diagnostic report is cached to fall back on (C58), for the tests.</summary>
+    internal bool HasCachedWorkspaceReport
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _lastWorkspaceReport is not null;
+            }
+        }
+    }
 
     /// <summary>
     /// What <c>getWorkspaceStatus</c> reports for <c>engine</c> when this process launched its own.
@@ -290,6 +327,20 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             }
 
             generation = _generation;
+        }
+
+        // Before the connect is started, so the process id the handshake reports can never be
+        // overwritten by a "launching" that arrived late.
+        _recycler.OnLaunching();
+        _recycler.Start();
+
+        lock (_stateLock)
+        {
+            if (_startTask is not null || _stopping)
+            {
+                return;
+            }
+
             _gate.Start();
             _startTask = Task.Run(() => ConnectAsync(generation, CancellationToken.None), CancellationToken.None);
         }
@@ -302,9 +353,17 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     // ---------------------------------------------------------------------------------------------
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <b>The MCP half's activity stamp and its wake point (D95, D96).</b> Every tool calls this
+    /// first, <c>getWorkspaceStatus</c> included, so a call is what keeps an owned backend alive and
+    /// what relaunches a dormant one. The stamp comes before <c>_opened</c> is read, because the
+    /// recycle replaced it as the gate closed and the stamp is what starts the load that completes
+    /// the replacement: read the other way round, the call could see the recycled backend's "open".
+    /// </remarks>
     public async Task<WorkspaceState> EnsureReadyAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         Start();
+        _recycler.RecordActivity();
 
         Task opened;
 
@@ -833,6 +892,8 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         var body = DocumentMirror.BuildDidOpen(new MirroredDocument(uri, "csharp", 1, text));
         _mirror.Open(body);
 
+        // After the mirror, so a wake this causes replays the document it was woken for (D95).
+        _recycler.RecordActivity();
         Notify(body);
 
         return Task.CompletedTask;
@@ -850,6 +911,7 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
                 RoslynEngineJsonContext.Default.DidCloseRequest));
 
         _mirror.Close(body);
+        _recycler.RecordActivity();
         Notify(body);
 
         return Task.CompletedTask;
@@ -881,6 +943,10 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         {
             return Task.CompletedTask;
         }
+
+        // A tool wrote files (D95). A dormant backend loses nothing by not hearing about them — the
+        // reload reads the disk — but the call that wrote them is somebody using the workspace.
+        _recycler.RecordActivity();
 
         var events = new List<FileEventShape>(changes.Count + 1);
         var nudged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1030,6 +1096,9 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     ReadinessGate ISharedEngineHost.Gate => _gate;
 
     /// <inheritdoc />
+    BackendRecycler ISharedEngineHost.Recycler => _recycler;
+
+    /// <inheritdoc />
     DocumentMirror ISharedEngineHost.Documents => _mirror;
 
     /// <inheritdoc />
@@ -1070,6 +1139,157 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         ConfigurationRoundTrip.ApplyAsync(_configuration, section, rawValue, Notify, _time, _logger, cancellationToken);
 
     // ---------------------------------------------------------------------------------------------
+    // IRecycleTarget - this engine's half of an idle recycle (D96-D99)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <inheritdoc />
+    bool IRecycleTarget.CanRecycle
+    {
+        get
+        {
+            ServerEndpoint? server;
+            bool stopping;
+
+            lock (_stateLock)
+            {
+                server = _server;
+                stopping = _stopping;
+            }
+
+            return !stopping
+                   && server is { Connection.Attached: false }
+                   && _gate.IsOpen
+                   && _gate.HeldCount == 0
+                   && _serverBound.PendingCount == 0;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Unlike the <c>lsp</c> verb this engine has no replay for a request that is already at Roslyn
+    /// — a tool call is a method waiting on an answer, not bytes that can be sent again — so the
+    /// recycle is abandoned whenever anything is in flight once the gate has closed, rather than
+    /// stopping the backend under it.
+    /// </remarks>
+    async Task<bool> IRecycleTarget.RecycleAsync(RecycleDecision decision)
+    {
+        ServerEndpoint server;
+        int generation;
+        Task? pump;
+        TaskCompletionSource closed;
+
+        lock (_stateLock)
+        {
+            if (_stopping || _server is not { Connection.Attached: false } current)
+            {
+                return false;
+            }
+
+            server = current;
+            generation = _generation;
+            pump = _serverPump;
+            _recyclingGeneration = generation;
+        }
+
+        if (!_gate.MarkDormant())
+        {
+            AbandonRecycle(generation);
+            return false;
+        }
+
+        lock (_stateLock)
+        {
+            // Replaced as the gate closes, so a tool call that stamps activity from now on waits for
+            // the relaunched workspace instead of reading the recycled one's "open" and asking a
+            // server that is shutting down.
+            closed = Completion();
+            _opened = closed;
+        }
+
+        if (_serverBound.PendingCount > 0 || _recycler.WakePending)
+        {
+            if (AbandonRecycle(generation))
+            {
+                // Somebody is using it after all, and nothing has been said to Roslyn yet: open again,
+                // and let whoever started waiting on the replacement go.
+                _gate.CancelDormant();
+                closed.TrySetResult();
+                return false;
+            }
+
+            return true;
+        }
+
+        await server.StopByProtocolAsync(_serverBound, _time).ConfigureAwait(false);
+
+        if (pump is not null)
+        {
+            try
+            {
+                await pump.WaitAsync(ShutdownWait, _time, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                Log.StreamOutlivedBackend(_logger);
+                OnBackendGone(server);
+            }
+        }
+
+        return true;
+    }
+
+    /// <inheritdoc />
+    void IRecycleTarget.Wake()
+    {
+        int generation;
+
+        lock (_stateLock)
+        {
+            if (_stopping || _server is not null)
+            {
+                return;
+            }
+
+            generation = _generation;
+        }
+
+        if (!_gate.MarkWaking())
+        {
+            return;
+        }
+
+        _load.Reset();
+        _recycler.OnLaunching();
+
+        lock (_stateLock)
+        {
+            _reloadingAfterRecycle = true;
+        }
+
+        Log.Waking(_logger);
+
+        // The crash path's reconnect (D57) without its supervisor (D99): replay the mirror, re-apply
+        // the settings a tool changed, re-open the solution.
+        _ = Task.Run(() => ConnectAsync(generation, CancellationToken.None), CancellationToken.None);
+    }
+
+    /// <summary>Clears a recycle's flag, when the backend it was set for is still the current one.</summary>
+    /// <returns>True when the recycle was undone; false when the backend had gone already.</returns>
+    private bool AbandonRecycle(int generation)
+    {
+        lock (_stateLock)
+        {
+            if (_recyclingGeneration != generation || _generation != generation || _server is null)
+            {
+                return false;
+            }
+
+            _recyclingGeneration = null;
+            return true;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Backend lifecycle
     // ---------------------------------------------------------------------------------------------
 
@@ -1091,6 +1311,12 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             return;
         }
 
+        // D98: the previous backend's registrations were made under ids the new one will never
+        // unregister, and its watchers would otherwise pile up one set per relaunch.
+        _registrations.Clear();
+
+        ServerEndpoint? retired;
+
         lock (_stateLock)
         {
             if (_stopping || _generation != generation)
@@ -1106,6 +1332,24 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             // and what getWorkspaceStatus reports for `engine` (D23).
             _attached = server.Connection.Attached;
             _hostProcessId = server.Connection.HostProcessId;
+
+            // Everything this engine remembers about a particular Roslyn process belongs to the one
+            // that went. C45's id is read again from the new handshake, and the cached workspace
+            // report is not a fallback any more: a pull the new process holds means "nothing new
+            // since I last told you", and this process has told us nothing yet (C58).
+            _backendProcessId = null;
+            _lastWorkspaceReport = null;
+
+            retired = _retired;
+            _retired = null;
+        }
+
+        if (retired is not null)
+        {
+            // D98: released only now that a successor exists, so a shared host's wrapper sees a
+            // superseded connection and releases the dead process's handles without withdrawing the
+            // session file the attached clients are using.
+            await retired.DisposeAsync().ConfigureAwait(false);
         }
 
         var budget = TimeSpan.FromSeconds(_options.ReadyTimeoutSeconds);
@@ -1124,6 +1368,10 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             var result = await completion.Task.WaitAsync(budget, _time, cancellationToken).ConfigureAwait(false);
 
             RecordBackendIdentity(result);
+
+            // C45's process is the one the idle policy measures (D100); an attached engine's is the
+            // host's child, and the host measures and decides about it itself.
+            _recycler.OnLaunched(server.Connection.Attached ? null : RoslynResponses.ProcessIdOf(result));
         }
         catch (Exception exception) when (exception is not OperationCanceledException
                                               || cancellationToken.IsCancellationRequested)
@@ -1190,7 +1438,7 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         }
         finally
         {
-            OnBackendGone();
+            OnBackendGone(server);
         }
     }
 
@@ -1277,24 +1525,59 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     }
 
     /// <summary>The backend went away: fail what was waiting, and decide about a relaunch (D57).</summary>
-    private void OnBackendGone()
+    /// <remarks>
+    /// A backend an idle recycle was stopping is not a crash (D99): the flag is tagged with its
+    /// generation and read in the same lock block, the supervisor is not asked anything, and the gate
+    /// stays dormant until the next call wakes it.
+    /// </remarks>
+    /// <param name="server">The endpoint whose read loop ended.</param>
+    private void OnBackendGone(ServerEndpoint server)
     {
         bool stopping;
+        bool recycling;
         int generation;
 
         lock (_stateLock)
         {
+            var current = ReferenceEquals(_server, server);
             stopping = _stopping;
-            _server = null;
+
+            if (!current && !stopping)
+            {
+                // A read loop this engine has already let go of — a recycle retired by hand.
+                return;
+            }
+
+            if (current)
+            {
+                _server = null;
+
+                // D98: released once a successor exists, or at disposal — never here, where a shared
+                // host's wrapper would read it as the host going away.
+                _retired = server;
+            }
+
+            recycling = !stopping && _recyclingGeneration == _generation;
+            _recyclingGeneration = null;
             generation = stopping ? _generation : ++_generation;
+
+            if (recycling)
+            {
+                // A client attaching while this is dormant waits for the relaunched backend's own
+                // handshake (C45) rather than being answered out of the corpse's.
+                _handshake = Completion<byte[]>();
+            }
         }
 
         foreach (var request in _serverBound.DrainAll())
         {
-            request.Completion?.TrySetException(new IOException("The Roslyn backend closed the connection."));
+            request.Completion?.TrySetException(new IOException(
+                recycling
+                    ? "The Roslyn backend was stopped because the session is idle; the next call relaunches it."
+                    : "The Roslyn backend closed the connection."));
         }
 
-        if (stopping)
+        if (stopping || recycling)
         {
             return;
         }
@@ -1319,6 +1602,7 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
                 }
 
                 Log.Relaunching(_logger, attempt, RoslynSupervisor.MaxRestarts);
+                _recycler.OnLaunching();
                 _ = Task.Run(() => ConnectAsync(generation, CancellationToken.None), CancellationToken.None);
                 break;
 
@@ -1337,6 +1621,9 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             // The registrations arrived while the solution was loading; this is the first moment they
             // are complete enough to be worth standing watchers up for.
             _watching.Schedule(_registrations.Watchers);
+
+            // The idle clock's baseline is due a minute from now (D100).
+            _recycler.OnWorkspaceReady();
         }
 
         TaskCompletionSource opened;
@@ -1344,6 +1631,7 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         lock (_stateLock)
         {
             opened = _opened;
+            _reloadingAfterRecycle = false;
         }
 
         opened.TrySetResult();
@@ -1560,13 +1848,31 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         int? processId;
         bool attached;
         int? hostProcessId;
+        bool reloading;
 
         lock (_stateLock)
         {
             processId = _backendProcessId ?? identity.ProcessId;
             attached = _attached;
             hostProcessId = _hostProcessId;
+            reloading = _reloadingAfterRecycle;
         }
+
+        // D105: an attached engine's backend is the host's, and the host says when it replaced it —
+        // which is the only way this side learns the new process id and how often that has happened.
+        var recycler = _recycler.Status;
+        var host = attached ? _serverHandler.HostBackend : null;
+
+        if (host is not null)
+        {
+            // Null while the host is dormant, which is the truth: there is no Roslyn process to name.
+            processId = host.ProcessId;
+        }
+
+        // C38: a loaded solution is 350 MB to 2 GB depending on its size and the GC mode (C54, D79),
+        // and it is by far the largest thing this product puts on a machine; both figures, because on
+        // Windows an idle child's working set is trimmed to a fraction of what it holds (D100).
+        var memory = processId is { } id ? BackendMemory.Sample(id) : null;
 
         return new WorkspaceState(
             status,
@@ -1577,17 +1883,25 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             errors,
             identity.Version,
             processId,
-            WorkingSetOf(processId),
+            memory?.WorkingSetBytes,
             status switch
             {
                 WorkspaceLoadStatus.Failed => _gate.FailureMessage,
+                WorkspaceLoadStatus.Loading when reloading =>
+                    $"The workspace is loading again ({loaded} of {total} project(s)): the language server was "
+                    + "stopped while this session was idle, to give its memory back, and this call relaunched it. "
+                    + "Call getWorkspaceStatus again, or retry the tool in a few seconds.",
                 WorkspaceLoadStatus.Loading =>
                     $"The workspace is still loading ({loaded} of {total} project(s)). "
                     + "Call getWorkspaceStatus again, or retry the tool in a few seconds.",
                 _ => null,
             },
             attached ? AttachedEngine : Engine,
-            hostProcessId);
+            hostProcessId,
+            memory?.PrivateBytes,
+            host?.Recycles ?? recycler.Recycles,
+            host?.BaselineMegabytes is { } hostBaseline ? hostBaseline * 1024L * 1024 : recycler.BaselineBytes,
+            host is not null ? host.LastRecycleAt : recycler.LastRecycleAt);
     }
 
     /// <summary>The solution or project this session opened, once discovery has run.</summary>
@@ -1628,33 +1942,6 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
         }
 
         return projects;
-    }
-
-    /// <summary>The backend's working set, or null when the process cannot be looked at.</summary>
-    /// <remarks>
-    /// C38: a loaded solution is 350 MB to 2 GB depending on its size and on the GC mode (C54, D79),
-    /// and it is by far the largest thing this product puts on a machine. Reporting it is what makes
-    /// "why is my laptop swapping" answerable without a task manager.
-    /// </remarks>
-    private static long? WorkingSetOf(int? processId)
-    {
-        if (processId is not { } id)
-        {
-            return null;
-        }
-
-        try
-        {
-            using var process = Process.GetProcessById(id);
-            process.Refresh();
-
-            return process.WorkingSet64;
-        }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
-                                              or NotSupportedException)
-        {
-            return null;
-        }
     }
 
     /// <summary>Remembers what the backend said it was, including C45's real process id.</summary>
@@ -1709,6 +1996,7 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
     public async ValueTask DisposeAsync()
     {
         ServerEndpoint? server;
+        ServerEndpoint? retired;
 
         lock (_stateLock)
         {
@@ -1720,9 +2008,19 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
             _stopping = true;
             server = _server;
             _server = null;
+            retired = _retired;
+            _retired = null;
         }
 
+        _recycler.Dispose();
         _watching.Dispose();
+
+        if (retired is not null)
+        {
+            // D98: while dormant this is the only connection there is, and disposing it is what
+            // withdraws a shared host's session file and closes its attached clients' pipes.
+            await retired.DisposeAsync().ConfigureAwait(false);
+        }
 
         if (server is not null)
         {
@@ -1924,6 +2222,20 @@ internal sealed partial class OwnedRoslynEngine : IRoslynEngine, IAdapterChannel
                       "means it has nothing new to report (C58); answering from the previous report " +
                       "(had one: {Warm}).")]
         internal static partial void WorkspacePullHeld(ILogger logger, double seconds, bool warm);
+
+        [LoggerMessage(
+            EventId = 5116,
+            Level = LogLevel.Information,
+            Message = "Relaunching the Roslyn backend that was stopped while this session was idle; tool " +
+                      "calls report the workspace as loading until it is back (D96).")]
+        internal static partial void Waking(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 5117,
+            Level = LogLevel.Warning,
+            Message = "The recycled Roslyn backend's stream did not end after its process went; it has " +
+                      "been retired without waiting for it.")]
+        internal static partial void StreamOutlivedBackend(ILogger logger);
     }
 }
 

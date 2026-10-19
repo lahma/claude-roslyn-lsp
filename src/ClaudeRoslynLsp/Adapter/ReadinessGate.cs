@@ -23,6 +23,12 @@ internal enum ReadinessState
 
     /// <summary>There is no usable backend. Requests are refused with an explanation.</summary>
     Failed,
+
+    /// <summary>
+    /// The backend was stopped on purpose because the session went idle (D96). Requests are held
+    /// with no timeout and no notice, and holding one asks for the backend back.
+    /// </summary>
+    Dormant,
 }
 
 /// <summary>What happened to a request that was held.</summary>
@@ -97,6 +103,7 @@ internal sealed partial class ReadinessGate : IDisposable
     private ITimer? _noticeTimer;
     private long _startedAt;
     private ReadinessState _state = ReadinessState.Starting;
+    private ReadinessState _beforeDormant = ReadinessState.ProjectsLoaded;
     private string? _failureReason;
 
     /// <summary>Creates a gate that has not started its clock.</summary>
@@ -186,6 +193,20 @@ internal sealed partial class ReadinessGate : IDisposable
     internal event Action<ReadinessState>? Opened;
 
     /// <summary>
+    /// Raised, outside the lock, every time a request is held while the gate is
+    /// <see cref="ReadinessState.Dormant"/>.
+    /// </summary>
+    /// <remarks>
+    /// <b>A held request is a request for the backend back (D96).</b> The gate is the one place
+    /// every request passes through — the client's own, an attached client's (D88), a request
+    /// re-held because the backend died holding it (D74) and a shared forward waiting to be asked
+    /// again — so it is the one place that can promise none of them waits forever on a backend that
+    /// was stopped because nobody was asking. The owner wires this to its activity clock, which
+    /// relaunches a dormant backend and restarts the idle period.
+    /// </remarks>
+    internal event Action? HeldWhileDormant;
+
+    /// <summary>
     /// Whether notifications may be forwarded. True from the moment Roslyn has answered
     /// <c>initialize</c>: a notification sent before that is simply lost, because Roslyn refuses
     /// everything until it is initialised.
@@ -237,7 +258,9 @@ internal sealed partial class ReadinessGate : IDisposable
     {
         ArgumentNullException.ThrowIfNull(release);
 
-        GateOutcome immediate;
+        GateOutcome immediate = GateOutcome.Pass;
+        var held = false;
+        var dormant = false;
 
         lock (_lock)
         {
@@ -255,12 +278,26 @@ internal sealed partial class ReadinessGate : IDisposable
                 default:
                     _held.Enqueue(new HeldRequest(id, method, release));
                     Log.Held(_logger, method, id, _held.Count);
-                    return true;
+                    held = true;
+                    dormant = _state == ReadinessState.Dormant;
+                    break;
             }
         }
 
-        release(immediate);
-        return false;
+        if (!held)
+        {
+            release(immediate);
+            return false;
+        }
+
+        // Outside the lock: the subscriber relaunches the backend, and that comes back through this
+        // gate's MarkWaking.
+        if (dormant)
+        {
+            HeldWhileDormant?.Invoke();
+        }
+
+        return true;
     }
 
     /// <summary>Removes a held request because the client cancelled it, and answers it as cancelled.</summary>
@@ -363,6 +400,111 @@ internal sealed partial class ReadinessGate : IDisposable
         Start();
     }
 
+    /// <summary>
+    /// Closes an open gate because the backend is about to be stopped on purpose (D96).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>A state of its own, not <see cref="MarkRestarting"/>.</b> A restarting gate arms the load
+    /// budget the moment it closes, so a gate built on it would open by itself
+    /// <c>CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS</c> later and pass everything it held to a
+    /// backend that is not there — and it would tell the client every ten seconds that it is waiting
+    /// for a load nobody has started. A dormant gate holds with no clock at all: nothing is loading,
+    /// so there is nothing to time out, and the clock starts when <see cref="MarkWaking"/> starts the
+    /// load the held requests are waiting for.
+    /// </para>
+    /// <para>
+    /// Closed <em>before</em> the backend is told to stop, which is the whole ordering argument: a
+    /// request that arrives from this moment on is held rather than forwarded into a server that is
+    /// shutting down, and holding it is what asks for the backend back.
+    /// </para>
+    /// </remarks>
+    /// <returns>False when the gate was not open, which means the recycle must not go ahead.</returns>
+    internal bool MarkDormant()
+    {
+        lock (_lock)
+        {
+            if (_state is not (ReadinessState.ProjectsLoaded or ReadinessState.LoadTimedOut))
+            {
+                return false;
+            }
+
+            _beforeDormant = _state;
+            _state = ReadinessState.Dormant;
+            _startedAt = 0;
+
+            _timeoutTimer?.Dispose();
+            _noticeTimer?.Dispose();
+            _timeoutTimer = null;
+            _noticeTimer = null;
+        }
+
+        Log.Dormant(_logger);
+        return true;
+    }
+
+    /// <summary>
+    /// Reopens a gate whose recycle was abandoned before the backend was told anything.
+    /// </summary>
+    /// <remarks>
+    /// Back to the open state it was in, with whatever arrived in the meantime released in order.
+    /// <see cref="Opened"/> is deliberately not raised: nothing downstream was told the gate had
+    /// closed — the diagnostics bridge was not reset and the watchers were not touched — so telling
+    /// them it reopened would re-pull every open document for a backend that never went anywhere.
+    /// </remarks>
+    internal void CancelDormant()
+    {
+        HeldRequest[] drained;
+
+        lock (_lock)
+        {
+            if (_state != ReadinessState.Dormant)
+            {
+                return;
+            }
+
+            _state = _beforeDormant;
+            drained = [.. _held];
+            _held.Clear();
+        }
+
+        Log.DormancyCancelled(_logger, drained.Length);
+
+        foreach (var request in drained)
+        {
+            request.Release(GateOutcome.Pass);
+        }
+    }
+
+    /// <summary>
+    /// Moves a dormant gate to <see cref="ReadinessState.Starting"/> for the relaunch, and starts
+    /// the load clock (D96).
+    /// </summary>
+    /// <remarks>
+    /// Everything held while dormant stays held, in order, and is released by the reloaded
+    /// workspace's <c>projectInitializationComplete</c> exactly as a first load releases what it
+    /// held. The budget is counted from here rather than from the recycle, because it is "how long
+    /// this load may take" and the load starts now.
+    /// </remarks>
+    /// <returns>False when the gate was not dormant, so there is nothing to wake.</returns>
+    internal bool MarkWaking()
+    {
+        lock (_lock)
+        {
+            if (_state != ReadinessState.Dormant)
+            {
+                return false;
+            }
+
+            _state = ReadinessState.Starting;
+            _startedAt = 0;
+        }
+
+        Log.Waking(_logger, HeldCount);
+        Start();
+        return true;
+    }
+
     /// <summary>Records that there is no usable backend, and refuses everything held.</summary>
     /// <param name="reason">What went wrong, in a sentence the user can act on.</param>
     internal void MarkFailed(string reason)
@@ -403,6 +545,14 @@ internal sealed partial class ReadinessGate : IDisposable
             {
                 // Already open. Roslyn sends projectInitializationComplete once per load, and a
                 // reload after the timeout must not un-fail a failed session.
+                return;
+            }
+
+            if (_state == ReadinessState.Dormant && state != ReadinessState.Failed)
+            {
+                // A late readiness notification from a backend that is being stopped, or a stray
+                // timer. Opening here would release everything held into a server that is gone; only
+                // MarkWaking leaves this state, so the reload is what opens the gate again.
                 return;
             }
 
@@ -455,7 +605,8 @@ internal sealed partial class ReadinessGate : IDisposable
 
         lock (_lock)
         {
-            if (_state is ReadinessState.ProjectsLoaded or ReadinessState.LoadTimedOut or ReadinessState.Failed)
+            if (_state is ReadinessState.ProjectsLoaded or ReadinessState.LoadTimedOut or ReadinessState.Failed
+                or ReadinessState.Dormant)
             {
                 return;
             }
@@ -514,5 +665,26 @@ internal sealed partial class ReadinessGate : IDisposable
             Message = "The readiness gate is closed again while the Roslyn backend is relaunched; " +
                       "requests will be held rather than answered from a workspace that is not loaded.")]
         internal static partial void Restarting(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 405,
+            Level = LogLevel.Debug,
+            Message = "The readiness gate is dormant: the backend is being stopped because the session " +
+                      "is idle, and a request that arrives now is held and relaunches it (D96).")]
+        internal static partial void Dormant(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 406,
+            Level = LogLevel.Debug,
+            Message = "The recycle was abandoned before the backend was stopped; the gate is open again " +
+                      "and {Count} request(s) that arrived meanwhile were released.")]
+        internal static partial void DormancyCancelled(ILogger logger, int count);
+
+        [LoggerMessage(
+            EventId = 407,
+            Level = LogLevel.Debug,
+            Message = "The dormant gate is waking for a relaunch with {Count} request(s) held; the load " +
+                      "budget starts now.")]
+        internal static partial void Waking(ILogger logger, int count);
     }
 }

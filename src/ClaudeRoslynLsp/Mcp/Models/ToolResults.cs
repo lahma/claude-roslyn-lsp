@@ -23,6 +23,16 @@ namespace ClaudeRoslynLsp.Mcp.Models;
 /// The adapter process hosting the shared Roslyn, when this one is attached to it — the process to
 /// look at when the memory question comes up, since <c>processId</c> names Roslyn itself.
 /// </param>
+/// <param name="PrivateMegabytes">
+/// That process's private bytes. Beside <c>memoryMegabytes</c>, the working set, because on Windows an
+/// idle process's working set is trimmed to a fraction of what it holds (D100).
+/// </param>
+/// <param name="Recycles">
+/// How many times the language server was stopped while the session was idle and relaunched on the
+/// next call (D96) — the reason a call after a quiet spell can take as long as the first one did.
+/// </param>
+/// <param name="BaselineMegabytes">Its memory once the workspace had settled, which the recycle threshold is measured from.</param>
+/// <param name="LastRecycleAt">When it was last recycled, in ISO 8601.</param>
 internal sealed record WorkspaceStatusResult(
     string Status,
     string? Solution = null,
@@ -35,7 +45,11 @@ internal sealed record WorkspaceStatusResult(
     int? MemoryMegabytes = null,
     string? Note = null,
     string? Engine = null,
-    int? HostProcessId = null);
+    int? HostProcessId = null,
+    int? PrivateMegabytes = null,
+    int? Recycles = null,
+    int? BaselineMegabytes = null,
+    string? LastRecycleAt = null);
 
 /// <summary>One project of the loaded workspace.</summary>
 /// <param name="Name">The project's name.</param>
@@ -303,7 +317,16 @@ internal static class NotReadyResults
             state.WorkingSetBytes is { } bytes ? (int) (bytes / 1024 / 1024) : null,
             ToolStatus.NoteFor(state),
             state.Engine,
-            state.HostProcessId);
+            state.HostProcessId,
+            state.PrivateBytes is { } privateBytes ? (int) (privateBytes / 1024 / 1024) : null,
+            state.Recycles,
+            state.BaselineBytes is { } baseline ? (int) (baseline / 1024 / 1024) : null,
+            Iso8601(state.LastRecycleAt));
+
+    /// <summary>A timestamp as a model reads it: ISO 8601, invariant, or nothing.</summary>
+    /// <param name="value">The timestamp, or null.</param>
+    internal static string? Iso8601(DateTimeOffset? value) =>
+        value?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <inheritdoc cref="Workspace" />
     /// <param name="state">The workspace state.</param>

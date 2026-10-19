@@ -58,6 +58,9 @@ internal sealed record RoslynLaunchRequest
     /// <summary>Which garbage collector the child runs with (D79).</summary>
     internal RoslynGarbageCollector GarbageCollector { get; init; } = RoslynGarbageCollector.Workstation;
 
+    /// <summary>The <c>DOTNET_GCConserveMemory</c> level the child is given; zero sets nothing (D104).</summary>
+    internal int GcConserveMemory { get; init; } = ClaudeRoslynLspOptions.DefaultGcConserveMemory;
+
     /// <summary>
     /// The default level for the child, which is deliberately quieter than the adapter's own.
     /// </summary>
@@ -94,6 +97,7 @@ internal sealed record RoslynLaunchRequest
             RoslynLogLevel = options.RoslynLogLevel ?? DefaultRoslynLogLevel,
             ExtraArguments = RoslynProcessLauncher.SplitArguments(options.RoslynArguments),
             GarbageCollector = ParseGarbageCollector(options.GarbageCollector, logger),
+            GcConserveMemory = options.GcConserveMemory,
         };
     }
 
@@ -185,6 +189,35 @@ internal sealed class RoslynConnection : IAsyncDisposable
 
     /// <summary>The token that stops the stdout/stderr pumps. Cancelled by <see cref="DisposeAsync"/>.</summary>
     internal CancellationToken PumpToken => _pumps.Token;
+
+    /// <summary>
+    /// Kills the child and its build hosts without releasing anything else (D97).
+    /// </summary>
+    /// <remarks>
+    /// The fallback for a recycle whose Roslyn did not act on <c>exit</c>. The handles, the pumps and
+    /// the transport stay as they are, because whoever owns this connection decides separately when
+    /// it is finished with them — for a shared host, that is a different moment from this one.
+    /// </remarks>
+    internal void Kill()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!Process.HasExited)
+            {
+                Process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or System.ComponentModel.Win32Exception
+                                              or NotSupportedException)
+        {
+        }
+    }
 
     /// <summary>
     /// Ends the session: stops the pumps, closes the channel, and kills the child if it is still
@@ -545,15 +578,7 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
         // once per repository; this buys the load completing.
         startInfo.Environment["MSBUILDDISABLENODEREUSE"] = "1";
 
-        // D79/C54. The environment this process was started with is already copied into
-        // startInfo.Environment, so a DOTNET_gcServer the user set is present here and is left
-        // exactly as it is — that is how C54 was measured, and overriding it would break the escape
-        // hatch the measurement documents.
-        if (!startInfo.Environment.ContainsKey("DOTNET_gcServer"))
-        {
-            startInfo.Environment["DOTNET_gcServer"] =
-                request.GarbageCollector == RoslynGarbageCollector.Server ? "1" : "0";
-        }
+        ApplyGarbageCollectorEnvironment(startInfo.Environment, request.GarbageCollector, request.GcConserveMemory);
 
         var process = Process.Start(startInfo)
             ?? throw new RoslynAcquisitionException($"Could not start '{program}'.");
@@ -569,6 +594,50 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
 
         return process;
     }
+
+    /// <summary>
+    /// The two garbage-collector variables the child is started with, each only when the inherited
+    /// environment does not already name it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>D79/C54, <c>DOTNET_gcServer</c>.</b> The environment this process was started with is
+    /// already copied into the child's, so a value the user set is present here and is left exactly as
+    /// it is — that is how C54 was measured, and overriding it would break the escape hatch the
+    /// measurement documents.
+    /// </para>
+    /// <para>
+    /// <b>D104, <c>DOTNET_GCConserveMemory</c>, by the same rule.</b> An idle child allocates nothing,
+    /// so no collection runs to give back what a day of compilations fragmented; asking the collector
+    /// to conserve harder is what makes it compact and decommit after those allocations instead of
+    /// keeping the space committed. Zero means this adapter has no opinion and sets nothing at all,
+    /// which is different from setting <c>0</c>: an unset variable lets a <c>runtimeconfig.json</c>
+    /// knob decide.
+    /// </para>
+    /// </remarks>
+    /// <param name="environment">The child's environment, already holding everything inherited.</param>
+    /// <param name="collector">Which collector to ask for.</param>
+    /// <param name="conserveMemory">The conserve level, 0-9; zero sets nothing.</param>
+    internal static void ApplyGarbageCollectorEnvironment(
+        IDictionary<string, string?> environment,
+        RoslynGarbageCollector collector,
+        int conserveMemory)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+
+        if (!environment.ContainsKey("DOTNET_gcServer"))
+        {
+            environment["DOTNET_gcServer"] = collector == RoslynGarbageCollector.Server ? "1" : "0";
+        }
+
+        if (conserveMemory > 0 && !environment.ContainsKey(GcConserveMemoryVariable))
+        {
+            environment[GcConserveMemoryVariable] = conserveMemory.ToString(CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>The runtime's own name for the conserve level (D104).</summary>
+    internal const string GcConserveMemoryVariable = "DOTNET_GCConserveMemory";
 
     /// <summary>
     /// Starts both text pumps once the connection object (and therefore the pump token) exists.

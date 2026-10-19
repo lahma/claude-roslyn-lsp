@@ -608,7 +608,11 @@ public class ToolBehaviourTests
             Projects: [new WorkspaceProject("Core", project, ["net10.0", "netstandard2.0"])],
             RoslynVersion: "5.12.0-1.26426.8",
             ProcessId: 4242,
-            WorkingSetBytes: 253L * 1024 * 1024);
+            WorkingSetBytes: 253L * 1024 * 1024,
+            PrivateBytes: 611L * 1024 * 1024,
+            Recycles: 2,
+            BaselineBytes: 400L * 1024 * 1024,
+            LastRecycleAt: new DateTimeOffset(2026, 10, 19, 12, 30, 0, TimeSpan.Zero));
 
         var result = await WorkspaceTools.GetWorkspaceStatusAsync(context, cancellationToken: Cancellation);
 
@@ -619,6 +623,10 @@ public class ToolBehaviourTests
         Assert.Equal("5.12.0-1.26426.8", result.RoslynVersion);
         Assert.Equal(4242, result.ProcessId);
         Assert.Equal(253, result.MemoryMegabytes);
+        Assert.Equal(611, result.PrivateMegabytes);
+        Assert.Equal(2, result.Recycles);
+        Assert.Equal(400, result.BaselineMegabytes);
+        Assert.Equal("2026-10-19T12:30:00.0000000+00:00", result.LastRecycleAt);
     }
 
     /// <summary>

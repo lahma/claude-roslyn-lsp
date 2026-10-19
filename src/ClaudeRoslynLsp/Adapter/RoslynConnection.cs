@@ -81,6 +81,29 @@ internal sealed class RoslynConnection : IAsyncDisposable
     /// <summary>The process hosting the shared Roslyn, when this connection is attached to one.</summary>
     internal int? HostProcessId { get; init; }
 
+    /// <summary>
+    /// Ends the backend process and nothing else, or null when there is no process to end.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Separate from <see cref="DisposeAsync"/> on purpose (D97).</b> An idle recycle stops Roslyn
+    /// by protocol — <c>shutdown</c>, <c>exit</c>, wait — and only a Roslyn that ignored both has to
+    /// be killed. Disposing the connection would kill it too, but for a shared host disposing the
+    /// current connection is also what withdraws the session file and closes every attached client's
+    /// pipe (D93): a recycle that disposed would turn "the backend went quiet for a reload" into "the
+    /// host went away" for every other process using it. This member ends the process and leaves the
+    /// rest of the connection — and the sharing built on it — exactly where it was.
+    /// </para>
+    /// <para>
+    /// Null for a backend that is not a process this connection owns — an attached pipe, an
+    /// in-process fake — where the stream ending is the whole of what "stopped" means.
+    /// </para>
+    /// </remarks>
+    internal Func<ValueTask>? Terminate { get; init; }
+
+    /// <summary>Runs <see cref="Terminate"/>, when there is one.</summary>
+    internal ValueTask TerminateAsync() => Terminate?.Invoke() ?? ValueTask.CompletedTask;
+
     /// <inheritdoc />
     public ValueTask DisposeAsync() =>
         Interlocked.Exchange(ref _disposed, 1) == 0 ? _dispose() : ValueTask.CompletedTask;

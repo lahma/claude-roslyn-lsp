@@ -95,6 +95,18 @@ internal sealed partial class ServerRequestHandler
     /// </remarks>
     internal event Action<string>? RefreshRequested;
 
+    /// <summary>
+    /// Raised when the shared host this process is attached to says its Roslyn was replaced (D105).
+    /// </summary>
+    /// <remarks>
+    /// Consumed here and never forwarded: it is this product's own notification on its own pipe, and
+    /// the LSP client on the other side of an attached session has never heard of it.
+    /// </remarks>
+    internal event Action? BackendChanged;
+
+    /// <summary>The most recent one, parsed, for an attached engine's <c>getWorkspaceStatus</c>.</summary>
+    internal Sharing.HostBackend? HostBackend { get; private set; }
+
     /// <summary>Whether the client can apply a workspace edit, which decides how one is answered.</summary>
     internal bool ClientAppliesEdits { get; set; }
 
@@ -196,6 +208,15 @@ internal sealed partial class ServerRequestHandler
 
                 answer(JsonRpcErrors.RawResult(idToken, BuildWorkspaceFolders()));
                 return ServerMessageOutcome.AnsweredWithResult;
+
+            case Sharing.BackendChange.Method:
+                if (Sharing.BackendChange.TryParse(body) is { } changed)
+                {
+                    HostBackend = changed;
+                }
+
+                BackendChanged?.Invoke();
+                return ServerMessageOutcome.Consumed;
 
             default:
                 if (!isRequest)

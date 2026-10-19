@@ -112,10 +112,13 @@ confirmed with `findReferences` — a preview that is always run is a step nobod
 ## Solution loading and status
 
 Roslyn loads the whole solution before it can answer anything semantically. That is a few seconds on
-a small repository and up to two minutes on a large one, and it happens once per session.
+a small repository and up to two minutes on a large one. It happens once per session — and again
+after a long quiet spell, because a server left idle with a lot of memory is stopped to give it back
+and the next call reloads it.
 
 - Tools answer `status: "loading"` rather than hanging. That is not a failure and not an empty
-  result — do something else and come back.
+  result — do something else and come back. A `loading` after a pause, with a note saying the
+  server was stopped while the session was idle, is the same thing: retry in a few seconds.
 - `getWorkspaceStatus` says which solution is open, how many projects have loaded, and what failed
   to load. Call it when an answer looks wrong, when a symbol you can see in a file is not found, or
   when the first call reports `loading`.

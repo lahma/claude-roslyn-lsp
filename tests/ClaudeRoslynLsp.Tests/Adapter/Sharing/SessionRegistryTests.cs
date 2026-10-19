@@ -204,6 +204,190 @@ public class SessionRegistryTests
         Assert.Empty(Registry(home).List());
     }
 
+    /// <summary>
+    /// D102: the file is rewritten while live, so a write has to replace it whole — and leave nothing
+    /// behind in the directory when it has.
+    /// </summary>
+    [Fact]
+    public void ARewriteReplacesTheFileWholeAndLeavesNoTemporaryFile()
+    {
+        using var home = TempWorkspace.Create("sessions-atomic");
+        var registry = Registry(home);
+        var key = SessionRegistry.KeyFor("/w/Atomic/Atomic.slnx");
+
+        Assert.True(registry.Write(key, Session(key)));
+        Assert.True(registry.Update(key, Session(key) with { State = "dormant", Recycles = 3, AttachedClients = 2 }));
+
+        var read = registry.TryRead(key);
+
+        Assert.NotNull(read);
+        Assert.Equal("dormant", read.State);
+        Assert.Equal(3, read.Recycles);
+        Assert.Equal(2, read.AttachedClients);
+
+        Assert.Equal([registry.FileFor(key)], Directory.GetFiles(registry.Directory_));
+    }
+
+    /// <summary>
+    /// A file written before the new fields existed still reads, and one written with them still reads
+    /// in a build that ignores them — the format is optional in both directions (D102).
+    /// </summary>
+    [Fact]
+    public void AFileWithoutTheBackendFieldsStillReads()
+    {
+        using var home = TempWorkspace.Create("sessions-old");
+        var registry = Registry(home);
+        var key = SessionRegistry.KeyFor("/w/Old/Old.slnx");
+
+        Directory.CreateDirectory(registry.Directory_);
+        File.WriteAllText(
+            registry.FileFor(key),
+            $$"""
+            {"pid":{{Environment.ProcessId}},"version":"{{ServerVersion.Value}}","transport":"pipe",
+             "pipeName":"claude-roslyn-lsp-share-old","solution":"/w/Old/Old.slnx","startedAt":"2026-10-19T10:00:00+00:00"}
+            """);
+
+        var read = registry.TryRead(key);
+
+        Assert.NotNull(read);
+        Assert.Null(read.State);
+        Assert.Null(read.RoslynProcessId);
+        Assert.Equal(0, read.Recycles);
+    }
+
+    /// <summary>
+    /// An unreadable file that is young may be an older build's write caught half done, so a reader
+    /// leaves it; one that is old is debris, and goes (D102, D103).
+    /// </summary>
+    [Fact]
+    public void AnUnreadableFileIsDeletedOnlyOnceItIsOld()
+    {
+        using var home = TempWorkspace.Create("sessions-torn");
+        var registry = Registry(home);
+        var key = SessionRegistry.KeyFor("/w/Torn/Torn.slnx");
+        var path = registry.FileFor(key);
+
+        Directory.CreateDirectory(registry.Directory_);
+        File.WriteAllText(path, """{"pid":12, "vers""");
+
+        Assert.Null(registry.TryRead(key));
+        Assert.True(File.Exists(path));
+
+        File.SetLastWriteTimeUtc(path, DateTime.UtcNow - SessionRegistry.DebrisAge - TimeSpan.FromMinutes(1));
+
+        Assert.Null(registry.TryRead(key));
+        Assert.False(File.Exists(path));
+    }
+
+    /// <summary>A write's temporary file is never mistaken for a session.</summary>
+    [Fact]
+    public void ListingIgnoresTemporaryFiles()
+    {
+        using var home = TempWorkspace.Create("sessions-tmp");
+        var registry = Registry(home);
+        var key = SessionRegistry.KeyFor("/w/Tmp/Tmp.slnx");
+
+        registry.Write(key, Session(key));
+        File.WriteAllText(Path.Combine(registry.Directory_, key + ".0123456789abcdef.tmp"), "{");
+        File.WriteAllText(Path.Combine(registry.Directory_, key + ".json.tmp"), "{");
+
+        var report = Assert.Single(registry.List());
+
+        Assert.Equal(key, report.Key);
+        Assert.True(report.Usable);
+    }
+
+    /// <summary>
+    /// D103's three rules, each unable to touch anything live: stale sessions go and live ones stay,
+    /// orphaned locks go and a held one or one with a session beside it stays, old temporary files go
+    /// and young ones stay.
+    /// </summary>
+    [Fact]
+    public void TheSweepRemovesOnlyWhatNothingCanStillBeUsing()
+    {
+        using var home = TempWorkspace.Create("sessions-sweep");
+        var registry = Registry(home);
+        var directory = registry.Directory_;
+
+        var live = SessionRegistry.KeyFor("/w/Live/Live.slnx");
+        var dead = SessionRegistry.KeyFor("/w/Dead/Dead.slnx");
+        var orphan = SessionRegistry.KeyFor("/w/Orphan/Orphan.slnx");
+        var held = SessionRegistry.KeyFor("/w/Held/Held.slnx");
+
+        registry.Write(live, Session(live));
+        registry.Write(dead, Session(dead, processId: int.MaxValue - 7));
+
+        // Locks: one beside a live session, one with nothing beside it, one somebody is holding.
+        using (registry.TryAcquireLock(live))
+        {
+        }
+
+        using (registry.TryAcquireLock(orphan))
+        {
+        }
+
+        using var holding = registry.TryAcquireLock(held);
+        Assert.NotNull(holding);
+
+        var oldTemporary = Path.Combine(directory, dead + ".00000000000000000000000000000001.tmp");
+        var youngTemporary = Path.Combine(directory, live + ".00000000000000000000000000000002.tmp");
+
+        File.WriteAllText(oldTemporary, "{");
+        File.WriteAllText(youngTemporary, "{");
+        File.SetLastWriteTimeUtc(oldTemporary, DateTime.UtcNow - SessionRegistry.DebrisAge - TimeSpan.FromMinutes(1));
+
+        // Counting first: plain doctor deletes nothing (D94).
+        var counted = registry.Sweep(apply: false);
+
+        Assert.Equal(new SessionSweep(Sessions: 1, Locks: 1, Temporaries: 1), counted);
+        Assert.True(File.Exists(registry.FileFor(dead)));
+        Assert.True(File.Exists(registry.LockFor(orphan)));
+        Assert.True(File.Exists(oldTemporary));
+
+        var swept = registry.Sweep(apply: true);
+
+        Assert.Equal(counted, swept);
+
+        Assert.True(File.Exists(registry.FileFor(live)));
+        Assert.False(File.Exists(registry.FileFor(dead)));
+
+        Assert.True(File.Exists(registry.LockFor(live)));
+        Assert.False(File.Exists(registry.LockFor(orphan)));
+        Assert.True(File.Exists(registry.LockFor(held)));
+
+        Assert.False(File.Exists(oldTemporary));
+        Assert.True(File.Exists(youngTemporary));
+
+        // And the held lock still works as a lock: nobody else can take it.
+        Assert.Null(Registry(home).TryAcquireLock(held));
+    }
+
+    /// <summary>
+    /// A live host written by another version is unusable to this build but is still the rendezvous
+    /// for its own version's other half, so the sweep must leave it alone (D103).
+    /// </summary>
+    [Fact]
+    public void TheSweepLeavesALiveHostOfAnotherVersionAlone()
+    {
+        using var home = TempWorkspace.Create("sessions-sweep-version");
+        var registry = Registry(home);
+        var key = SessionRegistry.KeyFor("/w/Older/Older.slnx");
+
+        registry.Write(key, Session(key) with { Version = "0.0.1-older" });
+
+        Assert.False(registry.Inspect(key).Usable);
+        Assert.Equal(0, registry.Sweep(apply: true).Total);
+        Assert.True(File.Exists(registry.FileFor(key)));
+    }
+
+    [Fact]
+    public void SweepingADirectoryThatDoesNotExistFindsNothing()
+    {
+        using var home = TempWorkspace.Create("sessions-nothing");
+
+        Assert.Equal(0, Registry(home).Sweep(apply: true).Total);
+    }
+
     private static SessionRegistry Registry(TempWorkspace home) =>
         SessionRegistry.ForHome(home.Root, NullLogger.Instance);
 

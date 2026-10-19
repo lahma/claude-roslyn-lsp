@@ -799,8 +799,48 @@ session file naming a process that has gone — falls back to launching a privat
 what the first release did in every case. `CLAUDE_ROSLYN_LSP_SHARE=off` turns sharing off
 deliberately.
 
-`claude-roslyn-lsp doctor` lists the session directory, with the age and the verdict for each entry;
-`doctor --fix` removes the stale ones, though a server starting up removes them by itself.
+`claude-roslyn-lsp doctor` lists every host on the machine with what its Roslyn holds (see
+[Memory](#memory-and-idle-sessions)); `doctor --fix` removes stale session files and orphaned locks,
+though a server that becomes a host removes them by itself.
+
+### Memory, and idle sessions
+
+A Roslyn child sits near its load size while a session only reads code. A session that edits,
+builds and runs tests grows it to four to six times that — compilations built for diagnostics and
+find-references, re-evaluated project snapshots, and a garbage-collected heap that is 40-65%
+fragmentation by the end of a working day — and none of it comes back on its own: an idle process
+allocates nothing, so no collection ever runs. With a dozen sessions open, one per worktree, that was
+most of a 64 GB machine.
+
+So the adapter gives it back, in three ways:
+
+- **It recycles a grown child once the session goes idle.** About a minute after the workspace
+  loads, the adapter measures the child — private bytes on Windows, where an idle process's working
+  set is trimmed to a fraction of what it actually holds; the working set elsewhere — and keeps that
+  as its *baseline*. When nothing has asked it anything for `CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES`
+  (20) and it has grown past the larger of twice the baseline and the baseline plus 512 MB, the child
+  is shut down cleanly. The **next request relaunches it**: it is held while the solution reloads,
+  every open document is replayed with its unsaved text, and it is answered from the fresh workspace
+  under the id the client is still waiting on. The client is told why the answer is slow, and is
+  never sent an error. A recycle never uses up the crash budget, and a crash afterwards still gets
+  both of its restarts. A child that is still loading, has a request held or in flight, or belongs to
+  another process (an attached engine) is never recycled; with a shared engine the host decides, and
+  only when every server using it has been quiet.
+- **It asks the child's garbage collector to conserve memory.** The child runs with
+  `DOTNET_GCConserveMemory=5` unless `CLAUDE_ROSLYN_LSP_GC_CONSERVE` says otherwise, so it compacts
+  and decommits after the large temporary allocations a compilation makes instead of keeping the
+  space. An explicit `DOTNET_GCConserveMemory` in your environment wins and is passed through.
+- **It can unload an idle child whatever its size.** `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` is
+  off by default, because every relaunch costs a whole solution load; on a machine running many
+  sessions, a few hours is a reasonable setting.
+
+`getWorkspaceStatus` reports `recycles`, `baselineMegabytes`, `lastRecycleAt` and `privateMegabytes`
+beside the working set, so a model can see why a call after a quiet spell took as long as the first
+one did. `claude-roslyn-lsp doctor` lists every host on the machine — the Roslyn process id, its
+working set and private bytes as measured by `doctor` itself, whether it is `starting`, `running` or
+`dormant`, how long ago it was last used, how often it has been recycled, its baseline and how many
+other servers are attached — and a total. Servers running with `CLAUDE_ROSLYN_LSP_SHARE=off` keep a
+private Roslyn and do not publish themselves, so they are not in that list.
 
 ## Environment variables
 
@@ -827,6 +867,10 @@ what is actually in effect and is the authority when this table and the binary d
 | `CLAUDE_ROSLYN_LSP_FILE_WATCHER` | `1` | The file-watch bridge. Without it, a file created by a shell command or by git never joins its project and every later answer is silently stale. `lsp` only: the `mcp` half always watches, because it has no editor telling it what changed and because a repository that needs a restore does not finish loading without it. |
 | `CLAUDE_ROSLYN_LSP_SHARE` | `1` | Whether the `lsp` and `mcp` servers share one Roslyn per solution. Off makes each of them launch one of its own, which loads the solution twice and pays for it twice in memory. `getWorkspaceStatus` reports `engine: "owned"` or `"attached"`, so which of the two happened is never a guess. |
 | `CLAUDE_ROSLYN_LSP_GC` | `workstation` | Which garbage collector the Roslyn child runs with: `workstation` or `server`. Workstation peaks around 577 MB on a 239-project solution where server peaks around 2 GB, and costs about eight seconds of load time. An explicit `DOTNET_gcServer` in the environment wins over this and is left alone. |
+| `CLAUDE_ROSLYN_LSP_GC_CONSERVE` | `5` | The `DOTNET_GCConserveMemory` level, 0–9, the Roslyn child runs with, so its collector gives back the space a day of compilations fragments. `0` sets nothing. An explicit `DOTNET_GCConserveMemory` in the environment wins and is left alone. |
+| `CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES` | `20` | How long a session has to be idle before a Roslyn child that has grown past its threshold is shut down to give its memory back; the next request relaunches it. 0–10080; `0` is off. See [Memory](#memory-and-idle-sessions). |
+| `CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR` | `2` | How far past its post-load baseline the child must have grown: the threshold is the larger of baseline × factor and baseline + 512 MB. A decimal with a `.`, 1.2–20. |
+| `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` | `0` (off) | Shut the child down after this many idle minutes whatever its size; the next request relaunches it. 0–10080. |
 | `CLAUDE_ROSLYN_LSP_LOG_LEVEL` | `Information` | This adapter's own stderr logger: `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`. |
 | `CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL` | `Warning` | The level handed to Roslyn. Its `Information` is about twenty lines of narration per start. |
 | `CLAUDE_ROSLYN_LSP_OPTIONS` | — | A JSON object merged into the answers given to Roslyn's `workspace/configuration` requests. A syntax error is a logged warning, never a startup failure. |
@@ -857,7 +901,16 @@ claude-roslyn-lsp doctor --json   # the same report, machine-readable
 verified, the cache directory and its free space, which solution would be opened and how it scored
 against the other candidates, and whether Claude Code's language-server tool is enabled — plus a
 warning if the official `csharp-lsp` plugin is also enabled, because the first plugin registered for
-`.cs` wins.
+`.cs` wins. Next to the garbage collector it prints the `DOTNET_GCConserveMemory` level the child
+will get and where that came from.
+
+Its **Shared engines** section answers "who is using my memory": one line per session file, and for
+each live host the Roslyn process id, the working set and private bytes `doctor` measured just now,
+the state (`starting`, `running` or `dormant`), how long ago it was last used, how many times it has
+been recycled, its baseline and how many other servers are attached; then the number of live hosts
+and the memory their Roslyn processes hold together. Stale session files, orphaned locks and
+leftover temporary files are counted, and `doctor --fix` removes them; plain `doctor` never deletes
+anything.
 
 Then it launches the server it just described and completes a real `initialize`/`shutdown`/`exit`,
 reporting what the server said and how long each step took. **It exits 0 only if that worked.**
@@ -944,6 +997,17 @@ machine that can reach nuget.org, copy the resulting home directory, and point
 `CLAUDE_ROSLYN_LSP_HOME` at it — or install the server yourself and set
 `CLAUDE_ROSLYN_LSP_ROSLYN_PATH`. `CLAUDE_ROSLYN_LSP_OFFLINE=1` then makes a missing payload an
 explained failure instead of a doomed fetch.
+
+**The machine is short of memory and there are many sessions open.** `claude-roslyn-lsp doctor`
+lists every host with what its Roslyn holds right now, and a total. A child that grew during a
+working session is recycled once its session has been quiet for twenty minutes; lower
+`CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES` to give memory back sooner, or set
+`CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` to unload idle children whatever their size. Each costs one
+solution load on the next request. See [Memory, and idle sessions](#memory-and-idle-sessions).
+
+**A call after a quiet spell is as slow as the first one.** The language server was recycled while
+the session was idle, and that call reloaded it. `getWorkspaceStatus` says so: `recycles` counts how
+often it has happened and `lastRecycleAt` says when.
 
 **You want to see what it is actually doing.** All logging goes to stderr — stdout is the protocol
 channel — and Claude Code shows it with `claude --debug`. `CLAUDE_ROSLYN_LSP_LOG_LEVEL=Debug` for the

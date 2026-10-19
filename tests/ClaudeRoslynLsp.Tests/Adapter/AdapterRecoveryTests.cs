@@ -1,12 +1,6 @@
-using System.Text;
-using System.Text.Json;
-
 using ClaudeRoslynLsp.Adapter;
-using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Protocol;
 using ClaudeRoslynLsp.Testing;
-
-using Microsoft.Extensions.Logging.Abstractions;
 
 using Xunit;
 
@@ -48,10 +42,10 @@ public class AdapterRecoveryTests
         var factory = new RestartableFakeRoslynFactory(
             () => RestartableFakeRoslynFactory.ScriptWithDiagnostics(Report));
 
-        await using var harness = new RecoveryHarness(factory);
+        await using var harness = new SessionHarness(factory);
 
         await harness.HandshakeAsync(Cancellation);
-        await WaitAsync(() => factory.Latest is not null, Cancellation);
+        await SessionHarness.WaitAsync(() => factory.Latest is not null, Cancellation);
         factory.Latest!.CompleteProjectInitialization();
 
         await harness.SendAsync(DidOpen(ProgramUri, 1), Cancellation);
@@ -78,26 +72,26 @@ public class AdapterRecoveryTests
     public async Task AKilledBackendIsRelaunchedWithTheMirrorReplayed()
     {
         var factory = new RestartableFakeRoslynFactory();
-        await using var harness = new RecoveryHarness(factory);
+        await using var harness = new SessionHarness(factory);
 
         await harness.HandshakeAsync(Cancellation);
-        await WaitAsync(() => factory.Latest is not null, Cancellation);
+        await SessionHarness.WaitAsync(() => factory.Latest is not null, Cancellation);
 
         var first = factory.Latest!;
         first.CompleteProjectInitialization();
 
         await harness.SendAsync(DidOpen(ProgramUri, 3), Cancellation);
-        await WaitAsync(
+        await SessionHarness.WaitAsync(
             () => first.ReceivedMethods.Contains("textDocument/didOpen"),
             Cancellation);
 
         factory.Kill();
 
-        await WaitAsync(() => factory.ConnectCount == 2, Cancellation);
+        await SessionHarness.WaitAsync(() => factory.ConnectCount == 2, Cancellation);
 
         var second = factory.Latest!;
 
-        await WaitAsync(
+        await SessionHarness.WaitAsync(
             () => second.ReceivedMethods.Contains("solution/open")
                   && second.ReceivedMethods.Contains("textDocument/didOpen"),
             Cancellation);
@@ -120,7 +114,7 @@ public class AdapterRecoveryTests
             harness.Session.Gate.FailureReason ?? "(no reason recorded)");
 
         second.CompleteProjectInitialization();
-        await WaitAsync(() => harness.Session.Gate.State == ReadinessState.ProjectsLoaded, Cancellation);
+        await SessionHarness.WaitAsync(() => harness.Session.Gate.State == ReadinessState.ProjectsLoaded, Cancellation);
     }
 
     /// <summary>
@@ -131,23 +125,23 @@ public class AdapterRecoveryTests
     public async Task ARequestIssuedDuringTheRelaunchIsHeldAndThenAnswered()
     {
         var factory = new RestartableFakeRoslynFactory();
-        await using var harness = new RecoveryHarness(factory);
+        await using var harness = new SessionHarness(factory);
 
         await harness.HandshakeAsync(Cancellation);
-        await WaitAsync(() => factory.Latest is not null, Cancellation);
+        await SessionHarness.WaitAsync(() => factory.Latest is not null, Cancellation);
         factory.Latest!.CompleteProjectInitialization();
 
         await harness.SendAsync(DidOpen(ProgramUri, 1), Cancellation);
         factory.Kill();
 
-        await WaitAsync(() => factory.ConnectCount == 2, Cancellation);
+        await SessionHarness.WaitAsync(() => factory.ConnectCount == 2, Cancellation);
         await harness.SendAsync(Definition(7, ProgramUri), Cancellation);
 
         // Asserted as "the gate is holding it", not as "no answer arrived within N milliseconds".
         // The second formulation is a race with the clock — it fails on a loaded machine for a
         // session that is behaving perfectly — and it is also the weaker claim: a request the gate
         // has queued cannot have been answered, because the queue is what answers it.
-        await WaitAsync(() => harness.Session.Gate.HeldCount > 0, Cancellation);
+        await SessionHarness.WaitAsync(() => harness.Session.Gate.HeldCount > 0, Cancellation);
 
         Assert.Null(harness.TryFindResponse(7));
 
@@ -183,30 +177,30 @@ public class AdapterRecoveryTests
                 ? ScriptWithHangingDefinition(reached, release)
                 : FakeRoslynScript.Roslyn512Startup(projectLoadDelay: null));
 
-        await using var harness = new RecoveryHarness(factory);
+        await using var harness = new SessionHarness(factory);
 
         await harness.HandshakeAsync(Cancellation);
-        await WaitAsync(() => factory.Latest is not null, Cancellation);
+        await SessionHarness.WaitAsync(() => factory.Latest is not null, Cancellation);
 
         var first = factory.Latest!;
         first.CompleteProjectInitialization();
-        await WaitAsync(() => harness.Session.Gate.IsOpen, Cancellation);
+        await SessionHarness.WaitAsync(() => harness.Session.Gate.IsOpen, Cancellation);
 
         await harness.SendAsync(Definition(77, ProgramUri), Cancellation);
 
         // The request is genuinely at the backend, not merely sent: the responder has it and is
         // holding it, which is the only way to make "died mid-request" deterministic.
-        await WaitAsync(() => reached.IsSet, Cancellation);
+        await SessionHarness.WaitAsync(() => reached.IsSet, Cancellation);
 
         factory.Kill();
 
-        await WaitAsync(() => factory.ConnectCount == 2, Cancellation);
+        await SessionHarness.WaitAsync(() => factory.ConnectCount == 2, Cancellation);
 
         // Let the first backend's blocked responder unwind; its answer goes to a closed stream.
         release.Set();
 
         // Re-held rather than refused: the gate has it, and nothing has been sent to the client.
-        await WaitAsync(() => harness.Session.Gate.HeldCount > 0, Cancellation);
+        await SessionHarness.WaitAsync(() => harness.Session.Gate.HeldCount > 0, Cancellation);
         Assert.Null(harness.TryFindResponse(77));
 
         factory.Latest!.CompleteProjectInitialization();
@@ -225,17 +219,17 @@ public class AdapterRecoveryTests
     public async Task TheFourthDeathFailsTheSessionWithADoctorHint()
     {
         var factory = new RestartableFakeRoslynFactory();
-        await using var harness = new RecoveryHarness(factory);
+        await using var harness = new SessionHarness(factory);
 
         await harness.HandshakeAsync(Cancellation);
 
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            await WaitAsync(() => factory.ConnectCount == attempt, Cancellation);
+            await SessionHarness.WaitAsync(() => factory.ConnectCount == attempt, Cancellation);
             factory.Kill();
         }
 
-        await WaitAsync(() => harness.Session.Gate.State == ReadinessState.Failed, Cancellation);
+        await SessionHarness.WaitAsync(() => harness.Session.Gate.State == ReadinessState.Failed, Cancellation);
 
         Assert.Equal(RoslynSupervisor.MaxRestarts, factory.ConnectCount - 1);
 
@@ -260,10 +254,10 @@ public class AdapterRecoveryTests
     public async Task AnOrderlyShutdownDoesNotRelaunchAnything()
     {
         var factory = new RestartableFakeRoslynFactory();
-        await using var harness = new RecoveryHarness(factory);
+        await using var harness = new SessionHarness(factory);
 
         await harness.HandshakeAsync(Cancellation);
-        await WaitAsync(() => factory.Latest is not null, Cancellation);
+        await SessionHarness.WaitAsync(() => factory.Latest is not null, Cancellation);
         factory.Latest!.CompleteProjectInitialization();
 
         await harness.SendAsync("""{"jsonrpc":"2.0","id":50,"method":"shutdown"}""", Cancellation);
@@ -273,33 +267,6 @@ public class AdapterRecoveryTests
         Assert.Equal(0, await harness.RunTask);
         Assert.Equal(1, factory.ConnectCount);
         Assert.Equal(0, harness.Session.Supervisor.RestartsInWindow);
-    }
-
-    /// <summary>
-    /// Polls a condition on a short budget.
-    /// </summary>
-    /// <remarks>
-    /// Everything asserted here happens on a task the session started — a relaunch, a replay, a pull
-    /// — so "it has happened" is not observable from the call that caused it. Polling is the honest
-    /// way to express that without growing a synchronisation primitive in the product for a test.
-    /// </remarks>
-    /// <param name="condition">What is being waited for.</param>
-    /// <param name="cancellationToken">Cancels the wait.</param>
-    private static async Task WaitAsync(Func<bool> condition, CancellationToken cancellationToken)
-    {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
-
-        while (DateTime.UtcNow < deadline)
-        {
-            if (condition())
-            {
-                return;
-            }
-
-            await Task.Delay(15, cancellationToken).ConfigureAwait(false);
-        }
-
-        Assert.Fail("The session did not reach the expected state within 30 s.");
     }
 
     /// <summary>
@@ -348,158 +315,4 @@ public class AdapterRecoveryTests
          "textDocument":{"uri":"{{{uri}}}"},"position":{"line":0,"character":6}
         }}
         """;
-
-    /// <summary>A session over in-memory pipes, with everything the client received kept.</summary>
-    private sealed class RecoveryHarness : IAsyncDisposable
-    {
-        private readonly DuplexEnd _testEnd;
-        private readonly LspFrameWriter _writer;
-        private readonly Task _reading;
-        private readonly Lock _gate = new();
-        private readonly List<JsonElement> _received = [];
-        private readonly CancellationTokenSource _stopping = new();
-
-        internal RecoveryHarness(IRoslynConnectionFactory factory)
-        {
-            var (sessionEnd, testEnd) = DuplexStreamPair.Create();
-
-            _testEnd = testEnd;
-            _writer = new LspFrameWriter(testEnd.Output);
-
-            Session = new AdapterSession(
-                sessionEnd.Input,
-                sessionEnd.Output,
-                factory,
-                ClaudeRoslynLspOptions.FromEnvironment(static _ => null),
-                () => "/w/HelloSolution.slnx",
-                TimeProvider.System,
-                NullLogger.Instance);
-
-            RunTask = Task.Run(() => Session.RunAsync(_stopping.Token));
-            _reading = Task.Run(ReadLoopAsync);
-        }
-
-        internal AdapterSession Session { get; }
-
-        internal Task<int> RunTask { get; }
-
-        internal async Task SendAsync(string message, CancellationToken cancellationToken) =>
-            await _writer.WriteFrameAsync(Encoding.UTF8.GetBytes(message.Trim()), cancellationToken)
-                .ConfigureAwait(false);
-
-        internal async Task HandshakeAsync(CancellationToken cancellationToken)
-        {
-            await SendAsync(
-                """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":"file:///w","capabilities":{}}}""",
-                cancellationToken);
-
-            await AwaitResponseAsync(1, cancellationToken);
-            await SendAsync("""{"jsonrpc":"2.0","method":"initialized","params":{}}""", cancellationToken);
-        }
-
-        /// <summary>The response with an id, or null when it has not arrived.</summary>
-        internal JsonElement? TryFindResponse(int id)
-        {
-            lock (_gate)
-            {
-                foreach (var message in _received)
-                {
-                    if (message.TryGetProperty("id", out var value)
-                        && value.ValueKind == JsonValueKind.Number
-                        && value.GetInt32() == id
-                        && !message.TryGetProperty("method", out _))
-                    {
-                        return message;
-                    }
-                }
-            }
-
-            return null;
-        }
-
-        internal async Task<JsonElement> AwaitResponseAsync(int id, CancellationToken cancellationToken)
-        {
-            await WaitAsync(() => TryFindResponse(id) is not null, cancellationToken).ConfigureAwait(false);
-            return TryFindResponse(id)!.Value;
-        }
-
-        internal async Task<JsonElement> AwaitPublishAsync(string uri, CancellationToken cancellationToken)
-        {
-            JsonElement? found = null;
-
-            await WaitAsync(
-                () =>
-                {
-                    found = Notifications("textDocument/publishDiagnostics")
-                        .Select(x => x.GetProperty("params"))
-                        .Cast<JsonElement?>()
-                        .FirstOrDefault(x => x!.Value.GetProperty("uri").GetString() == uri);
-
-                    return found is not null;
-                },
-                cancellationToken).ConfigureAwait(false);
-
-            return found!.Value;
-        }
-
-        /// <summary>Every notification of one method the client was sent.</summary>
-        internal JsonElement[] Notifications(string method)
-        {
-            lock (_gate)
-            {
-                return _received
-                    .Where(x => x.TryGetProperty("method", out var value) && value.GetString() == method)
-                    .ToArray();
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await _stopping.CancelAsync().ConfigureAwait(false);
-            _testEnd.CompleteOutput();
-
-            try
-            {
-                await RunTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is TimeoutException or OperationCanceledException)
-            {
-            }
-
-            await Session.DisposeAsync().ConfigureAwait(false);
-            _writer.Dispose();
-            _stopping.Dispose();
-
-            try
-            {
-                await _reading.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is TimeoutException or OperationCanceledException
-                                                  or IOException)
-            {
-            }
-        }
-
-        private async Task ReadLoopAsync()
-        {
-            var reader = new LspFrameReader(_testEnd.Input);
-
-            try
-            {
-                while (await reader.ReadFrameAsync(CancellationToken.None).ConfigureAwait(false) is { } body)
-                {
-                    var element = JsonDocument.Parse(body).RootElement.Clone();
-
-                    lock (_gate)
-                    {
-                        _received.Add(element);
-                    }
-                }
-            }
-            catch (Exception exception) when (exception is IOException or ObjectDisposedException
-                                                  or LspProtocolException or JsonException)
-            {
-            }
-        }
-    }
 }

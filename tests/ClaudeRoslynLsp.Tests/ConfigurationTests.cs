@@ -62,6 +62,10 @@ public class ConfigurationTests
         { "CLAUDE_ROSLYN_LSP_FILE_WATCHER", "0" },
         { "CLAUDE_ROSLYN_LSP_SHARE", "0" },
         { "CLAUDE_ROSLYN_LSP_GC", "server" },
+        { "CLAUDE_ROSLYN_LSP_GC_CONSERVE", "2" },
+        { "CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES", "5" },
+        { "CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR", "3.5" },
+        { "CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES", "240" },
         { "CLAUDE_ROSLYN_LSP_LOG_LEVEL", "Trace" },
         { "CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL", "Trace" },
         { "CLAUDE_ROSLYN_LSP_OPTIONS", "{}" },
@@ -93,6 +97,13 @@ public class ConfigurationTests
         Assert.True(options.Share);
         Assert.Equal(LogLevel.Information, options.LogLevel);
         Assert.Equal(120, options.ReadyTimeoutSeconds);
+
+        // The idle policy (D96, D100, D104, D106).
+        Assert.Equal(20, options.IdleRecycleMinutes);
+        Assert.Equal(2.0, options.RecycleGrowthFactor);
+        Assert.Equal(0, options.IdleShutdownMinutes);
+        Assert.Equal(5, options.GcConserveMemory);
+        Assert.Null(options.GcConserveMemoryVariable);
     }
 
     [Fact]
@@ -257,6 +268,95 @@ public class ConfigurationTests
         // failure mode the gate exists to prevent - and it would do it silently.
         Assert.Equal(120, Read(("CLAUDE_ROSLYN_LSP_READY_TIMEOUT_SECONDS", value)).ReadyTimeoutSeconds);
     }
+
+    // ---------------------------------------------------------------------------------------
+    // The idle policy (D96, D100, D104, D106)
+    // ---------------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("1.2", 1.2)]
+    [InlineData("2.5", 2.5)]
+    [InlineData("20", 20.0)]
+    [InlineData("3e0", 3.0)]
+    public void TheGrowthFactorIsADecimalReadWithTheInvariantCulture(string value, double expected)
+    {
+        Assert.Equal(expected, Read(("CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR", value)).RecycleGrowthFactor);
+    }
+
+    /// <summary>
+    /// A comma is not a decimal separator here, whatever the machine's culture says: read as one on a
+    /// German box, <c>2,5</c> would be twenty-five and nothing would ever be recycled. And NaN has to
+    /// fail the range check, which a pair of comparisons would let through.
+    /// </summary>
+    [Theory]
+    [InlineData("2,5")]
+    [InlineData("1.1")]
+    [InlineData("20.5")]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    [InlineData("-3")]
+    [InlineData("twice")]
+    public void AnUnusableGrowthFactorFallsBackToTheDefault(string value)
+    {
+        Assert.Equal(2.0, Read(("CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR", value)).RecycleGrowthFactor);
+    }
+
+    [Theory]
+    [InlineData("0", 0)]
+    [InlineData("1", 1)]
+    [InlineData("10080", 10080)]
+    public void TheIdleWindowsAcceptZeroToAWeek(string value, int expected)
+    {
+        Assert.Equal(expected, Read(("CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES", value)).IdleRecycleMinutes);
+        Assert.Equal(expected, Read(("CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES", value)).IdleShutdownMinutes);
+    }
+
+    [Theory]
+    [InlineData("-1")]
+    [InlineData("10081")]
+    [InlineData("soon")]
+    public void AnOutOfRangeIdleWindowFallsBackToItsOwnDefault(string value)
+    {
+        // Different defaults, which is the point: the recycle is on by default and the shutdown off.
+        Assert.Equal(20, Read(("CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES", value)).IdleRecycleMinutes);
+        Assert.Equal(0, Read(("CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES", value)).IdleShutdownMinutes);
+    }
+
+    [Theory]
+    [InlineData("0", 0)]
+    [InlineData("9", 9)]
+    public void TheConserveLevelAcceptsZeroToNineAndSaysWhereItCameFrom(string value, int expected)
+    {
+        var options = Read(("CLAUDE_ROSLYN_LSP_GC_CONSERVE", value));
+
+        Assert.Equal(expected, options.GcConserveMemory);
+        Assert.Equal("CLAUDE_ROSLYN_LSP_GC_CONSERVE", options.GcConserveMemoryVariable);
+    }
+
+    /// <summary>An unusable value is the default, and doctor must not credit the variable with it.</summary>
+    [Theory]
+    [InlineData("10")]
+    [InlineData("-1")]
+    [InlineData("high")]
+    public void AnUnusableConserveLevelFallsBackAndNamesNoSource(string value)
+    {
+        var options = Read(("CLAUDE_ROSLYN_LSP_GC_CONSERVE", value));
+
+        Assert.Equal(ClaudeRoslynLspOptions.DefaultGcConserveMemory, options.GcConserveMemory);
+        Assert.Null(options.GcConserveMemoryVariable);
+    }
+
+    [Fact]
+    public void TheConserveLevelGoesThroughThePluginLayerToo()
+    {
+        var options = Read(
+            ("CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_GC_CONSERVE", "1"),
+            ("CLAUDE_ROSLYN_LSP_GC_CONSERVE", "8"));
+
+        Assert.Equal(1, options.GcConserveMemory);
+        Assert.Equal("CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_GC_CONSERVE", options.GcConserveMemoryVariable);
+    }
+
 
     // ---------------------------------------------------------------------------------------
     // The plugin-option layer

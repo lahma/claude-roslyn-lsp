@@ -217,6 +217,36 @@ internal sealed partial class RegistrationTracker
         }
     }
 
+    /// <summary>
+    /// Forgets every registration, because the server that made them is gone (D98).
+    /// </summary>
+    /// <remarks>
+    /// Called when a new backend connects — after a crash, and after an idle recycle. Registrations
+    /// are keyed by the id Roslyn minted, and a new process mints new ones, so without this the
+    /// table would hold one copy per backend the session has ever had: a session recycled once an
+    /// hour for a week would stand up its watchers from a hundred and sixty-eight identical sets,
+    /// and an unregistration from the live server could never remove the dead ones. The new server
+    /// registers everything again during its own startup, which is the only set that is true.
+    /// </remarks>
+    internal void Clear()
+    {
+        int removed;
+
+        lock (_lock)
+        {
+            removed = _registrations.Count;
+            _registrations.Clear();
+        }
+
+        if (removed == 0)
+        {
+            return;
+        }
+
+        Log.Cleared(_logger, removed);
+        Changed?.Invoke();
+    }
+
     /// <summary>Reads a diagnostic registration's identifier and flags, when this is one.</summary>
     private static DiagnosticSourceRegistration? ReadDiagnosticSource(string id, string method, JsonElement options)
     {
@@ -323,5 +353,12 @@ internal sealed partial class RegistrationTracker
             Level = LogLevel.Debug,
             Message = "Removed {Removed} capability registration(s); {Total} live.")]
         internal static partial void Unregistered(ILogger logger, int removed, int total);
+
+        [LoggerMessage(
+            EventId = 602,
+            Level = LogLevel.Debug,
+            Message = "Forgot {Removed} capability registration(s) made by a backend that has gone; the " +
+                      "new one registers its own.")]
+        internal static partial void Cleared(ILogger logger, int removed);
     }
 }

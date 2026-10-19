@@ -27,7 +27,7 @@ public class GarbageCollectorEnvironmentTests
             RoslynGarbageCollector.Workstation,
             ClaudeRoslynLspOptions.DefaultGcConserveMemory);
 
-        Assert.Equal("5", environment[RoslynProcessLauncher.GcConserveMemoryVariable]);
+        Assert.Equal("7", environment[RoslynProcessLauncher.GcConserveMemoryVariable]);
         Assert.Equal("0", environment["DOTNET_gcServer"]);
     }
 
@@ -73,7 +73,7 @@ public class GarbageCollectorEnvironmentTests
         var defaults = ClaudeRoslynLspOptions.FromEnvironment(static _ => null);
 
         var byDefault = DoctorCommand.DescribeGcConserve(defaults, inherited: null);
-        Assert.Equal(5, byDefault.Level);
+        Assert.Equal(7, byDefault.Level);
         Assert.Equal("default", byDefault.Source);
 
         var configured = DoctorCommand.DescribeGcConserve(defaults with { GcConserveMemory = 2, GcConserveMemoryVariable = "CLAUDE_ROSLYN_LSP_GC_CONSERVE" }, inherited: null);

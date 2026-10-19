@@ -78,7 +78,7 @@ internal sealed record ClaudeRoslynLspOptions
     /// The <c>DOTNET_GCConserveMemory</c> level the Roslyn child is given unless the environment
     /// already names one (D104). Zero means "do not set it".
     /// </summary>
-    internal const int DefaultGcConserveMemory = 5;
+    internal const int DefaultGcConserveMemory = 7;
 
     /// <summary>The highest level the runtime accepts.</summary>
     internal const int MaxGcConserveMemory = 9;
@@ -248,8 +248,9 @@ internal sealed record ClaudeRoslynLspOptions
     /// </summary>
     /// <remarks>
     /// The runtime's cap on how far gen2 may grow past its live data before the next full collection —
-    /// 1.5× at level 5 — and therefore on how much free space the collector keeps committed after a
-    /// compacting one (D104, C66): on Quartz.NET 865 MB committed instead of 1,050 MB at the default.
+    /// about 1.21× at level 7 — and therefore on how much free space the collector keeps committed
+    /// after a compacting one (D104, C66): on Quartz.NET 717 MB committed against 534 MB live, where the
+    /// runtime's default kept 1,050 MB against 555 MB.
     /// It does not make an idle child collect; the compactor does that (D101). A
     /// <c>DOTNET_GCConserveMemory</c> already in the environment is left exactly as it is, by the same
     /// rule as D79's <c>DOTNET_gcServer</c>.

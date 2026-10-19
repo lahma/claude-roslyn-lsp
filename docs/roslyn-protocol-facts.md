@@ -409,44 +409,57 @@ is the shape of the two processes a Claude Code plugin actually starts.
 
 ## The memory of an idle child (WP10, 2026-10-19)
 
-Measured by the coordinator with the pinned server under the workstation GC (D79) on Quartz.NET (44
-projects in the checkout measured), Windows 11, over an agentic workload: open six files, twelve
-rounds of edit and diagnostics, builds, a restore storm, find-references, and a 150-commit branch
-switch and back. The figures are private bytes unless they say otherwise, read from outside the
-process, and the GC numbers are the runtime's own counters.
+Measured by the coordinator with the pinned server (5.12.0-1.26426.8) under the workstation GC (D79)
+on Quartz.NET's `Quartz.slnx` from current main, which has **44** project entries — C60's 30 was an
+older checkout — on Windows 11, one run per configuration, over an agentic workload: open six files,
+twelve rounds of edit and diagnostics, builds, a restore-input change and its revert, two
+find-references, a 150-commit branch switch and back, two minutes idle, then one forced collection.
+Memory figures are private bytes in MB unless they say otherwise, read from outside the process; the
+GC figures are the runtime's own counters.
 
-- **C66** **Most of what a working day adds to a Roslyn child is fragmentation, a forced compacting
-  collection gives it back, and how much of it the process then releases depends on the gen2
-  budget.**
-  - The child went from **697 MB** at load to **1,466 MB** after the workload. Its GC heap was
-    1,111 MB, of which only **866 MB** was live at the last collection; after the edit rounds alone,
-    fragmentation was 304 MB of a 964 MB heap with the live data almost unchanged.
-  - A full blocking collection forced from outside — the diagnostics IPC `CollectTracing2` with only
-    the runtime provider's `GCHeapCollect` keyword (`0x800000`) enabled, rundown off — compacted the
-    heap from **1,111 MB to 594 MB** (555 MB live). The `OK` came back about **0.9 s** after the
-    request on a 1 GB heap, because the runtime runs the collection while it enables the session
-    (dotnet/runtime `src/coreclr/vm/eventtrace_gcheap.cpp`, `ETW::GCLog::ForceGCForDiagnostics`;
+- **C66** **What a working day adds to a Roslyn child is part retained state and part fragmentation;
+  a forced compacting collection gives the fragmentation back, and how much of the freed space the
+  process then releases is set by the gen2 budget, which `DOTNET_GCConserveMemory` caps.**
+  - Per step, with the conserve level unset:
+    - Opening six files and their first diagnostics added **250 MB** private, **200 MB** of it live:
+      the two projects' compilations, which is real state.
+    - Twelve edit rounds added **335 MB** private while the live heap grew only **24 MB** and
+      fragmentation went from **42 to 304 MB**: churn, not retention.
+    - `dotnet build --no-restore` and `dotnet build` with a no-op restore changed nothing — not even a
+      collection ran.
+    - A restore-input change (central package management) and its revert added **35 MB**, and Roslyn
+      itself spent about **1.7 s** of CPU on it, because the evaluation runs in its BuildHost process.
+    - Two find-references, of 1,095 and 2,476 results, added **5 MB**.
+    - A 150-commit branch switch and back added **120 MB**.
+    - Two minutes idle changed nothing: no allocation, no collection.
+    - A forced collection compacted the heap, and a second one 60 s later released nothing more — an
+      idle process never decommits by itself.
+  - The forced collection is the diagnostics IPC `CollectTracing2` with only the runtime provider's
+    `GCHeapCollect` keyword (`0x800000`) enabled and rundown off. Its `OK` came back about **0.9 s**
+    after the request on a 1 GB heap, because the runtime runs the collection while it enables the
+    session (dotnet/runtime `src/coreclr/vm/eventtrace_gcheap.cpp`, `ETW::GCLog::ForceGCForDiagnostics`;
     the compaction decision is `src/coreclr/gc/plan_phase.cpp`, `decide_on_compacting`).
-  - Private bytes fell only **1,466 → 1,366 MB** at the default, because the collector keeps free
-    regions committed in proportion to its gen2 growth budget — about **0.8 × live** — so 1,050 MB
-    stayed committed against a 594 MB heap.
-  - With `DOTNET_GCConserveMemory=5` that budget is capped at `f = (10/N − 1)/2 + 1` = **1.5**
-    (`src/coreclr/gc/dynamic_tuning.cpp`, `desired_new_allocation`): after the same forced
-    collection **865 MB** stayed committed (free regions about 0.5 × live) and private bytes were
-    **1,180 MB**.
+  - The free space kept committed after the collection follows the gen2 budget, which the conserve
+    level caps at `f = (10/N − 1)/2 + 1` (`src/coreclr/gc/dynamic_tuning.cpp`,
+    `desired_new_allocation`): about **495 MB** unset, **332 MB** at 5 (f = 1.5) and **183 MB** at 7
+    (f ≈ 1.21). Roslyn's CPU over the whole run differed by less than run-to-run noise.
+  - A fresh process is about **690 MB**, so after the compaction the gap a recycle could still win
+    back is about **340 MB** at 7 against about **680 MB** unset.
+  - What stays live after the compaction is about **200 MB** of syntax trees (green 139, red 62),
+    **125 MB** of strings and **55 MB** of symbols (SOS `dumpheap -stat`) — the workspace itself.
   - The test process can be collected the same way from within itself, which is what
     `DiagnosticsIpcCompactorTests.ThisProcessIsCollectedWhenAsked` checks on every run: the gen2
     collection count goes up during the session enable.
 
-| Configuration | GC heap after the forced collection | Committed | Private bytes |
-|---|---|---|---|
-| Before any forced collection (default) | 1,111 MB (866 MB live) | — | 1,466 MB |
-| Default `DOTNET_GCConserveMemory`, forced collection | 594 MB (555 MB live) | 1,050 MB | 1,366 MB |
-| `DOTNET_GCConserveMemory=5`, forced collection | — | 865 MB | 1,180 MB |
-| `DOTNET_GCConserveMemory=7`, forced collection | **PENDING — run in progress** | **PENDING** | **PENDING** |
+| `DOTNET_GCConserveMemory` | After load | End of workload | After one forced GC (idle) | Live heap after it | GC committed after it | Roslyn CPU over the run |
+|---|---|---|---|---|---|---|
+| unset (0) | 697 | 1,465 | 1,366 | 555 | 1,050 | 426 s |
+| 5 | 686 | 1,355 | 1,179 | 532 | 864 | 413 s |
+| 7 | 698 | 1,236 | 1,028 | 534 | 717 | 423 s |
 
-What this decides is D101 and D104: compaction while idle is worth 100-300 MB per idle session with
-no reload at all, and it makes the recycle's threshold measure what the workspace genuinely retains
+What this decides is D101 and D104: the child runs at 7, which halves the free space the collector
+keeps committed after a full collection relative to 5 and costs nothing measurable, and an idle child
+is compacted before the recycle judges it, so the threshold measures what the workspace retains
 rather than what the collector has not yet given back.
 
 ## Claude Code 2.1.267 client (spike S3, 2026-09-10)

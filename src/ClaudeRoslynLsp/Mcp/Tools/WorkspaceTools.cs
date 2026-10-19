@@ -36,7 +36,9 @@ internal sealed class WorkspaceTools
         + "the Roslyn build in use, and the language server's process id and memory. Call this first when another "
         + "tool answers with status 'loading' or 'failed', and when a repository has more than one solution and you "
         + "need to know which one the answers are about. A large solution takes a few seconds to load and can take "
-        + "up to two minutes; until it has, every other tool reports 'loading' rather than answering emptily.")]
+        + "up to two minutes; until it has, every other tool reports 'loading' rather than answering emptily. "
+        + "A language server left idle long enough is stopped to give its memory back ('recycles' counts how often) "
+        + "and the next call reloads the solution, which takes as long as the first load did.")]
     public static async Task<WorkspaceStatusResult> GetWorkspaceStatusAsync(
         RoslynToolContext context,
         CancellationToken cancellationToken = default)
@@ -76,7 +78,11 @@ internal sealed class WorkspaceTools
                         + "a `dotnet restore` or a build often fixes it."
                     : null,
                 state.Engine,
-                state.HostProcessId);
+                state.HostProcessId,
+                state.PrivateBytes is { } privateBytes ? (int) (privateBytes / 1024 / 1024) : null,
+                state.Recycles,
+                state.BaselineBytes is { } baseline ? (int) (baseline / 1024 / 1024) : null,
+                NotReadyResults.Iso8601(state.LastRecycleAt));
         }).ConfigureAwait(false);
     }
 }

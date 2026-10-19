@@ -148,7 +148,15 @@ internal sealed partial class LaunchedRoslynFactory : IRoslynConnectionFactory
             child.Stream,
             child.Exited,
             Description,
-            () => DisposeChildAsync(child));
+            () => DisposeChildAsync(child))
+        {
+            // The recycle's last resort (D97): end the process, keep everything else.
+            Terminate = () =>
+            {
+                child.Kill();
+                return ValueTask.CompletedTask;
+            },
+        };
     }
 
     /// <summary>Walks the acquisition chain once and remembers what it found.</summary>

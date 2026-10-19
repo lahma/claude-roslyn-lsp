@@ -471,6 +471,13 @@ internal sealed record WorkspaceProject(string Name, string Path, IReadOnlyList<
 /// The <c>claude-roslyn-lsp</c> process hosting the shared Roslyn, when this one is attached to it.
 /// Null for an owned engine, where the answer would be this process.
 /// </param>
+/// <param name="PrivateBytes">
+/// That process's private bytes, beside the working set because on Windows an idle child's working
+/// set is trimmed to a fraction of what it actually holds (D100).
+/// </param>
+/// <param name="Recycles">How many times the backend has been recycled while idle (D96).</param>
+/// <param name="BaselineBytes">Its memory once the workspace had settled, which the recycle threshold is measured from.</param>
+/// <param name="LastRecycleAt">When it was last recycled.</param>
 internal sealed record WorkspaceState(
     WorkspaceLoadStatus Status,
     string? SolutionPath = null,
@@ -483,7 +490,11 @@ internal sealed record WorkspaceState(
     long? WorkingSetBytes = null,
     string? Message = null,
     string? Engine = null,
-    int? HostProcessId = null)
+    int? HostProcessId = null,
+    long? PrivateBytes = null,
+    int? Recycles = null,
+    long? BaselineBytes = null,
+    DateTimeOffset? LastRecycleAt = null)
 {
     /// <summary>Whether the workspace will answer a question truthfully rather than emptily (C27).</summary>
     internal bool IsReady => Status == WorkspaceLoadStatus.Ready;

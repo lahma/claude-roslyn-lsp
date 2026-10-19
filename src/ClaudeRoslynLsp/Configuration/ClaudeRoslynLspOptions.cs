@@ -47,6 +47,43 @@ internal sealed record ClaudeRoslynLspOptions
     internal const int MaxReadyTimeoutSeconds = 3600;
 
     /// <summary>
+    /// Default number of idle minutes after which a Roslyn that has grown past its threshold is
+    /// recycled (D96).
+    /// </summary>
+    /// <remarks>
+    /// Twenty minutes: longer than the gap between two turns of a working session — a model that is
+    /// thinking, a human reading a diff, a test run — and short enough that a session left open
+    /// over lunch gives its memory back before the afternoon starts.
+    /// </remarks>
+    internal const int DefaultIdleRecycleMinutes = 20;
+
+    /// <summary>The upper bound on both idle windows: a week.</summary>
+    internal const int MaxIdleMinutes = 10080;
+
+    /// <summary>Default growth factor a backend must exceed over its baseline before it is recycled.</summary>
+    internal const double DefaultRecycleGrowthFactor = 2.0;
+
+    /// <summary>Lower and upper bounds on <see cref="RecycleGrowthFactor"/>.</summary>
+    /// <remarks>
+    /// 1.2 at the bottom, because a child idles a few percent above its load size anyway and a
+    /// factor below that would recycle a session that did nothing; 20 at the top, because past that
+    /// the absolute floor (baseline + 512 MB) is the only arm that could ever trip.
+    /// </remarks>
+    internal const double MinRecycleGrowthFactor = 1.2;
+
+    /// <inheritdoc cref="MinRecycleGrowthFactor"/>
+    internal const double MaxRecycleGrowthFactor = 20;
+
+    /// <summary>
+    /// The <c>DOTNET_GCConserveMemory</c> level the Roslyn child is given unless the environment
+    /// already names one (D104). Zero means "do not set it".
+    /// </summary>
+    internal const int DefaultGcConserveMemory = 5;
+
+    /// <summary>The highest level the runtime accepts.</summary>
+    internal const int MaxGcConserveMemory = 9;
+
+    /// <summary>
     /// The prefix the Claude Code plugin launcher's values arrive under.
     /// </summary>
     /// <remarks>
@@ -205,6 +242,45 @@ internal sealed record ClaudeRoslynLspOptions
     /// </remarks>
     internal string? GarbageCollector { get; init; }
 
+    /// <summary>
+    /// <c>CLAUDE_ROSLYN_LSP_GC_CONSERVE</c> — the <c>DOTNET_GCConserveMemory</c> level, 0-9, the
+    /// Roslyn child runs with. Default <see cref="DefaultGcConserveMemory"/>; 0 sets nothing.
+    /// </summary>
+    /// <remarks>
+    /// The runtime's own knob for how hard the garbage collector works to give fragmented space back
+    /// rather than keep it committed (D104). An idle Roslyn allocates almost nothing, so no collection
+    /// ever runs to compact what a day of edits left behind; conserving harder after the large
+    /// transient allocations of a compilation or a re-evaluation is what keeps that from piling up in
+    /// the first place. A <c>DOTNET_GCConserveMemory</c> already in the environment is left exactly as
+    /// it is, by the same rule as D79's <c>DOTNET_gcServer</c>.
+    /// </remarks>
+    internal int GcConserveMemory { get; init; } = DefaultGcConserveMemory;
+
+    /// <summary>Which variable <see cref="GcConserveMemory"/> came from, or null for the default.</summary>
+    /// <remarks>Reported by <c>doctor</c>, which has to say where the effective value came from.</remarks>
+    internal string? GcConserveMemoryVariable { get; init; }
+
+    /// <summary>
+    /// <c>CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES</c> — how long a session has to be idle before a
+    /// Roslyn that has grown past its threshold is shut down, to be relaunched on the next request
+    /// (D96). Default 20; 0 switches the growth recycle off.
+    /// </summary>
+    internal int IdleRecycleMinutes { get; init; } = DefaultIdleRecycleMinutes;
+
+    /// <summary>
+    /// <c>CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR</c> — how far past its baseline a Roslyn has to
+    /// have grown before an idle recycle is worth a reload: the threshold is
+    /// <c>max(baseline × factor, baseline + 512 MB)</c>. A decimal read with the invariant culture,
+    /// 1.2-20, default 2.
+    /// </summary>
+    internal double RecycleGrowthFactor { get; init; } = DefaultRecycleGrowthFactor;
+
+    /// <summary>
+    /// <c>CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES</c> — shut Roslyn down after this many idle minutes
+    /// whatever its size, to be relaunched on the next request. Default 0, which is off.
+    /// </summary>
+    internal int IdleShutdownMinutes { get; init; }
+
     /// <summary><c>CLAUDE_ROSLYN_LSP_LOG_LEVEL</c> — minimum level for this adapter's stderr logger.</summary>
     internal LogLevel LogLevel { get; init; } = DefaultLogLevel;
 
@@ -240,6 +316,12 @@ internal sealed record ClaudeRoslynLspOptions
 
         var solution = ReadConfiguredWithSource(read, "CLAUDE_ROSLYN_LSP_SOLUTION");
         var roslynPath = ReadAliasedWithSource(read, "CLAUDE_ROSLYN_LSP_ROSLYN_PATH", "CLAUDE_ROSLYN_LSP_SERVER_PATH");
+        var gcConserve = ReadInt32WithSource(
+            read,
+            "CLAUDE_ROSLYN_LSP_GC_CONSERVE",
+            DefaultGcConserveMemory,
+            0,
+            MaxGcConserveMemory);
 
         return new ClaudeRoslynLspOptions
         {
@@ -266,6 +348,21 @@ internal sealed record ClaudeRoslynLspOptions
             FileWatcher = ReadBoolean(read, "CLAUDE_ROSLYN_LSP_FILE_WATCHER", defaultValue: true),
             Share = ReadBoolean(read, "CLAUDE_ROSLYN_LSP_SHARE", defaultValue: true),
             GarbageCollector = ReadConfigured(read, "CLAUDE_ROSLYN_LSP_GC"),
+            GcConserveMemory = gcConserve.Value,
+            GcConserveMemoryVariable = gcConserve.Source,
+            IdleRecycleMinutes = ReadInt32(
+                read,
+                "CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES",
+                DefaultIdleRecycleMinutes,
+                0,
+                MaxIdleMinutes),
+            RecycleGrowthFactor = ReadDouble(
+                read,
+                "CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR",
+                DefaultRecycleGrowthFactor,
+                MinRecycleGrowthFactor,
+                MaxRecycleGrowthFactor),
+            IdleShutdownMinutes = ReadInt32(read, "CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES", 0, 0, MaxIdleMinutes),
             LogLevel = ReadLogLevel(read, "CLAUDE_ROSLYN_LSP_LOG_LEVEL") ?? DefaultLogLevel,
             RoslynLogLevel = ReadLogLevel(read, "CLAUDE_ROSLYN_LSP_ROSLYN_LOG_LEVEL"),
 
@@ -339,6 +436,55 @@ internal sealed record ClaudeRoslynLspOptions
         }
 
         return value < min || value > max ? defaultValue : value;
+    }
+
+    /// <summary>
+    /// The same read, reporting which variable supplied a value that was actually used — null when
+    /// the default stands, including when the value was there but unusable.
+    /// </summary>
+    private static (int Value, string? Source) ReadInt32WithSource(
+        Func<string, string?> read,
+        string name,
+        int defaultValue,
+        int min,
+        int max)
+    {
+        var (raw, source) = ReadConfiguredWithSource(read, name);
+
+        if (raw is null
+            || !int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+            || value < min
+            || value > max)
+        {
+            return (defaultValue, null);
+        }
+
+        return (value, source);
+    }
+
+    /// <summary>
+    /// Parses a decimal with the invariant culture, falling back to <paramref name="defaultValue"/>
+    /// when unparsable or out of range.
+    /// </summary>
+    /// <remarks>
+    /// The invariant culture is not a nicety: on a machine set to a culture that writes the decimal
+    /// separator as a comma, a culture-sensitive parse would read <c>2.5</c> as twenty-five and
+    /// recycle nothing for ever. A comma is therefore not a decimal separator here, and
+    /// <c>2,5</c> falls back to the default like any other typo. The range check is written so that
+    /// <c>NaN</c> fails it, which a pair of less-than comparisons would not.
+    /// </remarks>
+    private static double ReadDouble(Func<string, string?> read, string name, double defaultValue, double min, double max)
+    {
+        var raw = ReadConfigured(read, name);
+
+        if (raw is null
+            || !double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+            || !(value >= min && value <= max))
+        {
+            return defaultValue;
+        }
+
+        return value;
     }
 
     /// <summary>

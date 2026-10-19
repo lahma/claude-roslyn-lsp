@@ -100,6 +100,21 @@ public class ToolSchemaTests
             covered.Order(StringComparer.Ordinal));
     }
 
+    /// <summary>
+    /// The recycle is visible in the answer a model reads (D96): without these a call after a quiet
+    /// spell is slow for no reason anybody can see.
+    /// </summary>
+    [Fact]
+    public void TheWorkspaceStatusCarriesTheIdlePolicysFields()
+    {
+        var properties = ToolTestHost.Find("getWorkspaceStatus").ProtocolTool.OutputSchema!.Value.GetProperty("properties");
+
+        foreach (var name in new[] { "memoryMegabytes", "privateMegabytes", "recycles", "baselineMegabytes", "lastRecycleAt" })
+        {
+            Assert.True(properties.TryGetProperty(name, out _), $"getWorkspaceStatus has no '{name}'.");
+        }
+    }
+
     [Fact]
     public void NoInputSchemaMentionsAnInjectedParameter()
     {

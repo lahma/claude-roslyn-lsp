@@ -114,6 +114,30 @@
           "isSecret": false
         },
         {
+          "name": "CLAUDE_ROSLYN_LSP_GC_CONSERVE",
+          "description": "The DOTNET_GCConserveMemory level, 0-9, the Roslyn child runs with, so its garbage collector compacts and gives back the space a day of compilations fragments. Default 5; 0 sets nothing. An explicit DOTNET_GCConserveMemory in the environment wins over this.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES",
+          "description": "How long the session has to be idle before a Roslyn child that has grown past its threshold is stopped to give its memory back; the next call relaunches it and waits for the reload. Default 20; 0 switches the recycle off.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR",
+          "description": "How far past its post-load baseline the Roslyn child has to have grown before an idle recycle is worth a reload: the threshold is the larger of baseline times this factor and baseline plus 512 MB. A decimal, 1.2-20, default 2.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES",
+          "description": "Stop the Roslyn child after this many idle minutes whatever its size; the next call relaunches it. Default 0, which is off, because every relaunch costs a full solution load.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
           "name": "CLAUDE_ROSLYN_LSP_LOG_LEVEL",
           "description": "Trace, Debug, Information, Warning, Error, Critical or None (default Information). Logs go to stderr only - stdout is the JSON-RPC channel.",
           "isRequired": false,

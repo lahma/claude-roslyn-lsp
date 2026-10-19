@@ -227,6 +227,167 @@ public class ReadinessGateTests
         Assert.Equal(2, notices.Count);
     }
 
+    /// <summary>
+    /// D96: a dormant gate holds with no clock at all. A gate built on MarkRestarting would open by
+    /// itself after the load budget and pass everything it held to a backend that is not there, and it
+    /// would narrate a load nobody has started every ten seconds while it waited.
+    /// </summary>
+    [Fact]
+    public void ADormantGateHoldsWithoutATimeoutOrANotice()
+    {
+        using var gate = CreateGate(out var time, out var notices);
+        gate.Start();
+        gate.MarkProjectsLoaded();
+
+        var asked = 0;
+        gate.HeldWhileDormant += () => asked++;
+
+        Assert.True(gate.MarkDormant());
+        Assert.Equal(ReadinessState.Dormant, gate.State);
+        Assert.False(gate.IsOpen);
+        Assert.False(gate.NotificationsAllowed);
+
+        var released = 0;
+        Assert.True(gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", _ => released++));
+
+        // Holding is what asks for the backend back.
+        Assert.Equal(1, asked);
+
+        time.Advance(Timeout * 30);
+
+        Assert.Equal(0, released);
+        Assert.Equal(ReadinessState.Dormant, gate.State);
+        Assert.Equal(1, gate.HeldCount);
+        Assert.Empty(notices);
+    }
+
+    /// <summary>A gate that is not open has nothing to go dormant from, and the recycle must not go ahead.</summary>
+    [Fact]
+    public void OnlyAnOpenGateCanGoDormant()
+    {
+        using var gate = CreateGate(out _, out _);
+        gate.Start();
+        gate.MarkRoslynInitialized();
+
+        Assert.False(gate.MarkDormant());
+        Assert.Equal(ReadinessState.RoslynInitialized, gate.State);
+
+        gate.MarkFailed("no backend");
+
+        Assert.False(gate.MarkDormant());
+        Assert.Equal(ReadinessState.Failed, gate.State);
+    }
+
+    /// <summary>
+    /// The wake starts the load clock — from the wake, not from the recycle — and the reloaded
+    /// workspace's readiness releases what was held and raises <c>Opened</c> again, which is what
+    /// re-arms the diagnostics and watch bridges.
+    /// </summary>
+    [Fact]
+    public void WakingArmsTheLoadBudgetAndReopeningRaisesOpenedAgain()
+    {
+        using var gate = CreateGate(out var time, out var notices);
+        gate.Start();
+
+        var opened = new List<ReadinessState>();
+        gate.Opened += opened.Add;
+
+        gate.MarkProjectsLoaded();
+        Assert.Single(opened);
+
+        gate.MarkDormant();
+
+        var outcomes = new List<GateOutcome>();
+        gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", outcomes.Add);
+
+        // An hour dormant: none of it counts against the load budget.
+        time.Advance(TimeSpan.FromHours(1));
+
+        Assert.True(gate.MarkWaking());
+        Assert.Equal(ReadinessState.Starting, gate.State);
+
+        time.Advance(Timeout - TimeSpan.FromSeconds(1));
+        Assert.Empty(outcomes);
+
+        // And the ten-second notice is back, because now something is genuinely loading.
+        Assert.NotEmpty(notices);
+
+        gate.MarkRoslynInitialized();
+        gate.MarkProjectsLoaded();
+
+        Assert.Equal([GateOutcome.Pass], outcomes);
+        Assert.Equal(2, opened.Count);
+        Assert.Equal(ReadinessState.ProjectsLoaded, opened[1]);
+    }
+
+    /// <summary>The wake's budget runs out like a first load's does.</summary>
+    [Fact]
+    public void AReloadThatOverrunsItsBudgetTimesOutFromTheWake()
+    {
+        using var gate = CreateGate(out var time, out _);
+        gate.Start();
+        gate.MarkProjectsLoaded();
+        gate.MarkDormant();
+
+        var outcome = default(GateOutcome?);
+        gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", x => outcome = x);
+
+        time.Advance(TimeSpan.FromMinutes(30));
+        gate.MarkWaking();
+
+        time.Advance(Timeout + TimeSpan.FromSeconds(1));
+
+        Assert.Equal(GateOutcome.Pass, outcome);
+        Assert.Equal(ReadinessState.LoadTimedOut, gate.State);
+    }
+
+    /// <summary>
+    /// A recycle abandoned before Roslyn heard anything reopens the gate, releases what arrived, and
+    /// does not raise <c>Opened</c> — nothing downstream was told it had closed.
+    /// </summary>
+    [Fact]
+    public void CancellingDormancyReleasesWhatArrivedWithoutReopeningTheBridges()
+    {
+        using var gate = CreateGate(out _, out _);
+        gate.Start();
+        gate.MarkProjectsLoaded();
+
+        var opened = 0;
+        gate.Opened += _ => opened++;
+
+        gate.MarkDormant();
+
+        var outcomes = new List<GateOutcome>();
+        gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", outcomes.Add);
+
+        gate.CancelDormant();
+
+        Assert.Equal(ReadinessState.ProjectsLoaded, gate.State);
+        Assert.Equal([GateOutcome.Pass], outcomes);
+        Assert.Equal(0, opened);
+    }
+
+    /// <summary>
+    /// A late readiness notification from a backend that is being stopped must not open a dormant
+    /// gate into a server that is gone; only the wake leaves that state.
+    /// </summary>
+    [Fact]
+    public void AStrayReadinessNotificationDoesNotOpenADormantGate()
+    {
+        using var gate = CreateGate(out _, out _);
+        gate.Start();
+        gate.MarkProjectsLoaded();
+        gate.MarkDormant();
+
+        var released = 0;
+        gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", _ => released++);
+
+        gate.MarkProjectsLoaded();
+
+        Assert.Equal(ReadinessState.Dormant, gate.State);
+        Assert.Equal(0, released);
+    }
+
     private static ReadinessGate CreateGate(out TestTimeProvider time, out List<string> notices)
     {
         var clock = new TestTimeProvider();

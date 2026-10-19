@@ -1,7 +1,7 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C65 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C66 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
 C48-C54 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
@@ -406,6 +406,48 @@ is the shape of the two processes a Claude Code plugin actually starts.
   cost the MCP half already paid alone, now paid once instead of twice in two processes. It is
   recorded rather than fixed because lowering it after the call would make a second solution-wide
   pull pay C57's confirmation loop again, and because the two halves genuinely want the same answer.
+
+## The memory of an idle child (WP10, 2026-10-19)
+
+Measured by the coordinator with the pinned server under the workstation GC (D79) on Quartz.NET (44
+projects in the checkout measured), Windows 11, over an agentic workload: open six files, twelve
+rounds of edit and diagnostics, builds, a restore storm, find-references, and a 150-commit branch
+switch and back. The figures are private bytes unless they say otherwise, read from outside the
+process, and the GC numbers are the runtime's own counters.
+
+- **C66** **Most of what a working day adds to a Roslyn child is fragmentation, a forced compacting
+  collection gives it back, and how much of it the process then releases depends on the gen2
+  budget.**
+  - The child went from **697 MB** at load to **1,466 MB** after the workload. Its GC heap was
+    1,111 MB, of which only **866 MB** was live at the last collection; after the edit rounds alone,
+    fragmentation was 304 MB of a 964 MB heap with the live data almost unchanged.
+  - A full blocking collection forced from outside — the diagnostics IPC `CollectTracing2` with only
+    the runtime provider's `GCHeapCollect` keyword (`0x800000`) enabled, rundown off — compacted the
+    heap from **1,111 MB to 594 MB** (555 MB live). The `OK` came back about **0.9 s** after the
+    request on a 1 GB heap, because the runtime runs the collection while it enables the session
+    (dotnet/runtime `src/coreclr/vm/eventtrace_gcheap.cpp`, `ETW::GCLog::ForceGCForDiagnostics`;
+    the compaction decision is `src/coreclr/gc/plan_phase.cpp`, `decide_on_compacting`).
+  - Private bytes fell only **1,466 → 1,366 MB** at the default, because the collector keeps free
+    regions committed in proportion to its gen2 growth budget — about **0.8 × live** — so 1,050 MB
+    stayed committed against a 594 MB heap.
+  - With `DOTNET_GCConserveMemory=5` that budget is capped at `f = (10/N − 1)/2 + 1` = **1.5**
+    (`src/coreclr/gc/dynamic_tuning.cpp`, `desired_new_allocation`): after the same forced
+    collection **865 MB** stayed committed (free regions about 0.5 × live) and private bytes were
+    **1,180 MB**.
+  - The test process can be collected the same way from within itself, which is what
+    `DiagnosticsIpcCompactorTests.ThisProcessIsCollectedWhenAsked` checks on every run: the gen2
+    collection count goes up during the session enable.
+
+| Configuration | GC heap after the forced collection | Committed | Private bytes |
+|---|---|---|---|
+| Before any forced collection (default) | 1,111 MB (866 MB live) | — | 1,466 MB |
+| Default `DOTNET_GCConserveMemory`, forced collection | 594 MB (555 MB live) | 1,050 MB | 1,366 MB |
+| `DOTNET_GCConserveMemory=5`, forced collection | — | 865 MB | 1,180 MB |
+| `DOTNET_GCConserveMemory=7`, forced collection | **PENDING — run in progress** | **PENDING** | **PENDING** |
+
+What this decides is D101 and D104: compaction while idle is worth 100-300 MB per idle session with
+no reload at all, and it makes the recycle's threshold measure what the workspace genuinely retains
+rather than what the collector has not yet given back.
 
 ## Claude Code 2.1.267 client (spike S3, 2026-09-10)
 

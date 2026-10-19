@@ -826,10 +826,18 @@ So the adapter gives it back, in three ways:
   both of its restarts. A child that is still loading, has a request held or in flight, or belongs to
   another process (an attached engine) is never recycled; with a shared engine the host decides, and
   only when every server using it has been quiet.
-- **It asks the child's garbage collector to conserve memory.** The child runs with
-  `DOTNET_GCConserveMemory=5` unless `CLAUDE_ROSLYN_LSP_GC_CONSERVE` says otherwise, so it compacts
-  and decommits after the large temporary allocations a compilation makes instead of keeping the
-  space. An explicit `DOTNET_GCConserveMemory` in your environment wins and is passed through.
+- **It asks an idle child to compact first.** Five minutes into a quiet spell the adapter asks the
+  child's runtime, over .NET's own diagnostics channel, for a full compacting collection. Most of what
+  a working day adds is fragmentation rather than live data: on Quartz.NET the heap went from
+  1,111 MB to 594 MB, and private bytes fell by 100-300 MB depending on the setting below, with no
+  reload at all. Only what the workspace genuinely still holds is left for the recycle to judge. A
+  child started with `DOTNET_EnableDiagnostics=0` simply is not asked.
+- **It caps how much free space the child's collector keeps.** The child runs with
+  `DOTNET_GCConserveMemory=5` unless `CLAUDE_ROSLYN_LSP_GC_CONSERVE` says otherwise. That limits how
+  far the collector lets its heap grow past the live data, and so how much free space it keeps
+  committed after a compacting collection: about half the live size instead of about four fifths —
+  865 MB committed instead of 1,050 MB in the measurement above. An explicit
+  `DOTNET_GCConserveMemory` in your environment wins and is passed through.
 - **It can unload an idle child whatever its size.** `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` is
   off by default, because every relaunch costs a whole solution load; on a machine running many
   sessions, a few hours is a reasonable setting.
@@ -867,7 +875,7 @@ what is actually in effect and is the authority when this table and the binary d
 | `CLAUDE_ROSLYN_LSP_FILE_WATCHER` | `1` | The file-watch bridge. Without it, a file created by a shell command or by git never joins its project and every later answer is silently stale. `lsp` only: the `mcp` half always watches, because it has no editor telling it what changed and because a repository that needs a restore does not finish loading without it. |
 | `CLAUDE_ROSLYN_LSP_SHARE` | `1` | Whether the `lsp` and `mcp` servers share one Roslyn per solution. Off makes each of them launch one of its own, which loads the solution twice and pays for it twice in memory. `getWorkspaceStatus` reports `engine: "owned"` or `"attached"`, so which of the two happened is never a guess. |
 | `CLAUDE_ROSLYN_LSP_GC` | `workstation` | Which garbage collector the Roslyn child runs with: `workstation` or `server`. Workstation peaks around 577 MB on a 239-project solution where server peaks around 2 GB, and costs about eight seconds of load time. An explicit `DOTNET_gcServer` in the environment wins over this and is left alone. |
-| `CLAUDE_ROSLYN_LSP_GC_CONSERVE` | `5` | The `DOTNET_GCConserveMemory` level, 0–9, the Roslyn child runs with, so its collector gives back the space a day of compilations fragments. `0` sets nothing. An explicit `DOTNET_GCConserveMemory` in the environment wins and is left alone. |
+| `CLAUDE_ROSLYN_LSP_GC_CONSERVE` | `5` | The `DOTNET_GCConserveMemory` level, 0–9, the Roslyn child runs with: it caps how far the child's heap may grow past its live data, so less free space stays committed after a compacting collection. `0` sets nothing. An explicit `DOTNET_GCConserveMemory` in the environment wins and is left alone. |
 | `CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES` | `20` | How long a session has to be idle before a Roslyn child that has grown past its threshold is shut down to give its memory back; the next request relaunches it. 0–10080; `0` is off. See [Memory](#memory-and-idle-sessions). |
 | `CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR` | `2` | How far past its post-load baseline the child must have grown: the threshold is the larger of baseline × factor and baseline + 512 MB. A decimal with a `.`, 1.2–20. |
 | `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` | `0` (off) | Shut the child down after this many idle minutes whatever its size; the next request relaunches it. 0–10080. |

@@ -115,7 +115,7 @@
         },
         {
           "name": "CLAUDE_ROSLYN_LSP_GC_CONSERVE",
-          "description": "The DOTNET_GCConserveMemory level, 0-9, the Roslyn child runs with, so its garbage collector compacts and gives back the space a day of compilations fragments. Default 5; 0 sets nothing. An explicit DOTNET_GCConserveMemory in the environment wins over this.",
+          "description": "The DOTNET_GCConserveMemory level, 0-9, the Roslyn child runs with: it caps how far the child's heap may grow past its live data, so less free space stays committed after a compacting collection. Default 5; 0 sets nothing. An explicit DOTNET_GCConserveMemory in the environment wins over this.",
           "isRequired": false,
           "isSecret": false
         },

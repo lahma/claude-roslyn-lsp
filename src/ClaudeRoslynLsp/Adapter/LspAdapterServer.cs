@@ -83,7 +83,7 @@ internal static partial class LspAdapterServer
         // acquisition that downloads 70 MB has to be able to say so, and the only channel a client
         // renders is window/logMessage.
         var messages = new PendingClientMessages();
-        var factory = SelectFactory(smoke, options, logger, messages.Send, workspace);
+        var factory = SelectFactory(smoke, options, logger, messages.Send, workspace, out var launched);
 
         Log.Starting(logger, ServerVersion.Name, ServerVersion.Value, factory.Description);
 
@@ -95,7 +95,11 @@ internal static partial class LspAdapterServer
             () => options.Solution,
             TimeProvider.System,
             logger,
-            () => workspace.Value);
+            () => workspace.Value,
+            // D101: only a Roslyn this process launched is asked to compact. The scripted backends
+            // name a process id that is not theirs, and forcing a collection in whatever process
+            // happens to have it would be a side effect on somebody else's program.
+            compactor: launched ? new DiagnosticsIpcCompactor(logger) : null);
 
         // The seam runs both ways by construction: the session takes the factory, and the factory
         // needs something to host with. Claimed here, before anything can connect (D92).
@@ -172,13 +176,17 @@ internal static partial class LspAdapterServer
     /// <param name="logger">The stderr log.</param>
     /// <param name="tellClient">Sends a message to the client, once there is a session to send it through.</param>
     /// <param name="workspace">What is being opened, for the shared engine's session key (D85).</param>
+    /// <param name="launched">Whether the backend is a real Roslyn this process launches (D101).</param>
     private static IRoslynConnectionFactory SelectFactory(
         bool smoke,
         ClaudeRoslynLspOptions options,
         ILogger logger,
         Action<int, string> tellClient,
-        Lazy<WorkspaceSelection> workspace)
+        Lazy<WorkspaceSelection> workspace,
+        out bool launched)
     {
+        launched = false;
+
         if (smoke)
         {
             return new InProcessFakeRoslynFactory(logger);
@@ -191,6 +199,8 @@ internal static partial class LspAdapterServer
         {
             return new ChildProcessFakeRoslynFactory(logger);
         }
+
+        launched = true;
 
         var paths = AdapterPaths.Resolve(options);
         var launcher = new LaunchedRoslynFactory(options, paths, logger, tellClient);

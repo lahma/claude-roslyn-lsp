@@ -160,11 +160,11 @@ internal interface IRecycleTarget
 /// Asks a Roslyn child's runtime to compact its heap and give the space back (D101).
 /// </summary>
 /// <remarks>
-/// A seam rather than an implementation. A compacting gen2 collection reclaims fragmentation, which
-/// is a large share of what an idle child holds, but it cannot drop state the workspace still
-/// references — and how to trigger one from outside the process, at what cost, is being measured
-/// separately. Until it is decided, <see cref="NoBackendCompactor"/> stands here and the policy is
-/// exactly the plain recycle.
+/// A compacting gen2 collection reclaims fragmentation, which is most of what an idle child adds over
+/// its load size (C66), but it cannot drop state the workspace still references — that is what the
+/// recycle is for. The production implementation is <c>Roslyn/DiagnosticsIpcCompactor</c>, which asks
+/// the child's runtime over its diagnostics channel; <see cref="NoBackendCompactor"/> stands in for
+/// a backend this process did not launch, and the policy is then exactly the plain recycle.
 /// </remarks>
 internal interface IBackendCompactor
 {
@@ -175,7 +175,10 @@ internal interface IBackendCompactor
     Task<bool> TryCompactAsync(int processId, CancellationToken cancellationToken);
 }
 
-/// <summary>The compactor that does nothing, which is the default until one is decided on (D101).</summary>
+/// <summary>
+/// The compactor that does nothing: the default for a backend this process did not launch, and for
+/// the tests (D101).
+/// </summary>
 internal sealed class NoBackendCompactor : IBackendCompactor
 {
     private NoBackendCompactor()
@@ -762,9 +765,17 @@ internal sealed partial class BackendRecycler : IDisposable
             var idleMinutes = decision.Idle.TotalMinutes;
             var memoryMegabytes = BackendMemory.Megabytes(decision.MemoryBytes) ?? -1;
             var baselineMegabytes = BackendMemory.Megabytes(decision.BaselineBytes) ?? -1;
-            var thresholdMegabytes = BackendMemory.Megabytes(decision.ThresholdBytes) ?? -1;
+            if (decision.ThresholdBytes is { } threshold)
+            {
+                var thresholdMegabytes = BackendMemory.Megabytes(threshold) ?? -1;
 
-            Log.Recycling(_logger, decision.Reason, idleMinutes, memoryMegabytes, baselineMegabytes, thresholdMegabytes);
+                Log.Recycling(_logger, idleMinutes, memoryMegabytes, baselineMegabytes, thresholdMegabytes);
+            }
+            else
+            {
+                // D106: an idle shutdown has no threshold to report, only how long nobody asked.
+                Log.ShuttingDownIdle(_logger, idleMinutes, memoryMegabytes, baselineMegabytes);
+            }
         }
 
         bool stopped;
@@ -849,16 +860,27 @@ internal sealed partial class BackendRecycler : IDisposable
         [LoggerMessage(
             EventId = 1800,
             Level = LogLevel.Information,
-            Message = "Recycling the idle Roslyn backend ({Reason}): idle for {IdleMinutes:0} min, holding " +
+            Message = "Recycling the idle Roslyn backend: idle for {IdleMinutes:0} min, holding " +
                       "{MemoryMegabytes} MB against a baseline of {BaselineMegabytes} MB and a threshold of " +
                       "{ThresholdMegabytes} MB. The next request relaunches it (D96).")]
         internal static partial void Recycling(
             ILogger logger,
-            RecycleReason reason,
             double idleMinutes,
             int memoryMegabytes,
             int baselineMegabytes,
             int thresholdMegabytes);
+
+        [LoggerMessage(
+            EventId = 1806,
+            Level = LogLevel.Information,
+            Message = "Shutting the idle Roslyn backend down: nothing has asked it anything for {IdleMinutes:0} " +
+                      "min (CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES); it holds {MemoryMegabytes} MB against a " +
+                      "baseline of {BaselineMegabytes} MB (-1 when not measured). The next request relaunches it (D106).")]
+        internal static partial void ShuttingDownIdle(
+            ILogger logger,
+            double idleMinutes,
+            int memoryMegabytes,
+            int baselineMegabytes);
 
         [LoggerMessage(
             EventId = 1801,

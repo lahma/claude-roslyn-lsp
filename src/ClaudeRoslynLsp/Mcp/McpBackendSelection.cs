@@ -120,7 +120,10 @@ internal static partial class McpBackendSelection
             logger,
             () => new RoslynBackendIdentity(
                 launcher.Resolution?.Version ?? RoslynServerManifest.Version,
-                launcher.ProcessId));
+                launcher.ProcessId),
+            // D101: the real launcher's child is the only one asked to compact; the scripted
+            // backends above keep the no-op, because the process id they report is not theirs.
+            compactor: new DiagnosticsIpcCompactor(logger));
 
         // The seam runs both ways by construction: the engine takes the factory, and the factory
         // needs something to host with. Claimed here, before Start() can connect (D92).

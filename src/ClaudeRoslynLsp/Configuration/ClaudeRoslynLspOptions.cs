@@ -247,12 +247,12 @@ internal sealed record ClaudeRoslynLspOptions
     /// Roslyn child runs with. Default <see cref="DefaultGcConserveMemory"/>; 0 sets nothing.
     /// </summary>
     /// <remarks>
-    /// The runtime's own knob for how hard the garbage collector works to give fragmented space back
-    /// rather than keep it committed (D104). An idle Roslyn allocates almost nothing, so no collection
-    /// ever runs to compact what a day of edits left behind; conserving harder after the large
-    /// transient allocations of a compilation or a re-evaluation is what keeps that from piling up in
-    /// the first place. A <c>DOTNET_GCConserveMemory</c> already in the environment is left exactly as
-    /// it is, by the same rule as D79's <c>DOTNET_gcServer</c>.
+    /// The runtime's cap on how far gen2 may grow past its live data before the next full collection —
+    /// 1.5× at level 5 — and therefore on how much free space the collector keeps committed after a
+    /// compacting one (D104, C66): on Quartz.NET 865 MB committed instead of 1,050 MB at the default.
+    /// It does not make an idle child collect; the compactor does that (D101). A
+    /// <c>DOTNET_GCConserveMemory</c> already in the environment is left exactly as it is, by the same
+    /// rule as D79's <c>DOTNET_gcServer</c>.
     /// </remarks>
     internal int GcConserveMemory { get; init; } = DefaultGcConserveMemory;
 

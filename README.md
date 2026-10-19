@@ -806,13 +806,15 @@ though a server that becomes a host removes them by itself.
 ### Memory, and idle sessions
 
 A Roslyn child sits near its load size while a session only reads code. A session that edits,
-builds and runs tests grows it to four to six times that — compilations built for diagnostics and
-find-references, re-evaluated project snapshots, and a garbage-collected heap that is 40-65%
-fragmentation by the end of a working day — and none of it comes back on its own: an idle process
-allocates nothing, so no collection ever runs. With a dozen sessions open, one per worktree, that was
-most of a 64 GB machine.
+builds and runs tests grows it two to six times. Some of that is real workspace state — the
+compilations a project's first diagnostics build — but most of it is the garbage collector's:
+background collections sweep rather than compact, so a day of edits leaves 40-70% of the heap as free
+space, and even a compacting collection keeps most of what it frees committed for the next burst.
+None of it comes back on its own, because an idle process allocates nothing and so no collection ever
+runs. With a dozen sessions open, one per worktree, that was most of a 64 GB machine. The
+measurements are C66 in [`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md).
 
-So the adapter gives it back, in three ways:
+So the adapter gives it back, in four ways:
 
 - **It recycles a grown child once the session goes idle.** About a minute after the workspace
   loads, the adapter measures the child — private bytes on Windows, where an idle process's working

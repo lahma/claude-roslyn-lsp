@@ -102,7 +102,7 @@ public class ConfigurationTests
         Assert.Equal(20, options.IdleRecycleMinutes);
         Assert.Equal(2.0, options.RecycleGrowthFactor);
         Assert.Equal(0, options.IdleShutdownMinutes);
-        Assert.Equal(5, options.GcConserveMemory);
+        Assert.Equal(7, options.GcConserveMemory);
         Assert.Null(options.GcConserveMemoryVariable);
     }
 

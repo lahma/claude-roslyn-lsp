@@ -608,10 +608,11 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
     /// </para>
     /// <para>
     /// <b>D104, <c>DOTNET_GCConserveMemory</c>, by the same rule.</b> The level caps gen2's growth
-    /// budget — 1.5× live at level 5 (dotnet/runtime <c>src/coreclr/gc/dynamic_tuning.cpp</c>) — and
-    /// the collector keeps free regions committed in proportion to that budget, so after the
-    /// compaction the idle policy asks for (D101) about half the live size stays committed instead of
-    /// about four fifths (C66). Zero means this adapter has no opinion and sets nothing at all,
+    /// budget — about 1.21× live at level 7 (dotnet/runtime <c>src/coreclr/gc/dynamic_tuning.cpp</c>)
+    /// — and the collector keeps free regions committed in proportion to that budget, so after the
+    /// compaction the idle policy asks for (D101) about a third of the live size stays committed as
+    /// free space instead of almost all of it (C66). Zero means this adapter has no opinion and sets
+    /// nothing at all,
     /// which is different from setting <c>0</c>: an unset variable lets a <c>runtimeconfig.json</c>
     /// knob decide.
     /// </para>

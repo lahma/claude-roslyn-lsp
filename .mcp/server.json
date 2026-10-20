@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.lahma/claude-roslyn-lsp",
   "description": "C# refactoring over MCP, backed by Microsoft's Roslyn language server: semantic rename, code actions, fix-all, formatting, symbol lookup and design-time diagnostics.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "repository": {
     "url": "https://github.com/lahma/claude-roslyn-lsp",
     "source": "github"
@@ -12,7 +12,7 @@
       "registryType": "nuget",
       "registryBaseUrl": "https://api.nuget.org",
       "identifier": "claude-roslyn-lsp",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "transport": {
         "type": "stdio"
       },

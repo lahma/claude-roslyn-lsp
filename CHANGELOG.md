@@ -1,3 +1,34 @@
+# 0.2.0
+
+- An idle session gives its Roslyn's memory back. Measured on a 44-project solution, most of what a
+  working day adds to the child is not workspace state but free space in its garbage-collected heap,
+  and an idle process allocates nothing, so no collection ever runs to return it. About a minute after
+  the workspace loads the adapter now measures the child — private bytes on Windows, the working set
+  elsewhere — and when nothing has asked it anything for `CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES` (20)
+  and it has grown past the larger of twice that baseline and the baseline plus 512 MB
+  (`CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR`), it is shut down cleanly. The next request relaunches it,
+  is held while the solution reloads with every open document's unsaved text replayed, and is
+  answered under the id the client is waiting on; a recycle never spends the crash budget. A shared
+  host recycles only when every attached server has been quiet, keeps its pipe and session file while
+  dormant, and is woken by whichever asks first. `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` (off by
+  default) unloads an idle child whatever its size.
+- Before deciding, the adapter asks an idle child's runtime for a compacting collection over .NET's
+  own diagnostics channel, so a recycle judges what the workspace still holds rather than free space:
+  on Quartz.NET one collection took a child from 1,023 MB to 863 MB with no reload at all.
+- The child runs with `DOTNET_GCConserveMemory=7` unless `CLAUDE_ROSLYN_LSP_GC_CONSERVE` or an
+  inherited `DOTNET_GCConserveMemory` says otherwise. That caps the free space its collector keeps
+  committed: the same workload ended at 1,236 MB instead of 1,465 MB, and at 1,028 MB instead of
+  1,366 MB after a compaction, for no measurable CPU.
+- `getWorkspaceStatus` reports `recycles`, `baselineMegabytes`, `lastRecycleAt` and
+  `privateMegabytes`. `doctor` lists every shared host on the machine with its Roslyn's working set
+  and private bytes, state, idle time, recycles, baseline and attached clients, plus a total. Session
+  files are rewritten atomically, and stale ones, orphaned locks and leftover temporary files are
+  swept by every new host and by `doctor --fix` — never a live host of another version.
+- Fixed: a relaunched backend's endpoint was never disposed, leaking a process handle per relaunch;
+  registrations accumulated across relaunches; an attached engine kept reporting a dead Roslyn's
+  process id after its host relaunched; and a client attaching while the host reloaded was told the
+  workspace was loaded. Roslyn stays pinned at 5.12.0-1.26426.8.
+
 # 0.1.0
 
 - First release. One Native AOT binary that puts Microsoft's `roslyn-language-server` — pinned at

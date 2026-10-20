@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "claude-roslyn-lsp",
   "displayName": "Roslyn C# for Claude Code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Microsoft's Roslyn language server, mediated for Claude Code: navigation and edit-time diagnostics over LSP, plus an MCP refactoring surface (rename, code actions, fix-all, format, diagnostics on demand).",
   "author": {
     "name": "lahma",
@@ -16,7 +16,7 @@
   "lspServers": {
     "roslyn": {
       "command": "dnx",
-      "args": ["claude-roslyn-lsp@0.1.0", "--yes", "lsp"],
+      "args": ["claude-roslyn-lsp@0.2.0", "--yes", "lsp"],
       "extensionToLanguage": {
         ".cs": "csharp"
       },
@@ -37,7 +37,7 @@
   "mcpServers": {
     "roslyn": {
       "command": "dnx",
-      "args": ["claude-roslyn-lsp@0.1.0", "--yes", "mcp"],
+      "args": ["claude-roslyn-lsp@0.2.0", "--yes", "mcp"],
       "env": {
         "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_SOLUTION": "${user_config.solution}",
         "CLAUDE_PLUGIN_OPTION_CLAUDE_ROSLYN_LSP_ROSLYN_VERSION": "${user_config.roslyn_version}",

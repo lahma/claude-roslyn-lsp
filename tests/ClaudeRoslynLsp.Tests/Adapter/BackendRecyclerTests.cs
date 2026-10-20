@@ -324,6 +324,152 @@ public class BackendRecyclerTests
         Assert.Equal(ProcessId, status.ProcessId);
     }
 
+    /// <summary>
+    /// A target that throws once its gate is dormant is believed about its state, not assumed to be
+    /// running: a policy that went back to running over a dormant gate would never wake it
+    /// (finding 2).
+    /// </summary>
+    [Fact]
+    public async Task ATargetThatThrowsOnceItIsDormantLeavesThePolicyDormant()
+    {
+        var harness = new Harness();
+        harness.Load(400);
+        harness.Time.Advance(BackendRecycler.BaselineDelay);
+        harness.Memory = 1500 * Megabyte;
+        harness.Target.Throws = true;
+        harness.Target.IsDormant = true;
+
+        await harness.AdvanceMinutesAsync(20);
+
+        Assert.Single(harness.Target.Decisions);
+        Assert.Equal(BackendPhase.Dormant, harness.Recycler.Status.Phase);
+        Assert.Equal(1, harness.Recycler.Status.Recycles);
+
+        harness.Recycler.RecordActivity();
+        Assert.Equal(1, harness.Target.Wakes);
+    }
+
+    /// <summary>And one that throws before it stopped anything is still running.</summary>
+    [Fact]
+    public async Task ATargetThatThrowsBeforeStoppingAnythingIsStillRunning()
+    {
+        var harness = new Harness();
+        harness.Load(400);
+        harness.Time.Advance(BackendRecycler.BaselineDelay);
+        harness.Memory = 1500 * Megabyte;
+        harness.Target.Throws = true;
+
+        await harness.AdvanceMinutesAsync(20);
+
+        Assert.NotEmpty(harness.Target.Decisions);
+        Assert.Equal(BackendPhase.Running, harness.Recycler.Status.Phase);
+        Assert.Equal(0, harness.Recycler.Status.Recycles);
+    }
+
+    /// <summary>
+    /// A wake whose relaunch failed is dormant again, so the next activity wakes it once more — and a
+    /// failure reported for a backend that is not waking changes nothing (finding 5).
+    /// </summary>
+    [Fact]
+    public async Task AFailedWakeIsDormantAgainAndTheNextActivityWakesItOnceMore()
+    {
+        var harness = new Harness();
+        harness.Load(400);
+        harness.Time.Advance(BackendRecycler.BaselineDelay);
+        harness.Memory = 1500 * Megabyte;
+
+        await harness.AdvanceMinutesAsync(20);
+        Assert.Equal(BackendPhase.Dormant, harness.Recycler.Status.Phase);
+
+        harness.Recycler.RecordActivity();
+        Assert.Equal(1, harness.Target.Wakes);
+        Assert.Equal(BackendPhase.Starting, harness.Recycler.Status.Phase);
+
+        harness.Recycler.OnWakeFailed();
+
+        Assert.Equal(BackendPhase.Dormant, harness.Recycler.Status.Phase);
+        Assert.Null(harness.Recycler.Status.ProcessId);
+
+        harness.Recycler.RecordActivity();
+        Assert.Equal(2, harness.Target.Wakes);
+
+        harness.Load(400, alreadyLaunching: true);
+        harness.Recycler.OnWakeFailed();
+
+        Assert.Equal(BackendPhase.Running, harness.Recycler.Status.Phase);
+    }
+
+    /// <summary>
+    /// A gate that opened on its budget is served from, but not measured: the baseline waits for the
+    /// load to finish, and is taken once (finding 6, D100).
+    /// </summary>
+    [Fact]
+    public void NoBaselineIsTakenFromAWorkspaceThatHasNotLoaded()
+    {
+        var harness = new Harness();
+        harness.Recycler.OnLaunching();
+        harness.Recycler.OnLaunched(ProcessId);
+        harness.Memory = 150 * Megabyte;
+        harness.Recycler.OnWorkspaceReady(loaded: false);
+
+        Assert.Equal(BackendPhase.Running, harness.Recycler.Status.Phase);
+
+        harness.Time.Advance(BackendRecycler.BaselineDelay * 3);
+        Assert.Null(harness.Recycler.Status.BaselineBytes);
+
+        harness.Memory = 600 * Megabyte;
+        harness.Recycler.OnWorkspaceLoaded();
+        harness.Time.Advance(BackendRecycler.BaselineDelay);
+
+        Assert.Equal(600 * Megabyte, harness.Recycler.Status.BaselineBytes);
+
+        harness.Memory = 900 * Megabyte;
+        harness.Recycler.OnWorkspaceLoaded();
+        harness.Time.Advance(BackendRecycler.BaselineDelay);
+
+        Assert.Equal(600 * Megabyte, harness.Recycler.Status.BaselineBytes);
+    }
+
+    /// <summary>
+    /// Which process is measured and whether it may be compacted, from what the server announces
+    /// (C45) and what this process launched (finding 7, D101).
+    /// </summary>
+    [Theory]
+    [InlineData(4242, null, 4242, false, false)]
+    [InlineData(null, 999, 999, true, false)]
+    [InlineData(4242, 4242, 4242, true, false)]
+    [InlineData(4242, 999, 999, false, true)]
+    [InlineData(null, null, null, false, false)]
+    public void OnlyTheLaunchedChildIsEverCompacted(
+        int? announced,
+        int? launched,
+        int? measured,
+        bool compactable,
+        bool mismatch)
+    {
+        Assert.Equal((measured, compactable, mismatch), BackendRecycler.ChooseProcess(announced, launched));
+    }
+
+    /// <summary>A process that may not be compacted is still measured, and still recycled when it grows.</summary>
+    [Fact]
+    public async Task AProcessThatMayNotBeCompactedIsMeasuredButNeverCompacted()
+    {
+        var harness = new Harness();
+        harness.Compactor.Requested = true;
+
+        harness.Recycler.OnLaunching();
+        harness.Recycler.OnLaunched(ProcessId, compactable: false);
+        harness.Memory = 400 * Megabyte;
+        harness.Recycler.OnWorkspaceReady();
+        harness.Time.Advance(BackendRecycler.BaselineDelay);
+        harness.Memory = 1500 * Megabyte;
+
+        await harness.AdvanceMinutesAsync(20);
+
+        Assert.Equal(0, harness.Compactor.Calls);
+        Assert.Single(harness.Target.Decisions);
+    }
+
     /// <summary>Every policy read from the environment means what the variables say.</summary>
     [Fact]
     public void ThePolicyIsReadFromTheOptions()
@@ -417,6 +563,12 @@ public class BackendRecyclerTests
         /// <summary>Runs while a recycle is "stopping", to simulate a request racing it.</summary>
         internal Action? DuringRecycle { get; set; }
 
+        /// <summary>Whether a recycle throws instead of answering.</summary>
+        internal bool Throws { get; set; }
+
+        /// <inheritdoc />
+        public bool IsDormant { get; set; }
+
         internal List<RecycleDecision> Decisions { get; } = [];
 
         internal int Wakes { get; private set; }
@@ -429,7 +581,10 @@ public class BackendRecyclerTests
             }
 
             DuringRecycle?.Invoke();
-            return Task.FromResult(Stops);
+
+            return Throws
+                ? Task.FromException<bool>(new InvalidOperationException("The scripted stop failed part way."))
+                : Task.FromResult(Stops);
         }
 
         /// <summary>What an owner's wake does to the policy: a new backend is being launched.</summary>

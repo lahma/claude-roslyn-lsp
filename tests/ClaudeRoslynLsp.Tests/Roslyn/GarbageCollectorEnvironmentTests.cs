@@ -72,21 +72,77 @@ public class GarbageCollectorEnvironmentTests
     {
         var defaults = ClaudeRoslynLspOptions.FromEnvironment(static _ => null);
 
-        var byDefault = DoctorCommand.DescribeGcConserve(defaults, inherited: null);
+        var byDefault = DoctorCommand.DescribeGcConserve(defaults, static _ => null);
         Assert.Equal(7, byDefault.Level);
         Assert.Equal("default", byDefault.Source);
 
-        var configured = DoctorCommand.DescribeGcConserve(defaults with { GcConserveMemory = 2, GcConserveMemoryVariable = "CLAUDE_ROSLYN_LSP_GC_CONSERVE" }, inherited: null);
+        var configured = DoctorCommand.DescribeGcConserve(defaults with { GcConserveMemory = 2, GcConserveMemoryVariable = "CLAUDE_ROSLYN_LSP_GC_CONSERVE" }, static _ => null);
         Assert.Equal(2, configured.Level);
         Assert.Equal("CLAUDE_ROSLYN_LSP_GC_CONSERVE", configured.Source);
 
-        var off = DoctorCommand.DescribeGcConserve(defaults with { GcConserveMemory = 0 }, inherited: null);
+        var off = DoctorCommand.DescribeGcConserve(defaults with { GcConserveMemory = 0 }, static _ => null);
         Assert.Null(off.Level);
         Assert.Contains("not set", off.Text, StringComparison.Ordinal);
 
-        var inherited = DoctorCommand.DescribeGcConserve(defaults with { GcConserveMemory = 2 }, inherited: "9");
+        var inherited = DoctorCommand.DescribeGcConserve(
+            defaults with { GcConserveMemory = 2 },
+            static name => name == RoslynProcessLauncher.GcConserveMemoryVariable ? "9" : null);
         Assert.Equal(9, inherited.Level);
         Assert.Equal(RoslynProcessLauncher.GcConserveMemoryVariable, inherited.Source);
+    }
+
+    /// <summary>
+    /// The runtime reads every setting under <c>COMPlus_</c> as well as <c>DOTNET_</c>, so an inherited
+    /// <c>COMPlus_</c> value is the user's choice too — and writing the <c>DOTNET_</c> one beside it
+    /// would silently overrule it, since that spelling wins (finding 10 of the 0.2.0 review).
+    /// </summary>
+    [Fact]
+    public void TheOlderSpellingIsJustAsExplicit()
+    {
+        var environment = Environment_(("COMPlus_gcServer", "1"), ("COMPlus_GCConserveMemory", "0"));
+
+        RoslynProcessLauncher.ApplyGarbageCollectorEnvironment(environment, RoslynGarbageCollector.Workstation, 7);
+
+        Assert.False(environment.ContainsKey("DOTNET_gcServer"));
+        Assert.False(environment.ContainsKey(RoslynProcessLauncher.GcConserveMemoryVariable));
+        Assert.Equal("1", environment["COMPlus_gcServer"]);
+        Assert.Equal("0", environment["COMPlus_GCConserveMemory"]);
+    }
+
+    /// <summary><c>doctor</c> names the spelling that is set, and the runtime's preference when both are.</summary>
+    [Fact]
+    public void DoctorNamesWhicheverSpellingIsSet()
+    {
+        var defaults = ClaudeRoslynLspOptions.FromEnvironment(static _ => null);
+
+        var older = DoctorCommand.DescribeGcConserve(
+            defaults,
+            static name => name == "COMPlus_GCConserveMemory" ? "0" : null);
+
+        Assert.Equal(0, older.Level);
+        Assert.Equal("COMPlus_GCConserveMemory", older.Source);
+        Assert.Contains("COMPlus_GCConserveMemory", older.Text, StringComparison.Ordinal);
+
+        var both = DoctorCommand.DescribeGcConserve(
+            defaults,
+            static name => name switch
+            {
+                "COMPlus_GCConserveMemory" => "0",
+                "DOTNET_GCConserveMemory" => "5",
+                _ => null,
+            });
+
+        Assert.Equal(5, both.Level);
+        Assert.Equal(RoslynProcessLauncher.GcConserveMemoryVariable, both.Source);
+
+        var server = DoctorCommand.DescribeGarbageCollector(
+            defaults,
+            static name => name == "COMPlus_gcServer" ? "1" : null);
+
+        Assert.StartsWith("server", server, StringComparison.Ordinal);
+        Assert.Contains("COMPlus_gcServer=1", server, StringComparison.Ordinal);
+
+        Assert.StartsWith("workstation", DoctorCommand.DescribeGarbageCollector(defaults, static _ => null), StringComparison.Ordinal);
     }
 
     private static Dictionary<string, string?> Environment_(params (string Name, string Value)[] inherited)

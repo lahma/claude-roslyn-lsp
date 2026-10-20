@@ -225,11 +225,9 @@ internal static class DoctorCommand
         }
 
         Item(text, "cache", report.Paths.RoslynCacheRoot + FormatFreeSpace(report.FreeBytes));
-        Item(text, "garbage collector", DescribeGarbageCollector(report.Options));
+        Item(text, "garbage collector", DescribeGarbageCollector(report.Options, Environment.GetEnvironmentVariable));
 
-        var conserve = DescribeGcConserve(
-            report.Options,
-            Environment.GetEnvironmentVariable(RoslynProcessLauncher.GcConserveMemoryVariable));
+        var conserve = DescribeGcConserve(report.Options, Environment.GetEnvironmentVariable);
 
         Item(text, "gc conserve memory", conserve.Text);
         text.AppendLine();
@@ -388,11 +386,9 @@ internal static class DoctorCommand
             WriteNullableString(writer, "directory", report.Resolution.Directory);
             WriteNullableString(writer, "launchTarget", report.Resolution.LaunchTarget);
             writer.WriteBoolean("verified", report.Resolution.Verified);
-            writer.WriteString("garbageCollector", DescribeGarbageCollector(report.Options));
+            writer.WriteString("garbageCollector", DescribeGarbageCollector(report.Options, Environment.GetEnvironmentVariable));
 
-            var conserve = DescribeGcConserve(
-                report.Options,
-                Environment.GetEnvironmentVariable(RoslynProcessLauncher.GcConserveMemoryVariable));
+            var conserve = DescribeGcConserve(report.Options, Environment.GetEnvironmentVariable);
 
             if (conserve.Level is { } level)
             {
@@ -526,27 +522,33 @@ internal static class DoctorCommand
     /// </summary>
     /// <remarks>
     /// The same three-way answer as the garbage collector line beside it — this adapter's default, the
-    /// <c>CLAUDE_ROSLYN_LSP_GC_CONSERVE</c> variable, or a <c>DOTNET_GCConserveMemory</c> already in the
-    /// environment, which wins over both and is passed through untouched.
+    /// <c>CLAUDE_ROSLYN_LSP_GC_CONSERVE</c> variable, or a <c>DOTNET_GCConserveMemory</c> (or
+    /// <c>COMPlus_GCConserveMemory</c>) already in the environment, which wins over both and is passed
+    /// through untouched. The line names whichever spelling is set, because that is the variable the
+    /// reader has to go and unset.
     /// </remarks>
     /// <param name="options">The resolved configuration.</param>
-    /// <param name="inherited">The <c>DOTNET_GCConserveMemory</c> in this process's environment, if any.</param>
+    /// <param name="readEnvironment">Reads this process's environment.</param>
     internal static (int? Level, string Source, string Text) DescribeGcConserve(
         ClaudeRoslynLspOptions options,
-        string? inherited)
+        Func<string, string?> readEnvironment)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(readEnvironment);
 
-        if (inherited is { Length: > 0 })
+        if (RoslynProcessLauncher.FindInherited(RoslynProcessLauncher.GcConserveMemoryVariables, readEnvironment)
+            is { } found)
         {
+            var (name, inherited) = found;
+
             int? level = int.TryParse(inherited, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
                 ? parsed
                 : null;
 
             return (
                 level,
-                RoslynProcessLauncher.GcConserveMemoryVariable,
-                inherited + "  (" + RoslynProcessLauncher.GcConserveMemoryVariable
+                name,
+                inherited + "  (" + name
                 + " in this environment overrides CLAUDE_ROSLYN_LSP_GC_CONSERVE and is passed through)");
         }
 
@@ -577,16 +579,22 @@ internal static class DoctorCommand
     /// <remarks>
     /// Worth a line of its own because it is the difference between 577 MB and 2 GB on a large
     /// solution (C54) and because there are three ways to arrive at it — this adapter's default, the
-    /// <c>CLAUDE_ROSLYN_LSP_GC</c> variable, and a <c>DOTNET_gcServer</c> already in the environment,
-    /// which wins over both. "Which one did I get" is the first question of any report about memory.
+    /// <c>CLAUDE_ROSLYN_LSP_GC</c> variable, and a <c>DOTNET_gcServer</c> (or <c>COMPlus_gcServer</c>)
+    /// already in the environment, which wins over both. "Which one did I get" is the first question
+    /// of any report about memory.
     /// </remarks>
     /// <param name="options">The resolved configuration.</param>
-    private static string DescribeGarbageCollector(ClaudeRoslynLspOptions options)
+    /// <param name="readEnvironment">Reads this process's environment.</param>
+    internal static string DescribeGarbageCollector(ClaudeRoslynLspOptions options, Func<string, string?> readEnvironment)
     {
-        if (Environment.GetEnvironmentVariable("DOTNET_gcServer") is { Length: > 0 } inherited)
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(readEnvironment);
+
+        if (RoslynProcessLauncher.FindInherited(RoslynProcessLauncher.GcServerVariables, readEnvironment)
+            is { } found)
         {
-            return (inherited is "0" ? "workstation" : "server")
-                   + "  (DOTNET_gcServer=" + inherited + " in this environment overrides CLAUDE_ROSLYN_LSP_GC)";
+            return (found.Value is "0" ? "workstation" : "server")
+                   + "  (" + found.Name + "=" + found.Value + " in this environment overrides CLAUDE_ROSLYN_LSP_GC)";
         }
 
         return RoslynLaunchRequest.ParseGarbageCollector(options.GarbageCollector, NullLogger.Instance)

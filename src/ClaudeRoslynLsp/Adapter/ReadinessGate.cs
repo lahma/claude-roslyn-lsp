@@ -207,6 +207,19 @@ internal sealed partial class ReadinessGate : IDisposable
     internal event Action? HeldWhileDormant;
 
     /// <summary>
+    /// Raised when <c>projectInitializationComplete</c> arrives after the load budget already ran
+    /// out and the gate opened as <see cref="ReadinessState.LoadTimedOut"/>.
+    /// </summary>
+    /// <remarks>
+    /// The gate moves to <see cref="ReadinessState.ProjectsLoaded"/> without raising
+    /// <see cref="Opened"/> again — nothing was held, and the bridges were armed when it timed out —
+    /// but the idle policy has to hear about it: a baseline taken at the timeout is a sample of a
+    /// workspace still loading, and a threshold built on it recycles a large solution every idle
+    /// period (D100).
+    /// </remarks>
+    internal event Action? LoadedLate;
+
+    /// <summary>
     /// Whether notifications may be forwarded. True from the moment Roslyn has answered
     /// <c>initialize</c>: a notification sent before that is simply lost, because Roslyn refuses
     /// everything until it is initialised.
@@ -505,6 +518,68 @@ internal sealed partial class ReadinessGate : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Puts a waking gate back to sleep because the relaunch it was waiting for failed, refusing what
+    /// it held (finding 5 of the 0.2.0 review, D96).
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="MarkFailed"/>: a wake is a launch the session would never have made if it had
+    /// kept its long-lived child, so a transient failure in it — a pipe that took more than thirty
+    /// seconds to connect on a loaded box, a payload cache cleaned while the backend was dormant — must
+    /// not end a session that was working. The requests waiting for this wake are answered with the
+    /// reason; the next one is held and wakes the backend again. The owner counts consecutive failures
+    /// and only then gives up with <see cref="MarkFailed"/>, so a setup that is genuinely broken still
+    /// says so.
+    /// </remarks>
+    /// <param name="reason">What went wrong, in a sentence that says the next request tries again.</param>
+    /// <returns>False when the gate was not waking, so nothing changed.</returns>
+    internal bool ReturnToDormant(string reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+
+        HeldRequest[] drained;
+
+        lock (_lock)
+        {
+            if (_state is not (ReadinessState.Starting or ReadinessState.RoslynInitialized))
+            {
+                return false;
+            }
+
+            _state = ReadinessState.Dormant;
+            _startedAt = 0;
+            _failureReason = reason;
+
+            _timeoutTimer?.Dispose();
+            _noticeTimer?.Dispose();
+            _timeoutTimer = null;
+            _noticeTimer = null;
+
+            drained = [.. _held];
+            _held.Clear();
+        }
+
+        Log.WakeFailed(_logger, drained.Length, reason);
+
+        // The reason is in place while the held requests are answered, so each of them carries it;
+        // then it is cleared, because this is not a failed session and a later request is held and
+        // wakes the backend again rather than being refused.
+        foreach (var request in drained)
+        {
+            request.Release(GateOutcome.Failed);
+        }
+
+        lock (_lock)
+        {
+            if (_state == ReadinessState.Dormant)
+            {
+                _failureReason = null;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>Records that there is no usable backend, and refuses everything held.</summary>
     /// <param name="reason">What went wrong, in a sentence the user can act on.</param>
     internal void MarkFailed(string reason)
@@ -538,6 +613,25 @@ internal sealed partial class ReadinessGate : IDisposable
     {
         HeldRequest[] drained;
         TimeSpan elapsed;
+        var late = false;
+
+        lock (_lock)
+        {
+            if (_state == ReadinessState.LoadTimedOut && state == ReadinessState.ProjectsLoaded)
+            {
+                // The load finished after all. Nothing is held in an open gate, so there is nothing
+                // to release; what changes is that the workspace is now really loaded (LoadedLate).
+                _state = ReadinessState.ProjectsLoaded;
+                late = true;
+            }
+        }
+
+        if (late)
+        {
+            Log.LoadedLate(_logger);
+            LoadedLate?.Invoke();
+            return;
+        }
 
         lock (_lock)
         {
@@ -686,5 +780,18 @@ internal sealed partial class ReadinessGate : IDisposable
             Message = "The dormant gate is waking for a relaunch with {Count} request(s) held; the load " +
                       "budget starts now.")]
         internal static partial void Waking(ILogger logger, int count);
+
+        [LoggerMessage(
+            EventId = 408,
+            Level = LogLevel.Information,
+            Message = "The workspace finished loading after its load budget had already run out.")]
+        internal static partial void LoadedLate(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 409,
+            Level = LogLevel.Warning,
+            Message = "Relaunching the idle-recycled backend failed ({Reason}); {Count} held request(s) were " +
+                      "refused, and the gate is dormant again so the next request tries once more.")]
+        internal static partial void WakeFailed(ILogger logger, int count, string reason);
     }
 }

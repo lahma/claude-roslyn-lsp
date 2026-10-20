@@ -87,6 +87,19 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
     /// </remarks>
     internal const string SetOptionMethod = "claude-roslyn-lsp/setOption";
 
+    /// <summary>
+    /// The custom notification an attached MCP engine sends at the start of every tool call (D95).
+    /// </summary>
+    /// <remarks>
+    /// It is what lets the host tell a person's question from bridge traffic. Diagnostic pulls are
+    /// not counted as activity, because an attached LSP session sends them in answer to the refreshes
+    /// this host fans out — but an MCP <c>getDiagnostics scope: "solution"</c> sends nothing
+    /// <em>except</em> a <c>workspace/diagnostic</c> pull, so without this a session whose only
+    /// question was a solution-wide diagnostic pass would look idle and be recycled under it. The
+    /// message carries nothing; it is counted and swallowed.
+    /// </remarks>
+    internal const string ActivityMethod = "claude-roslyn-lsp/activity";
+
     /// <summary>Notifications every attached client is given verbatim.</summary>
     /// <remarks>
     /// Four from Roslyn, and one this host originates itself (D105): the readiness and diagnostics
@@ -438,6 +451,10 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
                 _ = SetOptionAsync(client, body, idToken, isRequest);
                 return;
 
+            case ActivityMethod:
+                // Counted above, and nothing else: Roslyn has no use for it.
+                return;
+
             case "textDocument/didOpen":
             case "textDocument/didChange":
             case "textDocument/didClose":
@@ -476,6 +493,12 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
     /// <para>
     /// Excluding them from the clock does not let them wait for ever: a pull that arrives while the
     /// backend is dormant is held, and a held request wakes it (D96).
+    /// </para>
+    /// <para>
+    /// The pull itself cannot say who sent it — an LSP bridge answering a refresh and an MCP tool
+    /// answering a person send the same request — so the MCP engine says so separately, with
+    /// <see cref="ActivityMethod"/> at the start of every tool call, which this method counts like
+    /// any other message.
     /// </para>
     /// </remarks>
     /// <param name="method">The message's method.</param>

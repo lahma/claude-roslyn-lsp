@@ -388,6 +388,102 @@ public class ReadinessGateTests
         Assert.Equal(0, released);
     }
 
+    /// <summary>
+    /// A load that finishes after its budget ran out moves the gate to loaded without opening it a
+    /// second time, and says so once (finding 6, D100).
+    /// </summary>
+    [Fact]
+    public void AWorkspaceThatLoadsAfterItsBudgetIsLoadedLateWithoutOpeningAgain()
+    {
+        using var gate = CreateGate(out var time, out _);
+        gate.Start();
+        gate.MarkRoslynInitialized();
+
+        var opened = new List<ReadinessState>();
+        var late = 0;
+        gate.Opened += opened.Add;
+        gate.LoadedLate += () => late++;
+
+        time.Advance(Timeout + TimeSpan.FromSeconds(1));
+
+        Assert.Equal(ReadinessState.LoadTimedOut, gate.State);
+        Assert.Equal([ReadinessState.LoadTimedOut], opened);
+
+        gate.MarkProjectsLoaded();
+
+        Assert.Equal(ReadinessState.ProjectsLoaded, gate.State);
+        Assert.Equal(1, late);
+        Assert.Single(opened);
+
+        gate.MarkProjectsLoaded();
+        Assert.Equal(1, late);
+    }
+
+    /// <summary>
+    /// A wake that fails puts the gate back to sleep: what waited for it is refused with the reason,
+    /// and the gate is dormant rather than failed, so the next request is held and asks again
+    /// (finding 5, D96).
+    /// </summary>
+    [Fact]
+    public void AWakeThatFailsGoesBackToSleepAndRefusesOnlyWhatWaitedForIt()
+    {
+        using var gate = CreateGate(out var time, out _);
+        gate.Start();
+        gate.MarkProjectsLoaded();
+        gate.MarkDormant();
+
+        var outcomes = new List<GateOutcome>();
+        string? message = null;
+
+        gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", outcomes.Add);
+        Assert.True(gate.MarkWaking());
+
+        gate.TryHold(JsonRpcId.FromNumber(2), "textDocument/hover", outcome =>
+        {
+            outcomes.Add(outcome);
+            message = gate.FailureMessage;
+        });
+
+        Assert.True(gate.ReturnToDormant("the relaunch failed; the next request tries again"));
+
+        Assert.Equal(ReadinessState.Dormant, gate.State);
+        Assert.Equal([GateOutcome.Failed, GateOutcome.Failed], outcomes);
+        Assert.Contains("the next request tries again", message, StringComparison.Ordinal);
+        Assert.Equal(0, gate.HeldCount);
+        Assert.Null(gate.FailureReason);
+
+        var asked = 0;
+        gate.HeldWhileDormant += () => asked++;
+
+        Assert.True(gate.TryHold(JsonRpcId.FromNumber(3), "textDocument/definition", outcomes.Add));
+        Assert.Equal(1, gate.HeldCount);
+        Assert.Equal(1, asked);
+
+        // Asleep: no load budget runs, and nothing is refused.
+        time.Advance(Timeout * 2);
+
+        Assert.Equal(ReadinessState.Dormant, gate.State);
+        Assert.Equal(2, outcomes.Count);
+    }
+
+    /// <summary>Only a waking gate can go back to sleep; an open or a dormant one is left as it is.</summary>
+    [Fact]
+    public void OnlyAWakingGateCanGoBackToSleep()
+    {
+        using var gate = CreateGate(out _, out _);
+        gate.Start();
+        gate.MarkProjectsLoaded();
+
+        Assert.False(gate.ReturnToDormant("not waking"));
+        Assert.Equal(ReadinessState.ProjectsLoaded, gate.State);
+
+        gate.MarkDormant();
+
+        Assert.False(gate.ReturnToDormant("not waking"));
+        Assert.Equal(ReadinessState.Dormant, gate.State);
+        Assert.Null(gate.FailureReason);
+    }
+
     private static ReadinessGate CreateGate(out TestTimeProvider time, out List<string> notices)
     {
         var clock = new TestTimeProvider();

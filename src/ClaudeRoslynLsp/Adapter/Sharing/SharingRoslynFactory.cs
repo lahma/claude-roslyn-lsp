@@ -67,6 +67,7 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
     private SharedSession? _published;
     private ITimer? _heartbeat;
     private DateTimeOffset _publishedActivity;
+    private bool _republish;
     private string? _solutionPath;
     private string? _key;
     private int _connectionGeneration;
@@ -265,10 +266,12 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
             owner?.Recycler.StatusChanged -= OnStatusChanged;
 
             // The file first: a process reading it while the pipe is being torn down would connect and
-            // then immediately see the connection close, which costs it a whole attach cycle.
+            // then immediately see the connection close, which costs it a whole attach cycle. Only a
+            // file that still names this host, though: one another process has taken over is its
+            // live record (D102).
             if (Key is { } key)
             {
-                _registry.Delete(key);
+                _registry.DeleteIfOwned(key, Environment.ProcessId, host.PipeName);
             }
         }
 
@@ -393,7 +396,10 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
             SharedSession.PipeTransport,
             pipeName,
             _solutionPath ?? string.Empty,
-            _time.GetUtcNow());
+            _time.GetUtcNow())
+        {
+            PidNamespace = _registry.PidNamespace,
+        };
 
         var published = _registry.Write(Key!, Describe(session, owner.Recycler.Status, attachedClients: 0));
 
@@ -427,8 +433,17 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
 
         // D103: a process that has just become a host is the one that pays for tidying up after the
         // ones that went before it. This file is live and the lock is held by the caller right now,
-        // so the sweep cannot touch either.
-        _registry.Sweep(apply: true);
+        // so the sweep cannot touch either. And it is housekeeping: nothing it can run into may fail
+        // a host that has already published itself, because that would leave a file naming a pipe
+        // whose owner gave up.
+        try
+        {
+            _registry.Sweep(apply: true);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            Log.SweepFailed(_logger, exception.Message);
+        }
 
         return true;
     }
@@ -469,11 +484,50 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
 
             var status = owner.Recycler.Status;
 
-            if (_registry.Update(key, Describe(session, status, host.ClientCount)))
+            switch (_registry.Update(key, Describe(session, status, host.ClientCount)))
             {
-                _publishedActivity = status.LastActivityAt;
+                case SessionUpdate.Written:
+                    _publishedActivity = status.LastActivityAt;
+                    _republish = false;
+                    break;
+
+                case SessionUpdate.NotOurs:
+                    StopPublishing(host, owner, key);
+                    break;
+
+                default:
+                    // Busy or failed: the next heartbeat writes it, whatever the activity says.
+                    _republish = true;
+                    break;
             }
         }
+    }
+
+    /// <summary>
+    /// The session file is no longer this host's: stop writing it, for good (D102). Called under the
+    /// publish lock.
+    /// </summary>
+    /// <remarks>
+    /// Another process took the solution over — it found the file missing, or unusable to its
+    /// version, and published itself. This host keeps serving the clients already attached to its
+    /// pipe, and anybody arriving from now on finds the newcomer instead; what it must not do is
+    /// write the file back, because then the two hosts would take turns replacing each other's
+    /// record for as long as both run.
+    /// </remarks>
+    private void StopPublishing(SharedRoslynHost host, ISharedEngineHost owner, string key)
+    {
+        lock (_lock)
+        {
+            _published = null;
+        }
+
+        _heartbeat?.Dispose();
+        _heartbeat = null;
+
+        host.ClientsChanged -= OnClientsChanged;
+        owner.Recycler.StatusChanged -= OnStatusChanged;
+
+        Log.TakenOver(_logger, key);
     }
 
     /// <summary>Rewrites the file when there was activity since the last write.</summary>
@@ -495,7 +549,7 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
 
         lock (_publishLock)
         {
-            due = owner.Recycler.Status.LastActivityAt > _publishedActivity;
+            due = _republish || owner.Recycler.Status.LastActivityAt > _publishedActivity;
         }
 
         if (due)
@@ -551,6 +605,7 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
             // Passed straight through, and that is the point of having it (D97): killing a Roslyn that
             // ignored `exit` must not take the sharing down the way disposing this wrapper does.
             Terminate = inner.Terminate,
+            LaunchedProcessId = inner.LaunchedProcessId,
         };
     }
 
@@ -590,6 +645,19 @@ internal sealed partial class SharingRoslynFactory : IRoslynConnectionFactory
             Message = "No solution is configured, so this Roslyn is not shared; it serves opened files " +
                       "in misc-files mode for this process alone.")]
         internal static partial void NoSolution(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 5606,
+            Level = LogLevel.Warning,
+            Message = "Tidying the session directory failed ({Reason}); this process hosts regardless.")]
+        internal static partial void SweepFailed(ILogger logger, string reason);
+
+        [LoggerMessage(
+            EventId = 5607,
+            Level = LogLevel.Information,
+            Message = "Session {Key}'s file now names another host; this process stops writing it and keeps " +
+                      "serving the clients already attached to its pipe.")]
+        internal static partial void TakenOver(ILogger logger, string key);
 
         [LoggerMessage(
             EventId = 5604,

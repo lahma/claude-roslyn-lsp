@@ -81,9 +81,9 @@ can load anything.
 configuration asks for the server one. On OrchardCore that is the difference between about 1.9 GB
 and **577 MB**, for roughly eight seconds more on the load — and this adapter exists to be run
 beside a model's tool calls on the same machine, so the memory is the side worth taking. Set
-`CLAUDE_ROSLYN_LSP_GC=server` to buy the seconds back; an explicit `DOTNET_gcServer` in the
-environment wins over both and is never overwritten, and `doctor` prints which of the three is in
-effect.
+`CLAUDE_ROSLYN_LSP_GC=server` to buy the seconds back; an explicit `DOTNET_gcServer` — or the older
+`COMPlus_gcServer` spelling — in the environment wins over both and is never overwritten, and
+`doctor` prints which of the three is in effect.
 
 **A solution-wide `getDiagnostics` is not a one-second call.** The per-file pass is; the first
 solution-wide one compiles every project, which took about a minute on Quartz.NET's 30 and did not
@@ -800,8 +800,12 @@ what the first release did in every case. `CLAUDE_ROSLYN_LSP_SHARE=off` turns sh
 deliberately.
 
 `claude-roslyn-lsp doctor` lists every host on the machine with what its Roslyn holds (see
-[Memory](#memory-and-idle-sessions)); `doctor --fix` removes stale session files and orphaned locks,
-though a server that becomes a host removes them by itself.
+[Memory](#memory-and-idle-sessions)); `doctor --fix` removes stale session files and, on Windows,
+orphaned locks, though a server that becomes a host removes them by itself. Elsewhere an orphaned
+lock is an empty file and is left where it is, because removing one safely is not something those
+file systems allow. Containers that share one home directory each number their processes their own
+way, so on Linux a session file written in another container is never judged stale here — `doctor`
+says it belongs to another pid namespace instead of calling its process gone.
 
 ### Memory, and idle sessions
 
@@ -824,8 +828,11 @@ So the adapter gives it back, in four ways:
   is shut down cleanly. The **next request relaunches it**: it is held while the solution reloads,
   every open document is replayed with its unsaved text, and it is answered from the fresh workspace
   under the id the client is still waiting on. The client is told why the answer is slow, and is
-  never sent an error. A recycle never uses up the crash budget, and a crash afterwards still gets
-  both of its restarts. A child that is still loading, has a request held or in flight, or belongs to
+  never sent an error. If that relaunch itself fails — a pipe that will not connect on a loaded
+  machine, a cache cleaned while the child was gone — the requests that were waiting for it are
+  answered with an error that says the next request tries again, and the next one does; only three
+  failed relaunches in a row fail the session, the way a failed first start does. A recycle never
+  uses up the crash budget, and a crash afterwards still gets both of its restarts. A child that is still loading, has a request held or in flight, or belongs to
   another process (an attached engine) is never recycled; with a shared engine the host decides, and
   only when every server using it has been quiet.
 - **It asks an idle child to compact first.** Five minutes into a quiet spell the adapter asks the
@@ -840,7 +847,8 @@ So the adapter gives it back, in four ways:
   committed: on the same workload the child ended at 1,236 MB instead of 1,465 MB, and at 1,028 MB
   instead of 1,366 MB after the compaction, for no measurable CPU. A fresh child is about 690 MB, so
   what is left for a recycle to win back is about 340 MB rather than about 680 MB. An explicit
-  `DOTNET_GCConserveMemory` in your environment wins and is passed through.
+  `DOTNET_GCConserveMemory` — or `COMPlus_GCConserveMemory` — in your environment wins and is passed
+  through.
 - **It can unload an idle child whatever its size.** `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` is
   off by default, because every relaunch costs a whole solution load; on a machine running many
   sessions, a few hours is a reasonable setting.
@@ -877,8 +885,8 @@ what is actually in effect and is the authority when this table and the binary d
 | `CLAUDE_ROSLYN_LSP_WORKSPACE_DIAGNOSTICS` | off | Opt-in workspace-wide diagnostics for files that are not open. Needs a full-solution compiler scope, which is the expensive setting. |
 | `CLAUDE_ROSLYN_LSP_FILE_WATCHER` | `1` | The file-watch bridge. Without it, a file created by a shell command or by git never joins its project and every later answer is silently stale. `lsp` only: the `mcp` half always watches, because it has no editor telling it what changed and because a repository that needs a restore does not finish loading without it. |
 | `CLAUDE_ROSLYN_LSP_SHARE` | `1` | Whether the `lsp` and `mcp` servers share one Roslyn per solution. Off makes each of them launch one of its own, which loads the solution twice and pays for it twice in memory. `getWorkspaceStatus` reports `engine: "owned"` or `"attached"`, so which of the two happened is never a guess. |
-| `CLAUDE_ROSLYN_LSP_GC` | `workstation` | Which garbage collector the Roslyn child runs with: `workstation` or `server`. Workstation peaks around 577 MB on a 239-project solution where server peaks around 2 GB, and costs about eight seconds of load time. An explicit `DOTNET_gcServer` in the environment wins over this and is left alone. |
-| `CLAUDE_ROSLYN_LSP_GC_CONSERVE` | `7` | The `DOTNET_GCConserveMemory` level, 0–9, the Roslyn child runs with: it caps how far the child's heap may grow past its live data, so less free space stays committed after a compacting collection. `0` sets nothing. An explicit `DOTNET_GCConserveMemory` in the environment wins and is left alone. |
+| `CLAUDE_ROSLYN_LSP_GC` | `workstation` | Which garbage collector the Roslyn child runs with: `workstation` or `server`. Workstation peaks around 577 MB on a 239-project solution where server peaks around 2 GB, and costs about eight seconds of load time. An explicit `DOTNET_gcServer` or `COMPlus_gcServer` in the environment wins over this and is left alone. |
+| `CLAUDE_ROSLYN_LSP_GC_CONSERVE` | `7` | The `DOTNET_GCConserveMemory` level, 0–9, the Roslyn child runs with: it caps how far the child's heap may grow past its live data, so less free space stays committed after a compacting collection. `0` sets nothing. An explicit `DOTNET_GCConserveMemory` or `COMPlus_GCConserveMemory` in the environment wins and is left alone. |
 | `CLAUDE_ROSLYN_LSP_IDLE_RECYCLE_MINUTES` | `20` | How long a session has to be idle before a Roslyn child that has grown past its threshold is shut down to give its memory back; the next request relaunches it. 0–10080; `0` is off. See [Memory](#memory-and-idle-sessions). |
 | `CLAUDE_ROSLYN_LSP_RECYCLE_GROWTH_FACTOR` | `2` | How far past its post-load baseline the child must have grown: the threshold is the larger of baseline × factor and baseline + 512 MB. A decimal with a `.`, 1.2–20. |
 | `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` | `0` (off) | Shut the child down after this many idle minutes whatever its size; the next request relaunches it. 0–10080. |
@@ -919,9 +927,10 @@ Its **Shared engines** section answers "who is using my memory": one line per se
 each live host the Roslyn process id, the working set and private bytes `doctor` measured just now,
 the state (`starting`, `running` or `dormant`), how long ago it was last used, how many times it has
 been recycled, its baseline and how many other servers are attached; then the number of live hosts
-and the memory their Roslyn processes hold together. Stale session files, orphaned locks and
-leftover temporary files are counted, and `doctor --fix` removes them; plain `doctor` never deletes
-anything.
+and the memory their Roslyn processes hold together. Stale session files, orphaned locks (on
+Windows) and leftover temporary files are counted, and `doctor --fix` removes them; plain `doctor`
+never deletes anything, and neither form touches a session file it cannot judge — one whose process
+it is not allowed to look at, or one written in another container's pid namespace.
 
 Then it launches the server it just described and completes a real `initialize`/`shutdown`/`exit`,
 reporting what the server said and how long each step took. **It exits 0 only if that worked.**

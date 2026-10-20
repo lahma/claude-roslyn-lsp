@@ -237,8 +237,8 @@ internal sealed record ClaudeRoslynLspOptions
     /// 20.4 s; workstation GC peaks at <b>577 MB</b> and loads in 28.2 s. This adapter defaults to
     /// workstation and says so in <c>doctor</c> (D79): 8 seconds once per session is a cost a user
     /// notices and forgives, and 1.5 GB is a cost their whole machine pays for as long as the session
-    /// lasts. A <c>DOTNET_gcServer</c> already in the environment is left exactly as it is, because
-    /// somebody who set it meant it.
+    /// lasts. A <c>DOTNET_gcServer</c> — or the older <c>COMPlus_gcServer</c> — already in the
+    /// environment is left exactly as it is, because somebody who set it meant it.
     /// </remarks>
     internal string? GarbageCollector { get; init; }
 
@@ -252,8 +252,8 @@ internal sealed record ClaudeRoslynLspOptions
     /// after a compacting one (D104, C66): on Quartz.NET 717 MB committed against 534 MB live, where the
     /// runtime's default kept 1,050 MB against 555 MB.
     /// It does not make an idle child collect; the compactor does that (D101). A
-    /// <c>DOTNET_GCConserveMemory</c> already in the environment is left exactly as it is, by the same
-    /// rule as D79's <c>DOTNET_gcServer</c>.
+    /// <c>DOTNET_GCConserveMemory</c> or <c>COMPlus_GCConserveMemory</c> already in the environment is
+    /// left exactly as it is, by the same rule as D79's <c>DOTNET_gcServer</c>.
     /// </remarks>
     internal int GcConserveMemory { get; init; } = DefaultGcConserveMemory;
 

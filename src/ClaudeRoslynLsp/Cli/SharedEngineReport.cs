@@ -91,7 +91,18 @@ internal sealed class SharedEngineReport
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(sample);
 
-        var stale = registry.Sweep(apply: fix);
+        // The sweep is housekeeping, and a report that crashed on it would be the one diagnostic
+        // somebody with a broken session directory could not run (D94, D103).
+        SessionSweep stale;
+
+        try
+        {
+            stale = registry.Sweep(apply: fix);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            stale = default;
+        }
 
         var entries = registry.List()
             .Select(report => new SharedEngineEntry(

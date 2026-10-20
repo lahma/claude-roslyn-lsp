@@ -198,7 +198,7 @@ is named `claude-roslyn-lsp-{version}-{rid}` and contains the executable, `LICEN
 | macOS Apple silicon | `osx-arm64` | `claude-roslyn-lsp-{version}-osx-arm64.tar.gz` |
 
 ```bash
-tar -xzf claude-roslyn-lsp-0.1.0-linux-x64.tar.gz
+tar -xzf claude-roslyn-lsp-0.2.0-linux-x64.tar.gz
 chmod +x claude-roslyn-lsp
 ./claude-roslyn-lsp install
 ```
@@ -218,14 +218,14 @@ The same binary is published to nuget.org as
 the `McpServer` package type. `dnx` — part of the .NET 10 SDK — downloads and runs it in one step:
 
 ```bash
-dnx claude-roslyn-lsp@0.1.0 --yes doctor
+dnx claude-roslyn-lsp@0.2.0 --yes doctor
 ```
 
 `--yes` accepts the download prompt and is consumed by `dnx` itself; everything after it reaches the
 adapter. Pin the version rather than floating: a language server is something an agent runs on your
 behalf, and a pinned version is one you decided to run.
 
-**Never `dnx claude-roslyn-lsp@0.1.0 --version`.** `dnx` takes `--version` for itself, along with
+**Never `dnx claude-roslyn-lsp@0.2.0 --version`.** `dnx` takes `--version` for itself, along with
 `-v`, `--verbosity`, `--prerelease`, `--source`, `--interactive`, `-h` and about eight others, and
 prints its own usage to stdout on a parse error. Use `doctor`, which reports the version along with
 everything else.

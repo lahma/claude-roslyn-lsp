@@ -24,7 +24,7 @@
   <!-- CHANGELOG.md is the version authority: the Fallout build parses its top section and
        overrides VersionPrefix on the command line. The value below is only the local fallback. -->
   <PropertyGroup>
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>0.2.0</VersionPrefix>
   </PropertyGroup>
 
   <PropertyGroup>

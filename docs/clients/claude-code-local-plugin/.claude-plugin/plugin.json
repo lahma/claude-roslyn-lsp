@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "claude-roslyn-lsp-local",
   "displayName": "Roslyn C# (local binary)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The claude-roslyn-lsp adapter, launched from a Native AOT binary on this machine instead of from the marketplace. Load it with: claude --plugin-dir <the directory holding this .claude-plugin folder>",
   "author": {
     "name": "lahma",

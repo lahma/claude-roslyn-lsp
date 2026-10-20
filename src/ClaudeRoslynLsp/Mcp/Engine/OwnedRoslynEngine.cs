@@ -165,6 +165,13 @@ internal sealed partial class OwnedRoslynEngine
     private CompilerDiagnosticsScope? _analyzerScope;
     private WorkspaceDiagnosticReport? _lastWorkspaceReport;
     private TaskCompletionSource _diagnosticsRefreshed = Completion();
+    /// <summary>How long a ready report waits for the handshake that opened the gate to be recorded.</summary>
+    /// <remarks>
+    /// Seconds, not the load budget: the gate is already open, so the initialize answer has
+    /// arrived and is only being dispatched on another thread.
+    /// </remarks>
+    private static readonly TimeSpan HandshakeSettle = TimeSpan.FromSeconds(5);
+
     private TaskCompletionSource<byte[]> _handshake = Completion<byte[]>();
     private bool _scopeChangedSincePull;
     private bool? _organizeImports;
@@ -379,12 +386,14 @@ internal sealed partial class OwnedRoslynEngine
         _recycler.RecordActivity();
 
         Task opened;
+        Task handshake;
         ServerEndpoint? host;
         bool wakeFailed;
 
         lock (_stateLock)
         {
             opened = _opened.Task;
+            handshake = _handshake.Task;
             host = _attached ? _server : null;
 
             // The wake this call asked for may already have failed and replaced _opened (D96); that
@@ -402,6 +411,15 @@ internal sealed partial class OwnedRoslynEngine
             try
             {
                 await opened.WaitAsync(timeout, _time, cancellationToken).ConfigureAwait(false);
+
+                // An open gate whose handshake has not been recorded yet is an attached engine whose
+                // host replayed readiness right behind its initialize answer: the identity is
+                // milliseconds away, and a snapshot taken now would report no Roslyn process at all.
+                // Only an open gate: one released because a wake failed (D96) has no handshake coming.
+                if (_gate.IsOpen && !handshake.IsCompleted)
+                {
+                    await handshake.WaitAsync(HandshakeSettle, _time, cancellationToken).ConfigureAwait(false);
+                }
             }
             catch (TimeoutException)
             {
@@ -2186,35 +2204,45 @@ internal sealed partial class OwnedRoslynEngine
             handshake = _handshake;
         }
 
-        handshake.TrySetResult(
-            result.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
-                ? "{}"u8.ToArray()
-                : System.Text.Encoding.UTF8.GetBytes(result.GetRawText()));
+        var raw = result.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
+            ? "{}"u8.ToArray()
+            : System.Text.Encoding.UTF8.GetBytes(result.GetRawText());
 
-        if (result.ValueKind != JsonValueKind.Object)
+        // Completed last, and whatever happens: EnsureReadyAsync waits on it before it reports, so
+        // by the time anybody is released the process id below is already recorded. An attached
+        // engine's gate can open before this runs at all — the host replays readiness right behind
+        // its initialize answer, and the two are dispatched on different threads.
+        try
         {
-            return;
-        }
-
-        // C45: the initialize result carries a non-standard _roslyn_processId naming the process that
-        // actually holds the workspace, which is not always the one that was launched.
-        if (result.TryGetProperty("_roslyn_processId", out var pid)
-            && pid.ValueKind == JsonValueKind.Number
-            && pid.TryGetInt32(out var parsed))
-        {
-            lock (_stateLock)
+            if (result.ValueKind != JsonValueKind.Object)
             {
-                _backendProcessId = parsed;
+                return;
             }
+
+            // C45: the initialize result carries a non-standard _roslyn_processId naming the process
+            // that actually holds the workspace, which is not always the one that was launched.
+            if (result.TryGetProperty("_roslyn_processId", out var pid)
+                && pid.ValueKind == JsonValueKind.Number
+                && pid.TryGetInt32(out var parsed))
+            {
+                lock (_stateLock)
+                {
+                    _backendProcessId = parsed;
+                }
+            }
+
+            var name = result.TryGetProperty("serverInfo", out var serverInfo)
+                       && serverInfo.ValueKind == JsonValueKind.Object
+                       && serverInfo.TryGetProperty("name", out var nameValue)
+                ? nameValue.GetString() ?? "(unnamed)"
+                : "(unnamed)";
+
+            Log.BackendReady(_logger, name, _backendProcessId ?? 0);
         }
-
-        var name = result.TryGetProperty("serverInfo", out var serverInfo)
-                   && serverInfo.ValueKind == JsonValueKind.Object
-                   && serverInfo.TryGetProperty("name", out var nameValue)
-            ? nameValue.GetString() ?? "(unnamed)"
-            : "(unnamed)";
-
-        Log.BackendReady(_logger, name, _backendProcessId ?? 0);
+        finally
+        {
+            handshake.TrySetResult(raw);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------

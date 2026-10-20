@@ -29,6 +29,14 @@ namespace ClaudeRoslynLsp.Tests.Adapter.Sharing;
 public class SharedRecycleTests
 {
     private const long Megabyte = 1024 * 1024;
+    private const string ProgramUri = "file:///w/Hello.App/Program.cs";
+
+    /// <summary>One CS0029, so a pull has something to publish.</summary>
+    private const string Report = """
+        {"kind":"full","resultId":"r1","items":[
+          {"range":{"start":{"line":21,"character":16},"end":{"line":21,"character":19}},"severity":1,
+           "code":"CS0029","message":"Cannot implicitly convert type 'string' to 'int'"}]}
+        """;
 
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(20);
 
@@ -238,15 +246,208 @@ public class SharedRecycleTests
         }
     }
 
+    /// <summary>
+    /// A host whose session file another process has taken over keeps serving its own clients but
+    /// never writes the file again, and never deletes it when it stops (finding 3 of the 0.2.0
+    /// review, D102).
+    /// </summary>
+    [Fact]
+    public async Task AHostWhoseFileWasTakenOverNeverWritesOrDeletesItAgain()
+    {
+        var host = await HostedSession.StartAsync();
+
+        try
+        {
+            var path = host.Registry.FileFor(host.Key);
+            var ours = host.Registry.TryRead(host.Key)!;
+
+            // Another process found the file gone — a failed attach deletes it — and published itself.
+            host.Registry.Delete(host.Key);
+            host.Registry.Write(host.Key, ours with { PipeName = "claude-roslyn-lsp-share-newcomer", State = "starting" });
+
+            var newcomer = File.ReadAllBytes(path);
+
+            // A recycle is several state changes, each of which used to be a rewrite.
+            host.Memory = 1500 * Megabyte;
+            await host.AdvanceUntilDormantAsync();
+            await host.AdvanceMinutesAsync(2);
+
+            Assert.Equal(newcomer, File.ReadAllBytes(path));
+
+            await host.Session.DisposeAsync();
+            await host.Factory.StopHostingAsync();
+
+            Assert.Equal(newcomer, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            await host.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// The cached workspace report is about the Roslyn that answered it; when the host recycles that
+    /// Roslyn, an attached engine forgets it, or a later solution pull that outlasts its budget would
+    /// fall back to a report about a process that has gone (finding 4, C58, D105).
+    /// </summary>
+    [Fact]
+    public async Task AnAttachedEngineForgetsItsWorkspaceReportWhenTheHostRecycles()
+    {
+        await using var host = await HostedSession.StartAsync(WithWorkspaceReport);
+        using var root = TempWorkspace.Create("shared-recycle-report");
+        await using var engine = AttachEngine(host, root);
+
+        await engine.EnsureReadyAsync(Patience, Cancellation);
+        await engine.WorkspaceDiagnosticAsync([], Cancellation);
+        Assert.True(engine.HasCachedWorkspaceReport);
+
+        host.Memory = 1500 * Megabyte;
+        await host.AdvanceUntilDormantAsync();
+
+        await WaitUntilAsync(() => !engine.HasCachedWorkspaceReport);
+    }
+
+    /// <summary>
+    /// An attached engine's tool call is the host's activity even when all it sends is a diagnostic
+    /// pull, which the host does not count — it says so with a notification of its own, which Roslyn
+    /// never sees (finding 4, D95).
+    /// </summary>
+    [Fact]
+    public async Task AnAttachedEnginesToolCallIsTheHostsActivity()
+    {
+        await using var host = await HostedSession.StartAsync();
+        using var root = TempWorkspace.Create("shared-recycle-activity");
+        await using var engine = AttachEngine(host, root);
+
+        await engine.EnsureReadyAsync(Patience, Cancellation);
+
+        host.Memory = 1500 * Megabyte;
+        await host.AdvanceMinutesAsync(10);
+
+        await engine.EnsureReadyAsync(Patience, Cancellation);
+
+        var now = host.Time.GetUtcNow();
+        await WaitUntilAsync(() => host.Session.Session.Recycler.Status.LastActivityAt == now);
+
+        Assert.DoesNotContain(SharedRoslynHost.ActivityMethod, host.Inner.Latest!.ReceivedMethods);
+
+        // So the window runs from minute 10: at minute 25 the backend is still there.
+        await host.AdvanceMinutesAsync(15);
+
+        Assert.Equal(ReadinessState.ProjectsLoaded, host.Session.Session.Gate.State);
+        Assert.DoesNotContain("shutdown", host.Inner.Latest!.ReceivedMethods);
+    }
+
+    /// <summary>
+    /// An attached <c>lsp</c> session's own gate never closes while the host reloads, so the host's
+    /// announcement of a new Roslyn is the only thing that can tell it to pull its open documents
+    /// again — or their diagnostics would stay the recycled process's until the next edit
+    /// (finding 9, D105).
+    /// </summary>
+    [Fact]
+    public async Task AnAttachedSessionPullsItsOpenDocumentsAgainAfterTheHostReloads()
+    {
+        var connections = 0;
+
+        await using var host = await HostedSession.StartAsync(
+            () => WithProcessId(
+                4241 + Interlocked.Increment(ref connections),
+                RestartableFakeRoslynFactory.ScriptWithDiagnostics(Report)));
+
+        var attaching = new SharingRoslynFactory(
+            new InProcessFakeRoslynFactory(NullLogger.Instance),
+            host.Registry,
+            () => host.Solution,
+            TimeProvider.System,
+            NullLogger.Instance);
+
+        await using var attached = new SessionHarness(attaching, solution: host.Solution);
+        attaching.Own(attached.Session);
+
+        await attached.HandshakeAsync(Cancellation);
+        await WaitUntilAsync(() => attached.Session.Gate.IsOpen);
+
+        await attached.SendAsync(DidOpen(ProgramUri), Cancellation);
+        await attached.AwaitPublishAsync(ProgramUri, Cancellation);
+
+        var before = Publishes(attached, ProgramUri);
+
+        host.Memory = 1500 * Megabyte;
+        await host.AdvanceUntilDormantAsync();
+
+        // Woken by the attached session's own question, and reloaded.
+        await attached.SendAsync(Request(30, "textDocument/hover", Position()), Cancellation);
+        await WaitUntilAsync(() => host.Inner.ConnectCount == 2);
+        await WaitUntilAsync(() => host.Inner.Latest!.ReceivedMethods.Contains("solution/open"));
+
+        host.Inner.Latest!.CompleteProjectInitialization();
+        await attached.AwaitResponseAsync(30, Cancellation);
+
+        await WaitUntilAsync(() => Publishes(attached, ProgramUri) > before);
+    }
+
+    /// <summary>An engine attached to the host over the real pipe.</summary>
+    private static OwnedRoslynEngine AttachEngine(HostedSession host, TempWorkspace root)
+    {
+        var attaching = new SharingRoslynFactory(
+            new InProcessFakeRoslynFactory(NullLogger.Instance),
+            host.Registry,
+            () => host.Solution,
+            TimeProvider.System,
+            NullLogger.Instance);
+
+        var engine = new OwnedRoslynEngine(
+            attaching,
+            ClaudeRoslynLspOptions.FromEnvironment(static _ => null),
+            () => WorkspaceSelection.FromPath(host.Solution),
+            root.Root,
+            TimeProvider.System,
+            NullLogger.Instance);
+
+        attaching.Own(engine);
+
+        return engine;
+    }
+
+    /// <summary>How many diagnostic sets one client was given for one document.</summary>
+    private static int Publishes(SessionHarness harness, string uri) =>
+        harness.Notifications("textDocument/publishDiagnostics")
+            .Count(x => x.GetProperty("params").GetProperty("uri").GetString() == uri);
+
+    /// <summary>The standard startup with a <c>workspace/diagnostic</c> responder, so a report can be cached.</summary>
+    private static FakeRoslynScript WithWorkspaceReport()
+    {
+        var script = FakeRoslynScript.Roslyn512Startup(projectLoadDelay: null);
+
+        return new FakeRoslynScript
+        {
+            InitializeResult = script.InitializeResult,
+            Steps = script.Steps,
+            ProjectLoadDelay = script.ProjectLoadDelay,
+            Responders = new Dictionary<string, FakeRoslynResponder>(script.Responders, StringComparer.Ordinal)
+            {
+                ["workspace/diagnostic"] = (_, _) => """{"items":[]}"""u8.ToArray(),
+            },
+        };
+    }
+
+    private static string DidOpen(string uri) => $$$"""
+        {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":
+         {"uri":"{{{uri}}}","languageId":"csharp","version":1,"text":"class Program { }"}
+        }}
+        """;
+
     private static bool IsBackendChanged(JsonElement message, string? state) =>
         message.TryGetProperty("method", out var method)
         && method.GetString() == BackendChange.Method
         && (state is null || message.GetProperty("params").GetProperty("state").GetString() == state);
 
-    /// <summary>The standard startup, with a given <c>_roslyn_processId</c> in its handshake (C45).</summary>
-    private static FakeRoslynScript WithProcessId(int processId)
+    /// <summary>A startup script with a given <c>_roslyn_processId</c> in its handshake (C45).</summary>
+    /// <param name="processId">The id the handshake announces.</param>
+    /// <param name="from">The script to change; the standard startup when null.</param>
+    private static FakeRoslynScript WithProcessId(int processId, FakeRoslynScript? from = null)
     {
-        var script = FakeRoslynScript.Roslyn512Startup(projectLoadDelay: null);
+        var script = from ?? FakeRoslynScript.Roslyn512Startup(projectLoadDelay: null);
         var initialize = Encoding.UTF8.GetString(script.InitializeResult.Span)
             .Replace("\"_roslyn_processId\":4242", $"\"_roslyn_processId\":{processId}", StringComparison.Ordinal);
 

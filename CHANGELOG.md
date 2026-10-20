@@ -22,8 +22,8 @@
 - `getWorkspaceStatus` reports `recycles`, `baselineMegabytes`, `lastRecycleAt` and
   `privateMegabytes`. `doctor` lists every shared host on the machine with its Roslyn's working set
   and private bytes, state, idle time, recycles, baseline and attached clients, plus a total. Session
-  files are rewritten atomically, and stale ones, orphaned locks and leftover temporary files are
-  swept by every new host and by `doctor --fix` — never a live host of another version.
+  files are rewritten atomically, and stale ones, orphaned locks (on Windows) and leftover temporary
+  files are swept by every new host and by `doctor --fix` — never a live host of another version.
 - Fixed: a relaunched backend's endpoint was never disposed, leaking a process handle per relaunch;
   registrations accumulated across relaunches; an attached engine kept reporting a dead Roslyn's
   process id after its host relaunched; and a client attaching while the host reloaded was told the

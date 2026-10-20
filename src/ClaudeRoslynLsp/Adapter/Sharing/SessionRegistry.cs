@@ -58,18 +58,47 @@ internal sealed partial class SessionRegistry
 
     private readonly string _directory;
     private readonly ILogger _logger;
+    private readonly Func<int, bool> _hasExited;
+    private readonly bool _sweepLocks;
+    private readonly string? _pidNamespace;
 
-    /// <summary>Creates a registry over one directory.</summary>
+    /// <summary>Creates a registry over one directory, judging processes the way this platform can.</summary>
     /// <param name="directory">The <c>sessions</c> directory. It is created on first write.</param>
     /// <param name="logger">The stderr log.</param>
     internal SessionRegistry(string directory, ILogger logger)
+        : this(directory, logger, HasExited, sweepLocks: OperatingSystem.IsWindows(), CurrentPidNamespace())
+    {
+    }
+
+    /// <summary>Creates a registry with its platform facts supplied, which is what the tests need.</summary>
+    /// <param name="directory">The <c>sessions</c> directory. It is created on first write.</param>
+    /// <param name="logger">The stderr log.</param>
+    /// <param name="hasExited">
+    /// Whether a process id names a process that has exited. It may throw: see <see cref="IsAlive(int, Func{int, bool})"/>
+    /// for what each exception is taken to mean.
+    /// </param>
+    /// <param name="sweepLocks">Whether the sweep may delete orphaned lock files (D103); Windows only.</param>
+    /// <param name="pidNamespace">This process's pid namespace, or null where there is no such thing.</param>
+    internal SessionRegistry(
+        string directory,
+        ILogger logger,
+        Func<int, bool> hasExited,
+        bool sweepLocks,
+        string? pidNamespace)
     {
         ArgumentNullException.ThrowIfNull(directory);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(hasExited);
 
         _directory = directory;
         _logger = logger;
+        _hasExited = hasExited;
+        _sweepLocks = sweepLocks;
+        _pidNamespace = pidNamespace;
     }
+
+    /// <summary>The pid namespace this process records in the session files it writes (D103).</summary>
+    internal string? PidNamespace => _pidNamespace;
 
     /// <summary>The directory this registry reads and writes.</summary>
     internal string Directory_ => _directory;
@@ -166,8 +195,9 @@ internal sealed partial class SessionRegistry
             key,
             path,
             session,
-            IsAlive(session.ProcessId),
-            string.Equals(session.Version, ServerVersion.Value, StringComparison.Ordinal));
+            IsAlive(session.ProcessId, _hasExited),
+            string.Equals(session.Version, ServerVersion.Value, StringComparison.Ordinal),
+            IsForeign(session));
     }
 
     /// <summary>Every session file in the directory, for <c>doctor</c>.</summary>
@@ -227,27 +257,102 @@ internal sealed partial class SessionRegistry
 
     /// <summary>
     /// Rewrites a published session with what has changed since — the backend's state, its memory,
-    /// its recycles, how many clients are attached (D102).
+    /// its recycles, how many clients are attached (D102) — but only while the file is still this
+    /// host's.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The same atomic write as <see cref="Write"/>, logged quietly: it happens on every state change
     /// and once a minute while clients are active, and a failure costs only a stale line in
     /// <c>doctor</c>.
+    /// </para>
+    /// <para>
+    /// <b>Ownership first (D102).</b> The file can change hands while this host runs: an attacher that
+    /// failed to connect deletes it and hosts in its place, and during an upgrade a reader of another
+    /// version deletes it as unusable. A rewrite that did not look would clobber the newcomer's record
+    /// within a minute, the newcomer's next rewrite would clobber this one's, and every process
+    /// reading the file in between would attach to whichever pipe it happened to name — or fail to,
+    /// delete it, and launch a third Roslyn. So the file is rewritten only when it still names this
+    /// process <em>and</em> this pipe, and the check and the write happen under the decision lock,
+    /// which every publisher holds while it writes (D86). A lock somebody else holds right now is a
+    /// process deciding whether to take over, and the answer is <see cref="SessionUpdate.Busy"/>: try
+    /// again later, once it has decided.
+    /// </para>
     /// </remarks>
     /// <param name="key">The key from <see cref="KeyFor"/>.</param>
-    /// <param name="session">What to write.</param>
-    internal bool Update(string key, SharedSession session)
+    /// <param name="session">What to write; its process id and pipe name are what ownership is checked against.</param>
+    internal SessionUpdate Update(string key, SharedSession session)
     {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(session);
+
         var path = FileFor(key);
+
+        using var guard = TryAcquireLock(key);
+
+        if (guard is null)
+        {
+            return SessionUpdate.Busy;
+        }
+
+        if (!Names(TryParse(path), session.ProcessId, session.PipeName))
+        {
+            return SessionUpdate.NotOurs;
+        }
 
         if (!WriteAtomically(key, session, out var failure))
         {
             Log.NotUpdated(_logger, path, failure!);
+            return SessionUpdate.Failed;
+        }
+
+        return SessionUpdate.Written;
+    }
+
+    /// <summary>
+    /// Withdraws a session file, but only when it still names this host (D102).
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Update"/>'s rule, for the delete a stopping host makes: a file that names another
+    /// process or another pipe is somebody else's live record, and deleting it would send the next
+    /// reader off to launch a Roslyn beside the one that file points at. When the decision lock is
+    /// held by somebody else the file is left alone, because the holder is about to write it or has
+    /// just found it stale — and in either case it is no longer this host's to remove.
+    /// </remarks>
+    /// <param name="key">The key from <see cref="KeyFor"/>.</param>
+    /// <param name="processId">This host's process id.</param>
+    /// <param name="pipeName">This host's pipe.</param>
+    /// <returns>Whether a file was deleted.</returns>
+    internal bool DeleteIfOwned(string key, int processId, string pipeName)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(pipeName);
+
+        var path = FileFor(key);
+
+        using var guard = TryAcquireLock(key);
+
+        if (guard is null)
+        {
+            Log.NotWithdrawn(_logger, path, "another process holds the decision lock");
             return false;
         }
 
+        if (!Names(TryParse(path), processId, pipeName))
+        {
+            Log.NotWithdrawn(_logger, path, "it names another host");
+            return false;
+        }
+
+        Delete(key);
         return true;
     }
+
+    /// <summary>Whether a session file's content names one host: the same process and the same pipe.</summary>
+    private static bool Names(SharedSession? current, int processId, string pipeName) =>
+        current is not null
+        && current.ProcessId == processId
+        && string.Equals(current.PipeName, pipeName, StringComparison.Ordinal);
 
     /// <summary>
     /// Writes a session file so that a reader sees either the old content or the new, never a mix
@@ -330,6 +435,21 @@ internal sealed partial class SessionRegistry
     /// <see cref="DebrisAge"/>, because a write that is still going on takes milliseconds.
     /// </para>
     /// <para>
+    /// <b>Lock files are swept on Windows only.</b> A Unix delete-on-close unlinks the file and then
+    /// releases the lock, so a process that opened the old inode just before the unlink and locks it
+    /// just after holds a lock on a file nobody else can see, while a third process creates a new
+    /// one and locks that — and both of them host. On Windows a file pending deletion cannot be
+    /// opened at all, so the same claim is safe there. A Unix lock file is empty, so leaving it costs
+    /// a directory entry and nothing else.
+    /// </para>
+    /// <para>
+    /// <b>A file from another pid namespace is never judged.</b> Containers that share a mounted home
+    /// (D86) each see their own process ids, so a host that is alive in one is "gone" by the pid
+    /// check in the other. A file that records a namespace different from this process's is left
+    /// alone; a file that records none was written by a build or a platform that does not know about
+    /// namespaces and is judged as before.
+    /// </para>
+    /// <para>
     /// <paramref name="apply"/> false counts and deletes nothing, which is what plain <c>doctor</c>
     /// reports (D94's rule that a diagnostic which destroys things is one people stop running).
     /// </para>
@@ -354,6 +474,11 @@ internal sealed partial class SessionRegistry
                 // the rendezvous its own version's other half attaches through, and during a
                 // plugin upgrade both versions run side by side. Deleting its file would make
                 // that half launch a second Roslyn for the same solution (D103).
+                if (report.ForeignNamespace)
+                {
+                    continue;
+                }
+
                 var stale = report.Session is null ? IsDebris(report.Path) : !report.Alive;
 
                 if (!stale)
@@ -369,7 +494,7 @@ internal sealed partial class SessionRegistry
                 }
             }
 
-            foreach (var lockFile in Directory.GetFiles(_directory, "*.lock"))
+            foreach (var lockFile in _sweepLocks ? Directory.GetFiles(_directory, "*.lock") : [])
             {
                 if (File.Exists(FileFor(Path.GetFileNameWithoutExtension(lockFile))) || !TryClaimLock(lockFile, apply))
                 {
@@ -516,9 +641,38 @@ internal sealed partial class SessionRegistry
         }
     }
 
-    /// <summary>Whether a process id still names a running process.</summary>
-    private static bool IsAlive(int processId)
+    /// <summary>Whether a process id still names a running process, by this platform's own check.</summary>
+    private static bool HasExited(int processId)
     {
+        using var process = Process.GetProcessById(processId);
+        return process.HasExited;
+    }
+
+    /// <summary>Whether a process id still names a running process.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Only two answers mean "gone".</b> <see cref="ArgumentException"/> is how
+    /// <see cref="Process.GetProcessById(int)"/> says there is no such process, and
+    /// <see cref="InvalidOperationException"/> is how a <see cref="Process"/> says the one it had
+    /// has gone. Everything else is a process this one cannot look at, which is a different thing
+    /// from one that does not exist: on Windows <see cref="Process.HasExited"/> throws
+    /// <see cref="System.ComponentModel.Win32Exception"/> (access denied) when a stale file's pid
+    /// has been reused by a service running as somebody else. Such a process is reported alive,
+    /// because the caller deletes what is dead and a check that cannot judge must never be what
+    /// deletes. A reused pid that is reported alive costs, at worst, one failed attach (D92).
+    /// </para>
+    /// <para>
+    /// It also never throws. It runs for every file in the directory from the sweep a new host makes
+    /// after publishing itself, and from <c>doctor</c>; an exception here used to fail the host's own
+    /// connect — with its session file already published — and then crash <c>doctor</c> on every run.
+    /// </para>
+    /// </remarks>
+    /// <param name="processId">The id a session file names.</param>
+    /// <param name="hasExited">The platform's check, which may throw.</param>
+    internal static bool IsAlive(int processId, Func<int, bool> hasExited)
+    {
+        ArgumentNullException.ThrowIfNull(hasExited);
+
         if (processId <= 0)
         {
             return false;
@@ -531,13 +685,46 @@ internal sealed partial class SessionRegistry
 
         try
         {
-            using var process = Process.GetProcessById(processId);
-            return !process.HasExited;
+            return !hasExited(processId);
         }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
-                                              or NotSupportedException)
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
         {
             return false;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>Whether a session was written in a pid namespace other than this process's (D103).</summary>
+    private bool IsForeign(SharedSession session) =>
+        session.PidNamespace is { } theirs && !string.Equals(theirs, _pidNamespace, StringComparison.Ordinal);
+
+    /// <summary>
+    /// This process's pid namespace on Linux — the target of <c>/proc/self/ns/pid</c>, which reads
+    /// like <c>pid:[4026531836]</c> — and null everywhere else, or when it cannot be read.
+    /// </summary>
+    /// <remarks>
+    /// The link's target is the namespace's identity (proc(5), <c>/proc/pid/ns/</c>): two processes
+    /// whose targets are equal number their processes the same way, and two whose targets differ do
+    /// not, which is the only question the sweep needs answered.
+    /// </remarks>
+    internal static string? CurrentPidNamespace()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return null;
+        }
+
+        try
+        {
+            return new FileInfo("/proc/self/ns/pid").LinkTarget;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                              or NotSupportedException or PlatformNotSupportedException)
+        {
+            return null;
         }
     }
 
@@ -649,12 +836,34 @@ internal sealed partial class SessionRegistry
         internal static partial void NotUpdated(ILogger logger, string path, string reason);
 
         [LoggerMessage(
+            EventId = 5308,
+            Level = LogLevel.Debug,
+            Message = "The session file {Path} was not withdrawn: {Reason}.")]
+        internal static partial void NotWithdrawn(ILogger logger, string path, string reason);
+
+        [LoggerMessage(
             EventId = 5307,
             Level = LogLevel.Information,
             Message = "Swept the session directory: {Sessions} stale session file(s), {Locks} orphaned " +
                       "lock(s) and {Temporaries} leftover temporary file(s) removed (D103).")]
         internal static partial void Swept(ILogger logger, int sessions, int locks, int temporaries);
     }
+}
+
+/// <summary>What <see cref="SessionRegistry.Update"/> did with a rewrite (D102).</summary>
+internal enum SessionUpdate
+{
+    /// <summary>The file was this host's and now says what it was given.</summary>
+    Written,
+
+    /// <summary>The write failed; the file says what it said before.</summary>
+    Failed,
+
+    /// <summary>Another process holds the decision lock; nothing was read or written.</summary>
+    Busy,
+
+    /// <summary>The file is missing or names another host, so it is no longer this host's to write.</summary>
+    NotOurs,
 }
 
 /// <summary>What a sweep of the session directory removed, or would remove (D103).</summary>

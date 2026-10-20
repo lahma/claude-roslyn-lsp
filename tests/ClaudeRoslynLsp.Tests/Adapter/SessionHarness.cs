@@ -40,12 +40,14 @@ internal sealed class SessionHarness : IAsyncDisposable
     /// <param name="options">The configuration; every default when null.</param>
     /// <param name="sampleMemory">The idle policy's memory sampler; the real process when null.</param>
     /// <param name="solution">What the session opens.</param>
+    /// <param name="compactor">What the idle policy asks to give memory back; nothing when null.</param>
     internal SessionHarness(
         IRoslynConnectionFactory factory,
         TimeProvider? time = null,
         ClaudeRoslynLspOptions? options = null,
         Func<int, long?>? sampleMemory = null,
-        string solution = "/w/HelloSolution.slnx")
+        string solution = "/w/HelloSolution.slnx",
+        IBackendCompactor? compactor = null)
     {
         var (sessionEnd, testEnd) = DuplexStreamPair.Create();
 
@@ -61,7 +63,8 @@ internal sealed class SessionHarness : IAsyncDisposable
             () => solution,
             time ?? TimeProvider.System,
             NullLogger.Instance,
-            sampleMemory: sampleMemory);
+            sampleMemory: sampleMemory,
+            compactor: compactor);
 
         RunTask = Task.Run(() => Session.RunAsync(_stopping.Token));
         _reading = Task.Run(ReadLoopAsync);

@@ -87,6 +87,10 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
     private int _failureShown;
     private int _generation;
     private int? _recyclingGeneration;
+    private int? _wakeGeneration;
+    private int _wakeFailures;
+    private int? _hostBackendProcessId;
+    private int _processMismatchLogged;
 
     /// <summary>Creates a session over the client's streams.</summary>
     /// <param name="clientInput">The client's messages arrive here.</param>
@@ -197,9 +201,12 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
 
         _gate.HeldWhileDormant += _recycler.RecordActivity;
 
-        // D105: when this session is attached, the host says so when its Roslyn is replaced, and the
-        // result ids this bridge holds are tokens in the memory of a process that has gone (D57).
-        _serverHandler.BackendChanged += () => _diagnostics?.Reset();
+        // D100: a workspace that finished loading after its budget ran out gets its baseline then,
+        // rather than one sampled mid-load at the timeout.
+        _gate.LoadedLate += _recycler.OnWorkspaceLoaded;
+
+        // D105: when this session is attached, the host says so when its Roslyn is replaced.
+        _serverHandler.BackendChanged += OnHostBackendChanged;
     }
 
     /// <summary>The readiness gate, exposed for tests and for WP4's bridges.</summary>
@@ -756,7 +763,7 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            FailIfCurrent(generation, $"the backend could not be started ({exception.Message})", exception);
+            FailIfCurrent(generation, $"the backend could not be started ({exception.Message})", exception, server: null);
             return;
         }
 
@@ -813,9 +820,10 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
 
             LogBackendIdentity(result);
 
-            // C45's process is the one the idle policy measures (D100); an attached session's backend
-            // is another process's child, which that process measures and decides about itself.
-            _recycler.OnLaunched(server.Connection.Attached ? null : RoslynResponses.ProcessIdOf(result));
+            // The idle policy measures C45's process when it is the child this session launched, and
+            // compacts only then (D100, D101); an attached session's backend is another process's
+            // child, which that process measures and decides about itself.
+            ReportLaunched(server, result);
         }
         catch (Exception exception) when (exception is not OperationCanceledException || cancellationToken.IsCancellationRequested)
         {
@@ -827,7 +835,8 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
                 exception is TimeoutException
                     ? $"Roslyn did not answer initialize within {budget.TotalSeconds:0} s"
                     : $"the Roslyn handshake failed ({exception.Message})",
-                exception);
+                exception,
+                server);
 
             return;
         }
@@ -1216,9 +1225,77 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
             // they are complete enough to be worth standing watchers up for.
             _watching?.Schedule(_registrations.Watchers);
 
-            // The idle clock's baseline is due a minute from now (D100).
-            _recycler.OnWorkspaceReady();
+            // The idle clock's baseline is due a minute from now — when the workspace really loaded;
+            // after a timeout it waits for LoadedLate instead (D100).
+            _recycler.OnWorkspaceReady(loaded: state == ReadinessState.ProjectsLoaded);
+
+            lock (_stateLock)
+            {
+                _wakeGeneration = null;
+                _wakeFailures = 0;
+            }
         }
+    }
+
+    /// <summary>
+    /// The host this session is attached to replaced its Roslyn, or changed what it is doing (D105).
+    /// </summary>
+    /// <remarks>
+    /// The result ids the diagnostics bridge holds are tokens in the memory of a process that may have
+    /// gone (D57), so they are forgotten every time. And when the host reports a <em>new</em> Roslyn
+    /// running, every open document is pulled again, as this session's own gate opening would have:
+    /// that gate never closes while the host reloads, so without this the diagnostics published before
+    /// a host recycle would stand until the next edit.
+    /// </remarks>
+    private void OnHostBackendChanged()
+    {
+        _diagnostics?.Reset();
+
+        if (_serverHandler.HostBackend is not { State: BackendStatus.RunningState, ProcessId: { } processId })
+        {
+            return;
+        }
+
+        bool replaced;
+
+        lock (_stateLock)
+        {
+            replaced = _hostBackendProcessId is { } previous && previous != processId;
+            _hostBackendProcessId = processId;
+        }
+
+        if (replaced && _gate.IsOpen)
+        {
+            _diagnostics?.OnProjectsLoaded();
+        }
+    }
+
+    /// <summary>Tells the idle policy which process to measure, and whether it may be compacted.</summary>
+    private void ReportLaunched(ServerEndpoint server, JsonElement result)
+    {
+        if (server.Connection.Attached)
+        {
+            // The host's Roslyn, whose C45 id crosses the pipe verbatim (D88): what a later
+            // backendChanged is compared against to tell a reload from a status change (D105).
+            lock (_stateLock)
+            {
+                _hostBackendProcessId = RoslynResponses.ProcessIdOf(result);
+            }
+
+            _recycler.OnLaunched(null, compactable: false);
+            return;
+        }
+
+        var announced = RoslynResponses.ProcessIdOf(result);
+        var launched = server.Connection.LaunchedProcessId;
+        var (processId, compactable, mismatch) = BackendRecycler.ChooseProcess(announced, launched);
+
+        if (mismatch && Interlocked.Exchange(ref _processMismatchLogged, 1) == 0)
+        {
+            Log.ProcessMismatch(_logger, announced ?? 0, launched ?? 0);
+        }
+
+        _recycler.OnLaunched(processId, compactable);
     }
 
     /// <summary>
@@ -1242,7 +1319,8 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
     /// <param name="generation">Which connect attempt is reporting; a superseded one is ignored.</param>
     /// <param name="reason">What went wrong, in a sentence the user can act on.</param>
     /// <param name="exception">The failure, when there was one.</param>
-    private void FailIfCurrent(int generation, string reason, Exception? exception)
+    /// <param name="server">The endpoint the attempt adopted, when it got that far.</param>
+    private void FailIfCurrent(int generation, string reason, Exception? exception, ServerEndpoint? server)
     {
         if (!IsCurrentAttempt(generation))
         {
@@ -1250,7 +1328,103 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
             return;
         }
 
+        if (TryFailWake(generation, reason, server))
+        {
+            return;
+        }
+
         Fail(reason, exception);
+    }
+
+    /// <summary>
+    /// A wake's relaunch failed: refuse what waited for it and go back to sleep, rather than failing a
+    /// session that was working (D96).
+    /// </summary>
+    /// <remarks>
+    /// A wake is a launch the session would never have made if it had kept its child, so a transient
+    /// failure in it is the recycle's to absorb. The requests held for it are answered with the
+    /// reason and an invitation to try again; the gate and the policy are dormant again, so the next
+    /// request relaunches. An endpoint the attempt adopted is retired — taken out of
+    /// <c>_server</c> so the next wake is not refused, and its process ended without disposing the
+    /// connection, which for a shared host would withdraw the session file (D97). After
+    /// <see cref="BackendRecycler.MaxConsecutiveWakeFailures"/> in a row the session fails as it
+    /// always did, because a setup that is genuinely broken has to say so.
+    /// </remarks>
+    /// <returns>True when the failure was a wake's and has been absorbed.</returns>
+    private bool TryFailWake(int generation, string reason, ServerEndpoint? server)
+    {
+        ServerEndpoint? abandoned = null;
+        int failures;
+
+        lock (_stateLock)
+        {
+            if (_stopping || _wakeGeneration != generation)
+            {
+                return false;
+            }
+
+            _wakeGeneration = null;
+            failures = ++_wakeFailures;
+
+            if (failures >= BackendRecycler.MaxConsecutiveWakeFailures)
+            {
+                return false;
+            }
+
+            if (server is not null && ReferenceEquals(_server, server))
+            {
+                _server = null;
+                _retired = server;
+                abandoned = server;
+            }
+
+            // Superseded, so the abandoned attempt's read loop stays quiet when its stream ends.
+            _generation++;
+        }
+
+        var message =
+            $"the Roslyn backend could not be relaunched after this session was idle ({reason}); "
+            + "the next request tries again";
+
+        if (!_gate.ReturnToDormant(message))
+        {
+            return false;
+        }
+
+        _recycler.OnWakeFailed();
+
+        // In this order, and then looked at once more. A request held in the instant between the
+        // gate going back to sleep and the policy doing the same asked a policy that was still
+        // "starting" for a wake, which it ignores; without this it would wait in a dormant gate
+        // that nothing is going to wake. The other order is worse: a wake asked for in between
+        // would find the gate not yet dormant and leave the policy starting for good.
+        if (_gate.HeldCount > 0)
+        {
+            _recycler.RecordActivity();
+        }
+
+        if (abandoned is not null)
+        {
+            _ = TerminateQuietlyAsync(abandoned);
+        }
+
+        Log.WakeFailed(_logger, failures, BackendRecycler.MaxConsecutiveWakeFailures, reason);
+        _client.Log(LogMessageType.Error, $"{ServerVersion.Name}: {message}.");
+
+        return true;
+    }
+
+    /// <summary>Ends a backend's process without disposing its connection, and never throws.</summary>
+    private async Task TerminateQuietlyAsync(ServerEndpoint server)
+    {
+        try
+        {
+            await server.Connection.TerminateAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            Log.TerminateFailed(_logger, exception.Message);
+        }
     }
 
     /// <inheritdoc cref="FailIfCurrent"/>
@@ -1556,27 +1730,55 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
             return true;
         }
 
-        _diagnostics?.Reset();
+        // Nothing below may throw out of here (finding 2 of the 0.2.0 review): the gate is dormant
+        // now, and a recycle that failed half way and reported "nothing changed" would leave it
+        // dormant under a policy that thinks the backend is running — every later request held, and
+        // nothing ever waking it.
+        var told = false;
 
-        await server.StopByProtocolAsync(_serverBound, _time).ConfigureAwait(false);
-
-        if (pump is not null)
+        try
         {
-            try
-            {
-                await pump.WaitAsync(ExitWait, _time, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                // The process has gone (or has been killed) but the stream has not ended, which a
-                // transport that is not a process can do. Retire it by hand; the read loop, when it
-                // does stop, finds the endpoint already let go of and does nothing.
-                Log.StreamOutlivedBackend(_logger);
-                OnBackendGone(server);
-            }
-        }
+            _diagnostics?.Reset();
 
-        return true;
+            told = true;
+            await server.StopByProtocolAsync(_serverBound, _time).ConfigureAwait(false);
+
+            if (pump is not null)
+            {
+                try
+                {
+                    await pump.WaitAsync(ExitWait, _time, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    // The process has gone (or has been killed) but the stream has not ended, which a
+                    // transport that is not a process can do. Retire it by hand; the read loop, when
+                    // it does stop, finds the endpoint already let go of and does nothing.
+                    Log.StreamOutlivedBackend(_logger);
+                    OnBackendGone(server);
+                }
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            Log.RecycleStopFailed(_logger, exception.Message);
+
+            // Nothing said to Roslyn yet: undo the recycle, which is still free.
+            if (!told && AbandonRecycle(generation))
+            {
+                _gate.CancelDormant();
+                return false;
+            }
+
+            // Told to shut down, so it cannot be put back into service: end it as best we can and
+            // retire it by hand. The gate is dormant and the next request wakes a fresh one.
+            await TerminateQuietlyAsync(server).ConfigureAwait(false);
+            OnBackendGone(server);
+
+            return true;
+        }
     }
 
     /// <inheritdoc />
@@ -1592,6 +1794,7 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
             }
 
             generation = _generation;
+            _wakeGeneration = generation;
         }
 
         if (!_gate.MarkWaking())
@@ -1610,6 +1813,23 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
         // The crash path's reconnect (D57) — replay the mirror at its latest text, re-open the
         // solution — without the crash path's supervisor, whose budget is for crashes (D99).
         _ = Task.Run(() => ConnectAsync(generation, CancellationToken.None), CancellationToken.None);
+    }
+
+    /// <inheritdoc />
+    bool IRecycleTarget.IsDormant
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                if (_server is not null)
+                {
+                    return false;
+                }
+            }
+
+            return _gate.State == ReadinessState.Dormant;
+        }
     }
 
     /// <summary>Clears a recycle's flag, when the backend it was set for is still the current one.</summary>
@@ -1842,5 +2062,32 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
             Message = "The recycled Roslyn backend's stream did not end after its process went; it has " +
                       "been retired without waiting for it.")]
         internal static partial void StreamOutlivedBackend(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 131,
+            Level = LogLevel.Warning,
+            Message = "Stopping the idle Roslyn backend failed part way ({Reason}); it has been ended and " +
+                      "retired, and the next request relaunches it.")]
+        internal static partial void RecycleStopFailed(ILogger logger, string reason);
+
+        [LoggerMessage(
+            EventId = 132,
+            Level = LogLevel.Warning,
+            Message = "Relaunching the idle-recycled Roslyn backend failed ({Reason}), {Failures} of {Limit} " +
+                      "in a row; the session stays up and the next request tries again.")]
+        internal static partial void WakeFailed(ILogger logger, int failures, int limit, string reason);
+
+        [LoggerMessage(
+            EventId = 133,
+            Level = LogLevel.Debug,
+            Message = "Ending an abandoned Roslyn backend failed ({Reason}).")]
+        internal static partial void TerminateFailed(ILogger logger, string reason);
+
+        [LoggerMessage(
+            EventId = 134,
+            Level = LogLevel.Information,
+            Message = "Roslyn reports process {Announced} as holding the workspace but this session launched " +
+                      "process {Launched}; the launched one is measured and neither is compacted (D101).")]
+        internal static partial void ProcessMismatch(ILogger logger, int announced, int launched);
     }
 }

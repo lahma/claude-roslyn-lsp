@@ -128,6 +128,82 @@ public class OwnedRoslynEngineRecycleTests
         Assert.Equal(ReadinessState.ProjectsLoaded, harness.Engine.Gate.State);
     }
 
+    /// <summary>
+    /// A recycle that throws after closing the gate and replacing <c>_opened</c> still leaves the
+    /// engine dormant and wakeable: the next tool call relaunches it and is answered (finding 2).
+    /// </summary>
+    [Fact]
+    public async Task AStopThatFailsPartWayStillLeavesTheEngineWakeable()
+    {
+        await using var harness = await EngineHarness.StartAsync(
+            wrap: static inner => new TweakedRoslynFactory(inner) { ThrowAtEndOfStream = static attempt => attempt == 1 });
+
+        harness.Memory = 1500 * Megabyte;
+        await harness.AdvanceUntilDormantAsync();
+        await SessionHarness.WaitAsync(
+            () => harness.Engine.Recycler.Status.Phase == BackendPhase.Dormant,
+            Cancellation);
+
+        var ready = harness.Engine.EnsureReadyAsync(TimeSpan.FromMinutes(5), Cancellation);
+
+        await SessionHarness.WaitAsync(() => harness.Factory.ConnectCount == 2, Cancellation);
+        await SessionHarness.WaitAsync(
+            () => harness.Factory.Latest!.ReceivedMethods.Contains("solution/open"),
+            Cancellation);
+
+        harness.Factory.Latest!.CompleteProjectInitialization();
+
+        var state = await ready.WaitAsync(TimeSpan.FromSeconds(30), Cancellation);
+        Assert.Equal(WorkspaceLoadStatus.Ready, state.Status);
+    }
+
+    /// <summary>
+    /// A wake that fails answers the call that asked for it with a loading status that says why and
+    /// that the next call tries again — and the next call does (finding 5, D96).
+    /// </summary>
+    [Fact]
+    public async Task AWakeThatFailsAnswersLoadingAndTheNextCallTriesAgain()
+    {
+        TweakedRoslynFactory? tweaked = null;
+
+        await using var harness = await EngineHarness.StartAsync(
+            wrap: inner => tweaked = new TweakedRoslynFactory(inner) { FailAttempt = static attempt => attempt == 2 });
+
+        harness.Memory = 1500 * Megabyte;
+        await harness.AdvanceUntilDormantAsync();
+        await SessionHarness.WaitAsync(
+            () => harness.Engine.Recycler.Status.Phase == BackendPhase.Dormant,
+            Cancellation);
+
+        var failed = await harness.Engine
+            .EnsureReadyAsync(TimeSpan.FromMinutes(5), Cancellation)
+            .WaitAsync(TimeSpan.FromSeconds(30), Cancellation);
+
+        Assert.Equal(WorkspaceLoadStatus.Loading, failed.Status);
+        Assert.Contains("relaunching it failed", failed.Message!, StringComparison.Ordinal);
+        Assert.Equal(ReadinessState.Dormant, harness.Engine.Gate.State);
+        Assert.Equal(1, harness.Factory.ConnectCount);
+
+        await SessionHarness.WaitAsync(
+            () => harness.Engine.Recycler.Status.Phase == BackendPhase.Dormant,
+            Cancellation);
+
+        var retried = harness.Engine.EnsureReadyAsync(TimeSpan.FromMinutes(5), Cancellation);
+
+        await SessionHarness.WaitAsync(() => harness.Factory.ConnectCount == 2, Cancellation);
+        await SessionHarness.WaitAsync(
+            () => harness.Factory.Latest!.ReceivedMethods.Contains("solution/open"),
+            Cancellation);
+
+        harness.Factory.Latest!.CompleteProjectInitialization();
+
+        var state = await retried.WaitAsync(TimeSpan.FromSeconds(30), Cancellation);
+
+        Assert.Equal(WorkspaceLoadStatus.Ready, state.Status);
+        Assert.Null(state.Message);
+        Assert.Equal(3, tweaked!.Attempts);
+    }
+
     /// <summary>The standard startup with a <c>workspace/diagnostic</c> responder, so a report can be cached.</summary>
     private static FakeRoslynScript WithWorkspaceReport()
     {
@@ -151,7 +227,9 @@ public class OwnedRoslynEngineRecycleTests
         private readonly TempWorkspace _workspace;
         private long _memory = 400 * Megabyte;
 
-        private EngineHarness(FakeRoslynScript? script)
+        private EngineHarness(
+            FakeRoslynScript? script,
+            Func<RestartableFakeRoslynFactory, IRoslynConnectionFactory>? wrap)
         {
             _workspace = TempWorkspace.Create("engine-recycle");
 
@@ -161,7 +239,7 @@ public class OwnedRoslynEngineRecycleTests
                 () => script ?? FakeRoslynScript.Roslyn512Startup(projectLoadDelay: null));
 
             Engine = new OwnedRoslynEngine(
-                Factory,
+                wrap?.Invoke(Factory) ?? Factory,
                 ClaudeRoslynLspOptions.FromEnvironment(static _ => null),
                 () => WorkspaceSelection.FromPath(solution),
                 _workspace.Root,
@@ -183,9 +261,13 @@ public class OwnedRoslynEngineRecycleTests
         }
 
         /// <summary>Starts the engine, loads the workspace, and takes the baseline at 400 MB.</summary>
-        internal static async Task<EngineHarness> StartAsync(FakeRoslynScript? script = null)
+        /// <param name="script">The backend's script; the standard startup when null.</param>
+        /// <param name="wrap">Puts something between the engine and the fake, for the fault tests.</param>
+        internal static async Task<EngineHarness> StartAsync(
+            FakeRoslynScript? script = null,
+            Func<RestartableFakeRoslynFactory, IRoslynConnectionFactory>? wrap = null)
         {
-            var harness = new EngineHarness(script);
+            var harness = new EngineHarness(script, wrap);
 
             harness.Engine.Start();
             await SessionHarness.WaitAsync(() => harness.Factory.Latest is not null, Cancellation);

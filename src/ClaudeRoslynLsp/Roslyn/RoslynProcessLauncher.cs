@@ -116,8 +116,9 @@ internal sealed record RoslynLaunchRequest
     /// away for anyone whose machine has the memory to spare and wants the seconds back.
     /// </para>
     /// <para>
-    /// An explicit <c>DOTNET_gcServer</c> in this process's environment wins outright and is not
-    /// overwritten: the variable reaches the child because the adapter passes its environment
+    /// An explicit <c>DOTNET_gcServer</c> (or <c>COMPlus_gcServer</c>, see
+    /// <see cref="RoslynProcessLauncher.ApplyGarbageCollectorEnvironment"/>) in this process's environment wins outright
+    /// and is not overwritten: the variable reaches the child because the adapter passes its environment
     /// through, which is exactly how C54 was measured, and silently overriding it would break the
     /// measurement that produced this decision.
     /// </para>
@@ -214,8 +215,12 @@ internal sealed class RoslynConnection : IAsyncDisposable
         }
         catch (Exception exception) when (exception is InvalidOperationException
                                               or System.ComponentModel.Win32Exception
-                                              or NotSupportedException)
+                                              or NotSupportedException
+                                              or AggregateException)
         {
+            // AggregateException is what a tree kill throws when part of the tree cannot be killed —
+            // a build host running as somebody else, say. A last resort must not be the thing that
+            // fails: the caller is a recycle that has already closed its gate.
         }
     }
 
@@ -597,7 +602,7 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
 
     /// <summary>
     /// The two garbage-collector variables the child is started with, each only when the inherited
-    /// environment does not already name it.
+    /// environment does not already name it — under either of the runtime's spellings.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -616,6 +621,14 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
     /// which is different from setting <c>0</c>: an unset variable lets a <c>runtimeconfig.json</c>
     /// knob decide.
     /// </para>
+    /// <para>
+    /// <b>Either prefix is explicit.</b> The runtime reads every one of its settings as
+    /// <c>DOTNET_&lt;name&gt;</c> and as the older <c>COMPlus_&lt;name&gt;</c>, and the
+    /// <c>DOTNET_</c> spelling wins when both are set (the .NET runtime-configuration documentation,
+    /// "Environment variables"). So an inherited <c>COMPlus_gcServer=1</c> written <em>here</em> as
+    /// <c>DOTNET_gcServer=0</c> would not sit beside the user's choice, it would silently overrule it.
+    /// A variable under either spelling therefore means the adapter sets nothing for that setting.
+    /// </para>
     /// </remarks>
     /// <param name="environment">The child's environment, already holding everything inherited.</param>
     /// <param name="collector">Which collector to ask for.</param>
@@ -627,19 +640,51 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
     {
         ArgumentNullException.ThrowIfNull(environment);
 
-        if (!environment.ContainsKey("DOTNET_gcServer"))
+        if (!GcServerVariables.Any(environment.ContainsKey))
         {
-            environment["DOTNET_gcServer"] = collector == RoslynGarbageCollector.Server ? "1" : "0";
+            environment[GcServerVariable] = collector == RoslynGarbageCollector.Server ? "1" : "0";
         }
 
-        if (conserveMemory > 0 && !environment.ContainsKey(GcConserveMemoryVariable))
+        if (conserveMemory > 0 && !GcConserveMemoryVariables.Any(environment.ContainsKey))
         {
             environment[GcConserveMemoryVariable] = conserveMemory.ToString(CultureInfo.InvariantCulture);
         }
     }
 
+    /// <summary>
+    /// The first of several spellings of one runtime setting that this process's environment sets,
+    /// in the order the runtime reads them — which is what <c>doctor</c> names as the source.
+    /// </summary>
+    /// <param name="names">The spellings, <c>DOTNET_</c> first.</param>
+    /// <param name="read">Reads one environment variable.</param>
+    internal static (string Name, string Value)? FindInherited(string[] names, Func<string, string?> read)
+    {
+        ArgumentNullException.ThrowIfNull(names);
+        ArgumentNullException.ThrowIfNull(read);
+
+        foreach (var name in names)
+        {
+            if (read(name) is { Length: > 0 } value)
+            {
+                return (name, value);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The runtime's own name for the server-GC switch (D79).</summary>
+    internal const string GcServerVariable = "DOTNET_gcServer";
+
     /// <summary>The runtime's own name for the conserve level (D104).</summary>
     internal const string GcConserveMemoryVariable = "DOTNET_GCConserveMemory";
+
+    /// <summary>Every spelling of the server-GC switch the runtime reads, in the order it prefers them.</summary>
+    internal static readonly string[] GcServerVariables = [GcServerVariable, "COMPlus_gcServer"];
+
+    /// <summary>Every spelling of the conserve level the runtime reads, in the order it prefers them.</summary>
+    internal static readonly string[] GcConserveMemoryVariables =
+        [GcConserveMemoryVariable, "COMPlus_GCConserveMemory"];
 
     /// <summary>
     /// Starts both text pumps once the connection object (and therefore the pump token) exists.
@@ -687,7 +732,8 @@ internal sealed partial class RoslynProcessLauncher : IRoslynLauncher
         }
         catch (Exception exception) when (exception is InvalidOperationException
                                               or System.ComponentModel.Win32Exception
-                                              or NotSupportedException)
+                                              or NotSupportedException
+                                              or AggregateException)
         {
         }
 

@@ -64,6 +64,9 @@ internal sealed record BackendStatus(
     int Recycles,
     DateTimeOffset? LastRecycleAt)
 {
+    /// <summary>The one state word other code tests for: a backend that is answering.</summary>
+    internal const string RunningState = "running";
+
     /// <summary>The state as the session file spells it: <c>starting</c>, <c>running</c> or <c>dormant</c>.</summary>
     /// <remarks>
     /// Three words for four phases, because the file describes what a request would meet rather
@@ -73,7 +76,7 @@ internal sealed record BackendStatus(
     internal string StateName => Phase switch
     {
         BackendPhase.Starting => "starting",
-        BackendPhase.Running => "running",
+        BackendPhase.Running => RunningState,
         _ => "dormant",
     };
 }
@@ -154,6 +157,17 @@ internal interface IRecycleTarget
 
     /// <summary>Relaunches a dormant backend through the crash path's reconnect (D57), without spending its budget.</summary>
     void Wake();
+
+    /// <summary>
+    /// Whether the backend is gone and the gate dormant, so that the next request wakes it.
+    /// </summary>
+    /// <remarks>
+    /// Asked only when <see cref="RecycleAsync"/> threw. The targets are written never to throw once
+    /// the gate is dormant, and this is the belt to those braces: the policy follows the target's real
+    /// state rather than assuming the backend is still running, because a dormant gate under a policy
+    /// that thinks it is running holds every request for ever and wakes nothing.
+    /// </remarks>
+    bool IsDormant { get; }
 }
 
 /// <summary>
@@ -305,6 +319,18 @@ internal sealed partial class BackendRecycler : IDisposable
     /// <summary>How long after a compaction the next sample is taken (D101).</summary>
     internal static readonly TimeSpan CompactionSettle = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// How many wakes in a row may fail before the session gives up for good (D96).
+    /// </summary>
+    /// <remarks>
+    /// Three, for the same reason the crash budget is two in ten minutes (D57): one or two failures are
+    /// a loaded box or a cache cleaned while the backend slept, and the next request deserves another
+    /// go; a third in a row is a setup that is broken, and a session that keeps retrying it would
+    /// answer every request with a launch that fails rather than with the sentence naming
+    /// <c>doctor</c>.
+    /// </remarks>
+    internal const int MaxConsecutiveWakeFailures = 3;
+
     private readonly Lock _lock = new();
     private readonly TimeProvider _time;
     private readonly RecyclePolicy _policy;
@@ -321,6 +347,7 @@ internal sealed partial class BackendRecycler : IDisposable
     private long _activitySerial;
     private int _generation;
     private int? _processId;
+    private bool _compactable = true;
     private long? _baseline;
     private long? _latest;
     private bool _compacted;
@@ -406,6 +433,30 @@ internal sealed partial class BackendRecycler : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Decides which process the policy measures, and whether it may be compacted, from what the
+    /// server says holds the workspace (C45) and what this process actually launched.
+    /// </summary>
+    /// <remarks>
+    /// Only the launched child is ever compacted, and only when the two agree (D101): with
+    /// <c>CLAUDE_ROSLYN_LSP_ROSLYN_PATH</c> pointing at a wrapper or at the <c>fake-roslyn</c> verb
+    /// (D34) the announced id names a process this adapter never started — 4242, for the script —
+    /// and a blocking collection forced in whatever .NET process has it would be a side effect on
+    /// somebody else's program. When they differ the launched child is what is measured, because it
+    /// is at least ours. With nothing launched (an in-process fake) there is nothing to compact, and
+    /// the announced id is measured as before.
+    /// </remarks>
+    /// <param name="announced">C45's <c>_roslyn_processId</c>, when the server sent one.</param>
+    /// <param name="launched">The process this adapter started, when it started one.</param>
+    internal static (int? ProcessId, bool Compactable, bool Mismatch) ChooseProcess(int? announced, int? launched) =>
+        (announced, launched) switch
+        {
+            (_, null) => (announced, false, false),
+            (null, { } child) => (child, true, false),
+            ({ } server, { } child) when server == child => (child, true, false),
+            (_, { } child) => (child, false, true),
+        };
 
     /// <summary>Starts the evaluation clock, once.</summary>
     internal void Start()
@@ -498,18 +549,31 @@ internal sealed partial class BackendRecycler : IDisposable
     /// engine's backend is another process's child, and sampling it here would be measuring somebody
     /// else's decision.
     /// </param>
-    internal void OnLaunched(int? processId)
+    /// <param name="compactable">
+    /// Whether <paramref name="processId"/> is known to be the child this process launched, which is the
+    /// only process the compactor may force a collection in (D101). Measuring a process that turned out
+    /// to be somebody else's costs a wrong number; compacting it costs somebody else a blocking gen2
+    /// collection.
+    /// </param>
+    internal void OnLaunched(int? processId, bool compactable = true)
     {
         lock (_lock)
         {
             _processId = processId;
+            _compactable = compactable;
         }
 
         RaiseStatusChanged();
     }
 
-    /// <summary>The workspace finished loading: the backend is answering, and the baseline is due.</summary>
-    internal void OnWorkspaceReady()
+    /// <summary>The gate opened: the backend is answering, and — when it really loaded — the baseline is due.</summary>
+    /// <param name="loaded">
+    /// False when the gate opened because the load budget ran out. The backend serves from then on,
+    /// but a baseline taken in the next minute would be a sample of a workspace still loading — a low
+    /// threshold that recycles a slow solution every idle period — so it waits for
+    /// <see cref="OnWorkspaceLoaded"/> instead (D100).
+    /// </param>
+    internal void OnWorkspaceReady(bool loaded = true)
     {
         lock (_lock)
         {
@@ -520,17 +584,62 @@ internal sealed partial class BackendRecycler : IDisposable
 
             _phase = BackendPhase.Running;
 
-            var generation = _generation;
-
-            _baselineTimer?.Dispose();
-            _baselineTimer = _time.CreateTimer(
-                _ => TakeBaseline(generation),
-                null,
-                BaselineDelay,
-                Timeout.InfiniteTimeSpan);
+            if (loaded)
+            {
+                ArmBaseline();
+            }
         }
 
         RaiseStatusChanged();
+    }
+
+    /// <summary>
+    /// The workspace finished loading after the gate had already opened on its budget: the baseline
+    /// that was held back is due now.
+    /// </summary>
+    internal void OnWorkspaceLoaded()
+    {
+        lock (_lock)
+        {
+            if (_disposed || _phase != BackendPhase.Running || _baseline is not null)
+            {
+                return;
+            }
+
+            ArmBaseline();
+        }
+    }
+
+    /// <summary>
+    /// A wake's relaunch failed: the backend is dormant again, and the next request tries once more.
+    /// </summary>
+    internal void OnWakeFailed()
+    {
+        lock (_lock)
+        {
+            if (_disposed || _phase != BackendPhase.Starting)
+            {
+                return;
+            }
+
+            _phase = BackendPhase.Dormant;
+            _processId = null;
+        }
+
+        RaiseStatusChanged();
+    }
+
+    /// <summary>Arms this generation's baseline a minute from now. Called under the lock.</summary>
+    private void ArmBaseline()
+    {
+        var generation = _generation;
+
+        _baselineTimer?.Dispose();
+        _baselineTimer = _time.CreateTimer(
+            _ => TakeBaseline(generation),
+            null,
+            BaselineDelay,
+            Timeout.InfiniteTimeSpan);
     }
 
     /// <inheritdoc />
@@ -606,6 +715,7 @@ internal sealed partial class BackendRecycler : IDisposable
         int? processId;
         long? baseline;
         bool compacted;
+        bool compactable;
         long serial;
         TimeSpan idle;
 
@@ -619,6 +729,7 @@ internal sealed partial class BackendRecycler : IDisposable
             processId = _processId;
             baseline = _baseline;
             compacted = _compacted;
+            compactable = _compactable;
             serial = _activitySerial;
             idle = _time.GetUtcNow() - _lastActivity;
         }
@@ -640,7 +751,7 @@ internal sealed partial class BackendRecycler : IDisposable
             return;
         }
 
-        if (!compacted && idle >= _policy.CompactAfter)
+        if (!compacted && compactable && idle >= _policy.CompactAfter)
         {
             Begin(serial, compact: true, () => CompactAsync(id));
             return;
@@ -786,8 +897,11 @@ internal sealed partial class BackendRecycler : IDisposable
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
+            // Not assumed to be "nothing changed". A target that threw after closing its gate has a
+            // dormant gate and no backend, and a policy that went back to Running would never wake it:
+            // every later request would be held for ever. So it is asked.
             Log.WorkFailed(_logger, exception);
-            stopped = false;
+            stopped = _target.IsDormant;
         }
 
         var wake = false;

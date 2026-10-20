@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 
@@ -206,6 +207,65 @@ public class SharingRoslynFactoryTests
 
         Assert.Null(registry.TryRead(key));
         Assert.False(File.Exists(registry.FileFor(key)));
+    }
+
+    /// <summary>
+    /// A session file this process cannot judge — its pid reused by a process it may not open — is
+    /// housekeeping's problem, not the host's: hosting succeeds and the file is left where it is
+    /// (finding 1 of the 0.2.0 review, D103).
+    /// </summary>
+    [Fact]
+    public async Task HostingSurvivesASessionFileItCannotJudge()
+    {
+        const int Denied = int.MaxValue - 11;
+
+        using var home = TempWorkspace.Create("share-denied");
+        var registry = new SessionRegistry(
+            Path.Combine(home.Root, SessionRegistry.DirectoryName),
+            NullLogger.Instance,
+            static pid => pid == Denied ? throw new Win32Exception(5, "Access is denied.") : true,
+            sweepLocks: OperatingSystem.IsWindows(),
+            pidNamespace: null);
+
+        var solution = home.Path_("Fixture.slnx");
+        var other = SessionRegistry.KeyFor(home.Path_("Other.slnx"));
+
+        registry.Write(other, new SharedSession(
+            Denied,
+            ServerVersion.Value,
+            SharedSession.PipeTransport,
+            "claude-roslyn-lsp-share-service",
+            home.Path_("Other.slnx"),
+            DateTimeOffset.UtcNow.AddDays(-1)));
+
+        await using var host = await SharedHostSession.StartAsync(registry, solution);
+
+        Assert.NotNull(host.Factory.Host);
+        Assert.NotNull(registry.TryRead(SessionRegistry.KeyFor(solution)));
+        Assert.NotEqual(ReadinessState.Failed, host.Session.Gate.State);
+        Assert.True(File.Exists(registry.FileFor(other)));
+    }
+
+    /// <summary>
+    /// A host records its pid namespace, so a sweep in another container can tell its file is not
+    /// one to judge (finding 8, D103).
+    /// </summary>
+    [Fact]
+    public async Task APublishedSessionRecordsItsPidNamespace()
+    {
+        using var home = TempWorkspace.Create("share-namespace");
+        var registry = new SessionRegistry(
+            Path.Combine(home.Root, SessionRegistry.DirectoryName),
+            NullLogger.Instance,
+            static _ => true,
+            sweepLocks: OperatingSystem.IsWindows(),
+            pidNamespace: "pid:[4026531836]");
+
+        var solution = home.Path_("Fixture.slnx");
+
+        await using var host = await SharedHostSession.StartAsync(registry, solution);
+
+        Assert.Equal("pid:[4026531836]", registry.TryRead(SessionRegistry.KeyFor(solution))!.PidNamespace);
     }
 
     /// <summary>

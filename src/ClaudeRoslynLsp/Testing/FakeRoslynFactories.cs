@@ -192,7 +192,12 @@ internal sealed partial class ChildProcessFakeRoslynFactory : IRoslynConnectionF
             process.StandardInput.BaseStream,
             exited.Task,
             Description,
-            () => DisposeAsync(process, _logger)));
+            () => DisposeAsync(process, _logger))
+        {
+            // The child's own pid, which differs from the 4242 the script reports as C45's; that
+            // difference is what keeps the idle policy from compacting a process it did not start.
+            LaunchedProcessId = process.Id,
+        });
     }
 
     /// <summary>Copies the child's stderr into this process's log, line by line.</summary>

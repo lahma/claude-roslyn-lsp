@@ -82,6 +82,20 @@ internal sealed class RoslynConnection : IAsyncDisposable
     internal int? HostProcessId { get; init; }
 
     /// <summary>
+    /// The process this connection started, when it started one — null for an attached pipe or an
+    /// in-process fake.
+    /// </summary>
+    /// <remarks>
+    /// What the idle policy measures and compacts is checked against this (D100, D101). C45's
+    /// <c>_roslyn_processId</c> is what the server <em>says</em> holds the workspace, and with
+    /// <c>CLAUDE_ROSLYN_LSP_ROSLYN_PATH</c> pointing at a wrapper or at this binary's own
+    /// <c>fake-roslyn</c> verb (D34) — which reports 4242 — it names a process this adapter never
+    /// started. Forcing a blocking collection in whatever .NET process happens to have that id would be
+    /// a side effect on somebody else's program.
+    /// </remarks>
+    internal int? LaunchedProcessId { get; init; }
+
+    /// <summary>
     /// Ends the backend process and nothing else, or null when there is no process to end.
     /// </summary>
     /// <remarks>

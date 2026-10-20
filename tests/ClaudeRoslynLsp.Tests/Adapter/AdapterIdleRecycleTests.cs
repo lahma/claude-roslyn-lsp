@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 
 using ClaudeRoslynLsp.Adapter;
 using ClaudeRoslynLsp.Configuration;
+using ClaudeRoslynLsp.Protocol;
 using ClaudeRoslynLsp.Testing;
 using ClaudeRoslynLsp.Tests.Testing;
 
@@ -295,6 +296,256 @@ public class AdapterIdleRecycleTests
         Assert.Equal(1, factory.ConnectCount);
     }
 
+    /// <summary>
+    /// A recycle that throws after closing its gate — here the read loop faulting as the stream ends,
+    /// which the wait for it rethrows — still leaves the session dormant under a policy that knows it
+    /// is, so the next request wakes it rather than being held for ever (finding 2 of the 0.2.0
+    /// review, D96).
+    /// </summary>
+    [Fact]
+    public async Task AStopThatFailsPartWayStillLeavesTheSessionWakeable()
+    {
+        var inner = new RestartableFakeRoslynFactory();
+        var factory = new TweakedRoslynFactory(inner) { ThrowAtEndOfStream = static attempt => attempt == 1 };
+        var memory = new MemoryScript();
+        var time = new TestTimeProvider();
+
+        await using var harness = new SessionHarness(factory, time, sampleMemory: memory.Sample);
+
+        await RecycleAsync(harness, inner, time, memory);
+
+        Assert.Contains("exit", inner.Latest!.ReceivedMethods);
+        await SessionHarness.WaitAsync(
+            () => harness.Session.Recycler.Status.Phase == BackendPhase.Dormant,
+            Cancellation);
+
+        await harness.SendAsync(Definition(7, ProgramUri), Cancellation);
+        await SessionHarness.WaitAsync(() => inner.ConnectCount == 2, Cancellation);
+        await SessionHarness.WaitAsync(
+            () => inner.Latest!.ReceivedMethods.Contains("solution/open"),
+            Cancellation);
+
+        inner.Latest!.CompleteProjectInitialization();
+
+        var response = await harness.AwaitResponseAsync(7, Cancellation);
+
+        Assert.False(response.TryGetProperty("error", out _));
+        Assert.Equal(1, harness.Session.Recycler.Status.Recycles);
+    }
+
+    /// <summary>
+    /// A wake whose relaunch fails refuses what waited for it — saying the next request tries again —
+    /// and goes back to sleep rather than failing a session that was working; the next request does
+    /// try again, and is answered (finding 5, D96).
+    /// </summary>
+    [Fact]
+    public async Task AWakeThatFailsRefusesWhatWaitedForItAndTheNextRequestTriesAgain()
+    {
+        var inner = new RestartableFakeRoslynFactory();
+        var factory = new TweakedRoslynFactory(inner) { FailAttempt = static attempt => attempt == 2 };
+        var memory = new MemoryScript();
+        var time = new TestTimeProvider();
+
+        await using var harness = new SessionHarness(factory, time, sampleMemory: memory.Sample);
+
+        await RecycleAsync(harness, inner, time, memory);
+
+        await harness.SendAsync(Definition(7, ProgramUri), Cancellation);
+
+        var refused = (await harness.AwaitResponseAsync(7, Cancellation)).GetProperty("error");
+
+        Assert.Equal(JsonRpcErrors.InternalError, refused.GetProperty("code").GetInt32());
+        Assert.Contains(
+            "the next request tries again",
+            refused.GetProperty("message").GetString()!,
+            StringComparison.Ordinal);
+
+        // Asleep again rather than failed: the reason is cleared once the held requests carry it.
+        Assert.Equal(ReadinessState.Dormant, harness.Session.Gate.State);
+        await SessionHarness.WaitAsync(
+            () => harness.Session.Gate.FailureReason is null
+                  && harness.Session.Recycler.Status.Phase == BackendPhase.Dormant,
+            Cancellation);
+
+        Assert.Equal(1, inner.ConnectCount);
+
+        await harness.SendAsync(Definition(8, ProgramUri), Cancellation);
+        await SessionHarness.WaitAsync(() => inner.ConnectCount == 2, Cancellation);
+        await SessionHarness.WaitAsync(
+            () => inner.Latest!.ReceivedMethods.Contains("solution/open"),
+            Cancellation);
+
+        inner.Latest!.CompleteProjectInitialization();
+
+        var answered = await harness.AwaitResponseAsync(8, Cancellation);
+
+        Assert.False(answered.TryGetProperty("error", out _));
+        Assert.Equal(3, factory.Attempts);
+        Assert.Equal(ReadinessState.ProjectsLoaded, harness.Session.Gate.State);
+    }
+
+    /// <summary>
+    /// A setup that is genuinely broken still says so: three failed wakes in a row fail the session
+    /// the way a failed first launch does, and a failed session refuses rather than trying again.
+    /// </summary>
+    [Fact]
+    public async Task ThreeWakesThatFailInARowFailTheSession()
+    {
+        var inner = new RestartableFakeRoslynFactory();
+        var factory = new TweakedRoslynFactory(inner) { FailAttempt = static attempt => attempt >= 2 };
+        var memory = new MemoryScript();
+        var time = new TestTimeProvider();
+
+        await using var harness = new SessionHarness(factory, time, sampleMemory: memory.Sample);
+
+        await RecycleAsync(harness, inner, time, memory);
+
+        for (var id = 7; id < 7 + BackendRecycler.MaxConsecutiveWakeFailures; id++)
+        {
+            await harness.SendAsync(Definition(id, ProgramUri), Cancellation);
+
+            var refused = await harness.AwaitResponseAsync(id, Cancellation);
+            Assert.True(refused.TryGetProperty("error", out _));
+        }
+
+        await SessionHarness.WaitAsync(() => harness.Session.Gate.State == ReadinessState.Failed, Cancellation);
+
+        var attempts = factory.Attempts;
+        Assert.Equal(1 + BackendRecycler.MaxConsecutiveWakeFailures, attempts);
+
+        await harness.SendAsync(Definition(20, ProgramUri), Cancellation);
+
+        var after = (await harness.AwaitResponseAsync(20, Cancellation)).GetProperty("error");
+
+        Assert.Contains("doctor", after.GetProperty("message").GetString()!, StringComparison.Ordinal);
+        Assert.Equal(attempts, factory.Attempts);
+    }
+
+    /// <summary>
+    /// A workspace slower than its readiness budget is served from the timeout on, but measured only
+    /// once it has really loaded: a baseline sampled mid-load would be a threshold that recycles it
+    /// every idle period (finding 6, D100).
+    /// </summary>
+    [Fact]
+    public async Task AWorkspaceThatTimedOutIsMeasuredOnlyOnceItHasLoaded()
+    {
+        var factory = new RestartableFakeRoslynFactory();
+        var memory = new MemoryScript();
+        var time = new TestTimeProvider();
+        var options = ClaudeRoslynLspOptions.FromEnvironment(static _ => null) with { ReadyTimeoutSeconds = 30 };
+
+        await using var harness = new SessionHarness(factory, time, options, memory.Sample);
+
+        await harness.HandshakeAsync(Cancellation);
+        await SessionHarness.WaitAsync(
+            () => harness.Session.Gate.State == ReadinessState.RoslynInitialized,
+            Cancellation);
+
+        memory.Bytes = 150 * Megabyte;
+        time.Advance(TimeSpan.FromSeconds(31));
+
+        await SessionHarness.WaitAsync(
+            () => harness.Session.Gate.State == ReadinessState.LoadTimedOut
+                  && harness.Session.Recycler.Status.Phase == BackendPhase.Running,
+            Cancellation);
+
+        time.Advance(BackendRecycler.BaselineDelay * 2);
+        Assert.Null(harness.Session.Recycler.Status.BaselineBytes);
+
+        factory.Latest!.CompleteProjectInitialization();
+        await SessionHarness.WaitAsync(
+            () => harness.Session.Gate.State == ReadinessState.ProjectsLoaded,
+            Cancellation);
+
+        // A minute at a time: the late load arms the baseline from the gate's own thread, a moment
+        // after the state the test waited for.
+        memory.Bytes = 600 * Megabyte;
+        await AdvanceUntilAsync(
+            time,
+            harness,
+            () => harness.Session.Recycler.Status.BaselineBytes == 600 * Megabyte,
+            3);
+    }
+
+    /// <summary>
+    /// With <c>CLAUDE_ROSLYN_LSP_ROSLYN_PATH</c> pointing at a wrapper, the process the server names
+    /// (C45) is not the one this session started: the child is what is measured, and nothing is
+    /// compacted, because a forced collection in somebody else's process is not ours to cause
+    /// (finding 7, D101).
+    /// </summary>
+    [Fact]
+    public async Task AServerThatNamesAProcessThisSessionDidNotStartIsNeverCompacted()
+    {
+        var inner = new RestartableFakeRoslynFactory();
+        var factory = new TweakedRoslynFactory(inner) { LaunchedProcessId = 999 };
+        var compactor = new CountingCompactor();
+        var sampled = new HashSet<int>();
+        var time = new TestTimeProvider();
+
+        long? Sample(int processId)
+        {
+            lock (sampled)
+            {
+                sampled.Add(processId);
+            }
+
+            return 400 * Megabyte;
+        }
+
+        await using var harness = new SessionHarness(factory, time, sampleMemory: Sample, compactor: compactor);
+
+        await LoadLaunchedAsync(harness, inner, time);
+        await AdvanceMinutesAsync(time, harness, 10);
+
+        Assert.Equal(999, harness.Session.Recycler.Status.ProcessId);
+        Assert.Equal(0, compactor.Calls);
+
+        lock (sampled)
+        {
+            Assert.Contains(999, sampled);
+            Assert.DoesNotContain(RoslynProcessId, sampled);
+        }
+    }
+
+    /// <summary>The other half: when the server names the child this session started, it is compacted.</summary>
+    [Fact]
+    public async Task TheChildThisSessionStartedIsCompactedWhenIdle()
+    {
+        var inner = new RestartableFakeRoslynFactory();
+        var factory = new TweakedRoslynFactory(inner) { LaunchedProcessId = RoslynProcessId };
+        var compactor = new CountingCompactor();
+        var memory = new MemoryScript();
+        var time = new TestTimeProvider();
+
+        await using var harness = new SessionHarness(factory, time, sampleMemory: memory.Sample, compactor: compactor);
+
+        await LoadLaunchedAsync(harness, inner, time);
+        await AdvanceUntilAsync(time, harness, () => compactor.Calls > 0, 10);
+
+        Assert.Equal(RoslynProcessId, harness.Session.Recycler.Status.ProcessId);
+    }
+
+    /// <summary>Handshake and load, and the baseline a minute later, for a backend reached through a wrapper.</summary>
+    private static async Task LoadLaunchedAsync(
+        SessionHarness harness,
+        RestartableFakeRoslynFactory inner,
+        TestTimeProvider time)
+    {
+        await harness.HandshakeAsync(Cancellation);
+        await SessionHarness.WaitAsync(() => inner.Latest is not null, Cancellation);
+
+        inner.Latest!.CompleteProjectInitialization();
+        await SessionHarness.WaitAsync(
+            () => harness.Session.Recycler.Status.Phase == BackendPhase.Running,
+            Cancellation);
+
+        time.Advance(BackendRecycler.BaselineDelay);
+
+        await SessionHarness.WaitAsync(
+            () => harness.Session.Recycler.Status.BaselineBytes is not null,
+            Cancellation);
+    }
+
     /// <summary>Handshake, load, and the baseline a minute later at 400 MB.</summary>
     private static async Task LoadAsync(
         SessionHarness harness,
@@ -462,6 +713,20 @@ public class AdapterIdleRecycleTests
          "textDocument":{"uri":"{{{uri}}}"},"position":{"line":0,"character":6}
         }}
         """;
+
+    /// <summary>A compactor that counts and frees nothing.</summary>
+    private sealed class CountingCompactor : IBackendCompactor
+    {
+        private int _calls;
+
+        internal int Calls => Volatile.Read(ref _calls);
+
+        public Task<bool> TryCompactAsync(int processId, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _calls);
+            return Task.FromResult(false);
+        }
+    }
 
     /// <summary>What the scripted Roslyn process "holds", by the policy's metric.</summary>
     private sealed class MemoryScript

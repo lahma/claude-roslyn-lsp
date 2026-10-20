@@ -150,6 +150,8 @@ internal sealed partial class LaunchedRoslynFactory : IRoslynConnectionFactory
             Description,
             () => DisposeChildAsync(child))
         {
+            LaunchedProcessId = child.Process.Id,
+
             // The recycle's last resort (D97): end the process, keep everything else.
             Terminate = () =>
             {

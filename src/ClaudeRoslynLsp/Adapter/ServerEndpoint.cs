@@ -182,9 +182,25 @@ internal sealed partial class ServerEndpoint : IAsyncDisposable
         catch (TimeoutException)
         {
             Log.Killing(_logger, StopExitWait.TotalSeconds);
-            await Connection.TerminateAsync().ConfigureAwait(false);
-            return false;
         }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // An Exited that faulted is a backend that ended badly, which is still a backend that
+            // ended; nothing to wait for and nothing to kill.
+            Log.ExitFaulted(_logger, exception.Message);
+            return true;
+        }
+
+        try
+        {
+            await Connection.TerminateAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            Log.KillFailed(_logger, exception.Message);
+        }
+
+        return false;
     }
 
     /// <inheritdoc />
@@ -228,5 +244,17 @@ internal sealed partial class ServerEndpoint : IAsyncDisposable
             Message = "Roslyn was still running {Seconds:0} s after it was told to exit; killing it. " +
                       "The session stays as it was and the next request relaunches it.")]
         internal static partial void Killing(ILogger logger, double seconds);
+
+        [LoggerMessage(
+            EventId = 128,
+            Level = LogLevel.Debug,
+            Message = "The Roslyn backend's exit was reported as a failure ({Reason}); it is gone either way.")]
+        internal static partial void ExitFaulted(ILogger logger, string reason);
+
+        [LoggerMessage(
+            EventId = 129,
+            Level = LogLevel.Warning,
+            Message = "Killing the Roslyn backend that ignored exit failed ({Reason}); it is retired anyway.")]
+        internal static partial void KillFailed(ILogger logger, string reason);
     }
 }

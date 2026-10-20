@@ -121,6 +121,10 @@ internal sealed partial class OwnedRoslynEngine
     /// </remarks>
     internal static readonly TimeSpan ScopeConfirmBudget = TimeSpan.FromSeconds(8);
 
+    /// <summary>What an attached engine tells its host at the start of every tool call (D95).</summary>
+    private static readonly byte[] ActivityNotification =
+        JsonRpcErrors.Notification(SharedRoslynHost.ActivityMethod, default);
+
     private readonly Lock _stateLock = new();
     private readonly IRoslynConnectionFactory _factory;
     private readonly ClaudeRoslynLspOptions _options;
@@ -149,6 +153,11 @@ internal sealed partial class OwnedRoslynEngine
     private Task? _serverPump;
     private int? _recyclingGeneration;
     private bool _reloadingAfterRecycle;
+    private int? _wakeGeneration;
+    private int _wakeFailures;
+    private string? _wakeFailure;
+    private (int? ProcessId, int Recycles)? _hostBackendSeen;
+    private int _processMismatchLogged;
     private TaskCompletionSource _opened = Completion();
     private WorkspaceSelection? _selection;
     private IReadOnlyList<WorkspaceProject>? _projects;
@@ -263,6 +272,10 @@ internal sealed partial class OwnedRoslynEngine
             logger);
 
         _gate.HeldWhileDormant += _recycler.RecordActivity;
+        _gate.LoadedLate += _recycler.OnWorkspaceLoaded;
+
+        // D105: an attached engine learns from its host that the Roslyn behind the pipe was replaced.
+        _serverHandler.BackendChanged += OnHostBackendChanged;
     }
 
     /// <summary>The readiness gate, exposed for the live tests.</summary>
@@ -366,20 +379,36 @@ internal sealed partial class OwnedRoslynEngine
         _recycler.RecordActivity();
 
         Task opened;
+        ServerEndpoint? host;
+        bool wakeFailed;
 
         lock (_stateLock)
         {
             opened = _opened.Task;
+            host = _attached ? _server : null;
+
+            // The wake this call asked for may already have failed and replaced _opened (D96); that
+            // replacement completes only when a later wake loads, and waiting on it would spend the
+            // whole budget to report what is already known.
+            wakeFailed = _wakeFailure is not null;
         }
 
-        try
+        // An attached engine's activity is the host's to count (D95), and a solution-wide diagnostic
+        // pull — which the host deliberately does not count — may be the only thing this call sends.
+        host?.Post(ActivityNotification);
+
+        if (!wakeFailed)
         {
-            await opened.WaitAsync(timeout, _time, cancellationToken).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            // Not a failure: a workspace that is still loading is the normal state of a session that
-            // has just started, and the caller answers with a status rather than an error (D66).
+            try
+            {
+                await opened.WaitAsync(timeout, _time, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Not a failure: a workspace that is still loading is the normal state of a session
+                // that has just started, and the caller answers with a status rather than an error
+                // (D66).
+            }
         }
 
         return Snapshot();
@@ -1220,22 +1249,38 @@ internal sealed partial class OwnedRoslynEngine
             return true;
         }
 
-        await server.StopByProtocolAsync(_serverBound, _time).ConfigureAwait(false);
-
-        if (pump is not null)
+        // Nothing below may throw out of here (finding 2 of the 0.2.0 review): the gate is dormant and
+        // _opened replaced, and a recycle that failed half way and reported "nothing changed" would
+        // leave every later call waiting on a gate nothing wakes.
+        try
         {
-            try
-            {
-                await pump.WaitAsync(ShutdownWait, _time, CancellationToken.None).ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                Log.StreamOutlivedBackend(_logger);
-                OnBackendGone(server);
-            }
-        }
+            await server.StopByProtocolAsync(_serverBound, _time).ConfigureAwait(false);
 
-        return true;
+            if (pump is not null)
+            {
+                try
+                {
+                    await pump.WaitAsync(ShutdownWait, _time, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    Log.StreamOutlivedBackend(_logger);
+                    OnBackendGone(server);
+                }
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // Told to shut down, so it cannot be put back into service: end it as best we can and
+            // retire it by hand. The gate is dormant and the next call wakes a fresh one.
+            Log.RecycleStopFailed(_logger, exception.Message);
+            await TerminateQuietlyAsync(server).ConfigureAwait(false);
+            OnBackendGone(server);
+
+            return true;
+        }
     }
 
     /// <inheritdoc />
@@ -1251,6 +1296,8 @@ internal sealed partial class OwnedRoslynEngine
             }
 
             generation = _generation;
+            _wakeGeneration = generation;
+            _wakeFailure = null;
         }
 
         if (!_gate.MarkWaking())
@@ -1271,6 +1318,23 @@ internal sealed partial class OwnedRoslynEngine
         // The crash path's reconnect (D57) without its supervisor (D99): replay the mirror, re-apply
         // the settings a tool changed, re-open the solution.
         _ = Task.Run(() => ConnectAsync(generation, CancellationToken.None), CancellationToken.None);
+    }
+
+    /// <inheritdoc />
+    bool IRecycleTarget.IsDormant
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                if (_server is not null)
+                {
+                    return false;
+                }
+            }
+
+            return _gate.State == ReadinessState.Dormant;
+        }
     }
 
     /// <summary>Clears a recycle's flag, when the backend it was set for is still the current one.</summary>
@@ -1307,7 +1371,7 @@ internal sealed partial class OwnedRoslynEngine
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            FailIfCurrent(generation, $"the Roslyn backend could not be started ({exception.Message})", exception);
+            FailIfCurrent(generation, $"the Roslyn backend could not be started ({exception.Message})", exception, server: null);
             return;
         }
 
@@ -1339,6 +1403,7 @@ internal sealed partial class OwnedRoslynEngine
             // since I last told you", and this process has told us nothing yet (C58).
             _backendProcessId = null;
             _lastWorkspaceReport = null;
+            _hostBackendSeen = null;
 
             retired = _retired;
             _retired = null;
@@ -1369,9 +1434,10 @@ internal sealed partial class OwnedRoslynEngine
 
             RecordBackendIdentity(result);
 
-            // C45's process is the one the idle policy measures (D100); an attached engine's is the
-            // host's child, and the host measures and decides about it itself.
-            _recycler.OnLaunched(server.Connection.Attached ? null : RoslynResponses.ProcessIdOf(result));
+            // The idle policy measures C45's process when it is the child this engine launched, and
+            // compacts only then (D100, D101); an attached engine's is the host's child, and the host
+            // measures and decides about it itself.
+            ReportLaunched(server, result);
         }
         catch (Exception exception) when (exception is not OperationCanceledException
                                               || cancellationToken.IsCancellationRequested)
@@ -1381,7 +1447,8 @@ internal sealed partial class OwnedRoslynEngine
                 exception is TimeoutException
                     ? $"Roslyn did not answer initialize within {budget.TotalSeconds:0} s"
                     : $"the Roslyn handshake failed ({exception.Message})",
-                exception);
+                exception,
+                server);
 
             return;
         }
@@ -1608,7 +1675,7 @@ internal sealed partial class OwnedRoslynEngine
 
             case RestartDecision.GiveUp:
             default:
-                FailIfCurrent(generation, RoslynSupervisor.GiveUpReason, exception: null);
+                FailIfCurrent(generation, RoslynSupervisor.GiveUpReason, exception: null, server: null);
                 break;
         }
     }
@@ -1622,8 +1689,9 @@ internal sealed partial class OwnedRoslynEngine
             // are complete enough to be worth standing watchers up for.
             _watching.Schedule(_registrations.Watchers);
 
-            // The idle clock's baseline is due a minute from now (D100).
-            _recycler.OnWorkspaceReady();
+            // The idle clock's baseline is due a minute from now — when the workspace really loaded;
+            // after a timeout it waits for LoadedLate instead (D100).
+            _recycler.OnWorkspaceReady(loaded: state == ReadinessState.ProjectsLoaded);
         }
 
         TaskCompletionSource opened;
@@ -1632,13 +1700,16 @@ internal sealed partial class OwnedRoslynEngine
         {
             opened = _opened;
             _reloadingAfterRecycle = false;
+            _wakeGeneration = null;
+            _wakeFailures = 0;
+            _wakeFailure = null;
         }
 
         opened.TrySetResult();
     }
 
     /// <summary>Records a startup failure, unless a newer attempt has already superseded this one.</summary>
-    private void FailIfCurrent(int generation, string reason, Exception? exception)
+    private void FailIfCurrent(int generation, string reason, Exception? exception, ServerEndpoint? server)
     {
         lock (_stateLock)
         {
@@ -1649,8 +1720,161 @@ internal sealed partial class OwnedRoslynEngine
             }
         }
 
+        if (TryFailWake(generation, reason, server))
+        {
+            return;
+        }
+
         Log.Failed(_logger, reason, exception);
         _gate.MarkFailed(reason);
+    }
+
+    /// <summary>
+    /// A wake's relaunch failed: answer the calls that waited for it and go back to sleep, rather than
+    /// failing an engine that was working (D96). The same rule, and the same budget, as the
+    /// <c>lsp</c> verb's.
+    /// </summary>
+    /// <returns>True when the failure was a wake's and has been absorbed.</returns>
+    private bool TryFailWake(int generation, string reason, ServerEndpoint? server)
+    {
+        ServerEndpoint? abandoned = null;
+        TaskCompletionSource waiting;
+        int failures;
+
+        lock (_stateLock)
+        {
+            if (_stopping || _wakeGeneration != generation)
+            {
+                return false;
+            }
+
+            _wakeGeneration = null;
+            failures = ++_wakeFailures;
+
+            if (failures >= BackendRecycler.MaxConsecutiveWakeFailures)
+            {
+                return false;
+            }
+
+            if (server is not null && ReferenceEquals(_server, server))
+            {
+                _server = null;
+                _retired = server;
+                abandoned = server;
+            }
+
+            _generation++;
+            _reloadingAfterRecycle = false;
+            _wakeFailure = reason;
+
+            // The calls waiting on this wake are let go now, with the state below; the next one waits
+            // on a fresh wake.
+            waiting = _opened;
+            _opened = Completion();
+        }
+
+        if (!_gate.ReturnToDormant(
+                $"the Roslyn backend could not be relaunched after this session was idle ({reason}); "
+                + "the next call tries again"))
+        {
+            return false;
+        }
+
+        _recycler.OnWakeFailed();
+
+        // In this order, and then looked at once more. A request held in the instant between the
+        // gate going back to sleep and the policy doing the same asked a policy that was still
+        // "starting" for a wake, which it ignores; without this it would wait in a dormant gate
+        // that nothing is going to wake. The other order is worse: a wake asked for in between
+        // would find the gate not yet dormant and leave the policy starting for good.
+        if (_gate.HeldCount > 0)
+        {
+            _recycler.RecordActivity();
+        }
+
+        waiting.TrySetResult();
+
+        if (abandoned is not null)
+        {
+            _ = TerminateQuietlyAsync(abandoned);
+        }
+
+        Log.WakeFailed(_logger, failures, BackendRecycler.MaxConsecutiveWakeFailures, reason);
+        return true;
+    }
+
+    /// <summary>Ends a backend's process without disposing its connection, and never throws.</summary>
+    private async Task TerminateQuietlyAsync(ServerEndpoint server)
+    {
+        try
+        {
+            await server.Connection.TerminateAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            Log.TerminateFailed(_logger, exception.Message);
+        }
+    }
+
+    /// <summary>Tells the idle policy which process to measure, and whether it may be compacted.</summary>
+    private void ReportLaunched(ServerEndpoint server, JsonElement result)
+    {
+        if (server.Connection.Attached)
+        {
+            _recycler.OnLaunched(null, compactable: false);
+            return;
+        }
+
+        var announced = RoslynResponses.ProcessIdOf(result);
+        var launched = server.Connection.LaunchedProcessId;
+        var (processId, compactable, mismatch) = BackendRecycler.ChooseProcess(announced, launched);
+
+        if (mismatch && Interlocked.Exchange(ref _processMismatchLogged, 1) == 0)
+        {
+            Log.ProcessMismatch(_logger, announced ?? 0, launched ?? 0);
+        }
+
+        _recycler.OnLaunched(processId, compactable);
+    }
+
+    /// <summary>
+    /// The host this engine is attached to replaced its Roslyn, or changed what it is doing (D105).
+    /// </summary>
+    /// <remarks>
+    /// The cached workspace report is the C58 fallback — "Roslyn holding the pull means nothing has
+    /// changed since it last answered" — and that is untrue of a Roslyn that has never answered this
+    /// engine. Without forgetting it, an attached <c>getDiagnostics scope: "solution"</c> that
+    /// woke a dormant host would be held through the reload past its warm budget and fall back to
+    /// the report of the process that was recycled, answering <c>ok</c> about a workspace nobody had
+    /// looked at.
+    /// </remarks>
+    private void OnHostBackendChanged()
+    {
+        if (_serverHandler.HostBackend is not { } host)
+        {
+            return;
+        }
+
+        lock (_stateLock)
+        {
+            (int? ProcessId, int Recycles) seen = (host.ProcessId, host.Recycles);
+
+            // A host that is stopping or relaunching its Roslyn has no backend the report could be
+            // about, and a running one under a different process id or recycle count is a backend
+            // this engine has never been answered by.
+            if (host.State != BackendStatus.RunningState
+                || (_hostBackendSeen is { } previous && previous != seen))
+            {
+                _lastWorkspaceReport = null;
+            }
+
+            _hostBackendSeen = seen;
+
+            if (host.ProcessId is { } processId)
+            {
+                _backendProcessId = processId;
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1849,6 +2073,7 @@ internal sealed partial class OwnedRoslynEngine
         bool attached;
         int? hostProcessId;
         bool reloading;
+        string? wakeFailure;
 
         lock (_stateLock)
         {
@@ -1856,6 +2081,7 @@ internal sealed partial class OwnedRoslynEngine
             attached = _attached;
             hostProcessId = _hostProcessId;
             reloading = _reloadingAfterRecycle;
+            wakeFailure = _wakeFailure;
         }
 
         // D105: an attached engine's backend is the host's, and the host says when it replaced it —
@@ -1887,6 +2113,9 @@ internal sealed partial class OwnedRoslynEngine
             status switch
             {
                 WorkspaceLoadStatus.Failed => _gate.FailureMessage,
+                WorkspaceLoadStatus.Loading when wakeFailure is { } why =>
+                    $"The language server was stopped while this session was idle, and relaunching it failed "
+                    + $"({why}). Call the tool again: the next call tries once more.",
                 WorkspaceLoadStatus.Loading when reloading =>
                     $"The workspace is loading again ({loaded} of {total} project(s)): the language server was "
                     + "stopped while this session was idle, to give its memory back, and this call relaunched it. "
@@ -2236,6 +2465,33 @@ internal sealed partial class OwnedRoslynEngine
             Message = "The recycled Roslyn backend's stream did not end after its process went; it has " +
                       "been retired without waiting for it.")]
         internal static partial void StreamOutlivedBackend(ILogger logger);
+
+        [LoggerMessage(
+            EventId = 5118,
+            Level = LogLevel.Warning,
+            Message = "Stopping the idle Roslyn backend failed part way ({Reason}); it has been ended and " +
+                      "retired, and the next call relaunches it.")]
+        internal static partial void RecycleStopFailed(ILogger logger, string reason);
+
+        [LoggerMessage(
+            EventId = 5119,
+            Level = LogLevel.Warning,
+            Message = "Relaunching the idle-recycled Roslyn backend failed ({Reason}), {Failures} of {Limit} " +
+                      "in a row; the engine stays up and the next call tries again.")]
+        internal static partial void WakeFailed(ILogger logger, int failures, int limit, string reason);
+
+        [LoggerMessage(
+            EventId = 5120,
+            Level = LogLevel.Debug,
+            Message = "Ending an abandoned Roslyn backend failed ({Reason}).")]
+        internal static partial void TerminateFailed(ILogger logger, string reason);
+
+        [LoggerMessage(
+            EventId = 5121,
+            Level = LogLevel.Information,
+            Message = "Roslyn reports process {Announced} as holding the workspace but this engine launched " +
+                      "process {Launched}; the launched one is measured and neither is compacted (D101).")]
+        internal static partial void ProcessMismatch(ILogger logger, int announced, int launched);
     }
 }
 

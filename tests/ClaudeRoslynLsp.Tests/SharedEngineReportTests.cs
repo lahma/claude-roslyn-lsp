@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 
@@ -24,6 +25,42 @@ public class SharedEngineReportTests
     private const long Megabyte = 1024 * 1024;
 
     private static readonly DateTimeOffset Now = new(2026, 10, 19, 16, 0, 0, TimeSpan.Zero);
+
+    /// <summary>
+    /// A session file naming a process <c>doctor</c> may not look at is reported, not crashed on —
+    /// and <c>--fix</c> leaves it, because a check that cannot judge must not delete (finding 1).
+    /// </summary>
+    [Fact]
+    public void TheReportSurvivesAProcessItCannotLookAt()
+    {
+        const int Denied = int.MaxValue - 11;
+
+        using var home = TempWorkspace.Create("doctor-denied");
+        var registry = new SessionRegistry(
+            Path.Combine(home.Root, SessionRegistry.DirectoryName),
+            NullLogger.Instance,
+            static pid => pid == Denied ? throw new Win32Exception(5, "Access is denied.") : true,
+            sweepLocks: false,
+            pidNamespace: null);
+
+        var key = SessionRegistry.KeyFor("/w/Service/Service.slnx");
+
+        registry.Write(key, new SharedSession(
+            Denied,
+            ServerVersion.Value,
+            SharedSession.PipeTransport,
+            "claude-roslyn-lsp-share-service",
+            "/w/Service/Service.slnx",
+            Now.AddHours(-1)));
+
+        var report = SharedEngineReport.Gather(registry, sharingEnabled: true, fix: true, static _ => null);
+
+        var entry = Assert.Single(report.Entries);
+
+        Assert.True(entry.Report.Alive);
+        Assert.Equal(0, report.Stale.Sessions);
+        Assert.True(File.Exists(registry.FileFor(key)));
+    }
 
     [Fact]
     public void TheJsonCarriesWhatEachLiveHostsRoslynHoldsAndATotal()

@@ -42,6 +42,8 @@ internal sealed partial class FakeRoslynServer
 
     private OutboundQueue? _outbound;
     private bool _projectInitializationSent;
+    private bool _projectInitializationRequested;
+    private bool _initializeAnswered;
 
     /// <summary>Creates a server that will run the given script.</summary>
     /// <param name="script">What it answers and what it volunteers.</param>
@@ -111,26 +113,47 @@ internal sealed partial class FakeRoslynServer
     }
 
     /// <summary>
-    /// Sends <c>workspace/projectInitializationComplete</c> now.
+    /// Sends <c>workspace/projectInitializationComplete</c> now, or as soon as <c>initialize</c> has
+    /// been answered.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The manual half of the two load modes. A test that asserts "this request was held, and then
     /// answered" has to control the moment in between; a scripted delay would make it a race.
+    /// </para>
+    /// <para>
+    /// A call that arrives before this server has answered <c>initialize</c> is remembered rather
+    /// than sent. A test sees the server as soon as its factory created it, which is before
+    /// <see cref="RunAsync"/> has an outbound queue to post on: the notification used to be marked
+    /// sent and then dropped, every later call was a no-op, and the gate it was meant to open never
+    /// opened — an intermittent thirty-second hang in whichever test hit the window. Sending it
+    /// straight after the <c>initialize</c> answer is also the order the real server uses.
+    /// </para>
     /// </remarks>
     internal void CompleteProjectInitialization()
     {
         lock (_lock)
         {
-            if (_projectInitializationSent)
+            if (_projectInitializationSent || _projectInitializationRequested)
             {
+                return;
+            }
+
+            if (!_initializeAnswered)
+            {
+                _projectInitializationRequested = true;
                 return;
             }
 
             _projectInitializationSent = true;
         }
 
-        Post(JsonRpcErrors.Notification("workspace/projectInitializationComplete", default));
+        Post(ProjectInitializationComplete());
     }
+
+    /// <summary>The notification that says the workspace has loaded.</summary>
+    private static byte[] ProjectInitializationComplete() =>
+        JsonRpcErrors.Notification("workspace/projectInitializationComplete", default);
 
     /// <summary>Runs the server until <c>exit</c> or end of stream.</summary>
     /// <param name="input">Where the adapter's messages arrive.</param>
@@ -207,6 +230,7 @@ internal sealed partial class FakeRoslynServer
         {
             case "initialize":
                 Post(FakeRoslynScript.Response(idToken, _script.InitializeResult.Span));
+                CompleteRequestedInitialization();
                 return false;
 
             case "shutdown":
@@ -231,6 +255,24 @@ internal sealed partial class FakeRoslynServer
                 RunSteps(method);
                 return false;
         }
+    }
+
+    /// <summary>Sends a load completion a test asked for before <c>initialize</c> was answered.</summary>
+    private void CompleteRequestedInitialization()
+    {
+        lock (_lock)
+        {
+            _initializeAnswered = true;
+
+            if (!_projectInitializationRequested || _projectInitializationSent)
+            {
+                return;
+            }
+
+            _projectInitializationSent = true;
+        }
+
+        Post(ProjectInitializationComplete());
     }
 
     /// <summary>Fires everything the script schedules off one method, on its own task.</summary>

@@ -44,6 +44,11 @@ namespace ClaudeRoslynLsp.Adapter.Sharing;
 /// <param name="Recycles">How many times the host has recycled it.</param>
 /// <param name="LastRecycleAt">When it last did.</param>
 /// <param name="AttachedClients">How many other processes are attached right now.</param>
+/// <param name="PidNamespace">
+/// The host's pid namespace on Linux (<c>/proc/self/ns/pid</c>'s link target), so that a sweep in
+/// another container sharing this home does not judge it by a pid that means nothing there (D103).
+/// Null everywhere else, and in a file written before the field existed.
+/// </param>
 internal sealed record SharedSession(
     [property: JsonPropertyName("pid")] int ProcessId,
     [property: JsonPropertyName("version")] string Version,
@@ -57,7 +62,8 @@ internal sealed record SharedSession(
     [property: JsonPropertyName("baselineMegabytes")] int? BaselineMegabytes = null,
     [property: JsonPropertyName("recycles")] int Recycles = 0,
     [property: JsonPropertyName("lastRecycleAt")] DateTimeOffset? LastRecycleAt = null,
-    [property: JsonPropertyName("attachedClients")] int AttachedClients = 0)
+    [property: JsonPropertyName("attachedClients")] int AttachedClients = 0,
+    [property: JsonPropertyName("pidNamespace")] string? PidNamespace = null)
 {
     /// <summary>The only transport this version knows how to attach over.</summary>
     internal const string PipeTransport = "pipe";
@@ -69,12 +75,17 @@ internal sealed record SharedSession(
 /// <param name="Session">What it says, or null when it could not be read at all.</param>
 /// <param name="Alive">Whether the process it names still exists.</param>
 /// <param name="VersionMatches">Whether it was written by a binary of this version.</param>
+/// <param name="ForeignNamespace">
+/// Whether it was written in another pid namespace — another container sharing this home — so that
+/// <paramref name="Alive"/> says nothing about it and the sweep leaves it alone (D103).
+/// </param>
 internal sealed record SharedSessionReport(
     string Key,
     string Path,
     SharedSession? Session,
     bool Alive,
-    bool VersionMatches)
+    bool VersionMatches,
+    bool ForeignNamespace = false)
 {
     /// <summary>Whether this file would be used, rather than deleted, by a process starting now.</summary>
     internal bool Usable => Session is not null && Alive && VersionMatches;
@@ -83,7 +94,10 @@ internal sealed record SharedSessionReport(
     internal string Verdict => Session is null
         ? "unreadable"
         : !Alive
-            ? $"stale: process {Session.ProcessId} is gone"
+            ? ForeignNamespace
+                ? $"written in another pid namespace ({Session.PidNamespace}); process {Session.ProcessId} cannot "
+                  + "be checked from here, so it is left alone"
+                : $"stale: process {Session.ProcessId} is gone"
             : !VersionMatches
                 ? $"stale: written by version {Session.Version}, this is {ServerVersion.Value}"
                 : "live";

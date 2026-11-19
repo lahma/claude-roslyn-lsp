@@ -485,4 +485,7 @@ rather than what the collector has not yet given back.
   from disk has no such character, and neither does the text `TextFileCodec` decodes (D61), so the
   same edit applied to the file removed its first real character. Reported in issue #3 against
   Roslyn 5.12.0-1.26426.8 on WSL2, reproduced by the reporter on two solutions, with the same file
-  without a mark unaffected; the adapter strips the mark at the client boundary (D111).
+  without a mark unaffected. Re-observed on Windows on 2026-11-19 by `SharedEngineLiveTests` with
+  the adapter's strip switched off: the attached LSP half opened a formatted CRLF file with the mark
+  as its first character, and the hosting MCP engine's `formatCode` answered one edit whose diff
+  was `-using System;` / `+sing System;`. With the strip in place (D111) it finds nothing to change.

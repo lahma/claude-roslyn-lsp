@@ -127,6 +127,75 @@ public class DocumentMirrorTests
         Assert.That(mirror.Count, Is.EqualTo(0));
     }
 
+    // ------------------------------------------------------------------ the byte order mark (C67, D111)
+
+    /// <summary>
+    /// Issue #3: Claude Code sends a UTF-8 file's mark as the document's first character. Roslyn would
+    /// take it for text, so the notification is rebuilt without it, and nothing else about it changes.
+    /// </summary>
+    [Test]
+    public void ADidOpenLosesItsByteOrderMarkAndKeepsEverythingElse()
+    {
+        var rebuilt = DocumentMirror.WithoutByteOrderMark(
+            DidOpen(Uri, "csharp", 3, "\uFEFFusing System;\r\n"), "textDocument/didOpen");
+
+        var item = new DocumentMirror(NullLogger.Instance).Open(rebuilt);
+
+        Assert.That(item, Is.Not.Null);
+        Assert.That(item!.Text, Is.EqualTo("using System;\r\n"));
+        Assert.That(item.Uri, Is.EqualTo(Uri));
+        Assert.That(item.LanguageId, Is.EqualTo("csharp"));
+        Assert.That(item.Version, Is.EqualTo(3));
+    }
+
+    [Test]
+    public void AFullTextDidChangeLosesItsByteOrderMarkAndKeepsItsVersion()
+    {
+        var rebuilt = DocumentMirror.WithoutByteOrderMark(DidChange(Uri, 9, "\uFEFFclass C { }"), "textDocument/didChange");
+
+        using var document = JsonDocument.Parse(rebuilt);
+        var parameters = document.RootElement.GetProperty("params");
+
+        Assert.That(document.RootElement.GetProperty("method").GetString(), Is.EqualTo("textDocument/didChange"));
+        Assert.That(parameters.GetProperty("textDocument").GetProperty("uri").GetString(), Is.EqualTo(Uri));
+        Assert.That(parameters.GetProperty("textDocument").GetProperty("version").GetInt32(), Is.EqualTo(9));
+        Assert.That(parameters.GetProperty("contentChanges")[0].GetProperty("text").GetString(), Is.EqualTo("class C { }"));
+        Assert.That(parameters.GetProperty("contentChanges")[0].TryGetProperty("range", out _), Is.False);
+    }
+
+    /// <summary>D47: only a notification that carried a mark is reserialised; the rest keep the client's bytes.</summary>
+    [Test]
+    public void ANotificationWithoutAMarkKeepsTheClientsBytes()
+    {
+        var open = DidOpen(Uri, "csharp", 1, "using System;");
+        var change = DidChange(Uri, 2, "using System;");
+        var close = DidClose(Uri);
+
+        Assert.That(DocumentMirror.WithoutByteOrderMark(open, "textDocument/didOpen"), Is.SameAs(open));
+        Assert.That(DocumentMirror.WithoutByteOrderMark(change, "textDocument/didChange"), Is.SameAs(change));
+        Assert.That(DocumentMirror.WithoutByteOrderMark(close, "textDocument/didClose"), Is.SameAs(close));
+    }
+
+    /// <summary>One mark is encoding; a second one after it is a character the file really contains.</summary>
+    [Test]
+    public void OnlyOneMarkIsRemoved()
+    {
+        var rebuilt = DocumentMirror.WithoutByteOrderMark(
+            DidOpen(Uri, "csharp", 1, "\uFEFF\uFEFFx"), "textDocument/didOpen");
+
+        Assert.That(new DocumentMirror(NullLogger.Instance).Open(rebuilt)!.Text, Is.EqualTo("\uFEFFx"));
+    }
+
+    /// <summary>A ranged change is out of contract (D13), and its offsets are the client's to answer for.</summary>
+    [Test]
+    public void ARangedDidChangeIsLeftAlone()
+    {
+        var ranged = Encoding.UTF8.GetBytes(
+            """{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"file:///w/a.cs","version":2},"contentChanges":[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},"text":"\uFEFFx"}]}}""");
+
+        Assert.That(DocumentMirror.WithoutByteOrderMark(ranged, "textDocument/didChange"), Is.SameAs(ranged));
+    }
+
     private static byte[] DidOpen(string uri, string languageId, int version, string text) =>
         Encoding.UTF8.GetBytes(Fill(
             """

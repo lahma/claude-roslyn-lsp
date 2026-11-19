@@ -122,10 +122,12 @@ internal sealed class EditTools
         UseStructuredContent = true)]
     [Description(
         "Formats C# files with Roslyn, honouring the repository's .editorconfig, and optionally sorts and removes "
-        + "their using directives. Use this instead of running `dotnet format` in Bash: it is the same engine without "
-        + "the MSBuild round trip, it needs no restore, and it reports exactly which files changed. Name the files "
-        + "with paths, or a project to format all of its C# files. Formatting the same code twice changes nothing the "
-        + "second time. Pass preview: true first to see the diff.")]
+        + "their using directives. Use this instead of running `dotnet format` in Bash: it is the same formatter without "
+        + "the MSBuild round trip, it needs no restore, and it reports exactly which files changed. It changes "
+        + "indentation, spacing, wrapping and usings, but keeps each file's own line endings and final newline: "
+        + "end_of_line and insert_final_newline are not applied, so `dotnet format --verify-no-changes` can still "
+        + "report ENDOFLINE or FINALNEWLINE afterwards. Name the files with paths, or a project to format all of its C# "
+        + "files. Formatting the same code twice changes nothing the second time. Pass preview: true first to see the diff.")]
     public static async Task<EditResult> FormatCodeAsync(
         RoslynToolContext context,
         [Description("The files to format, workspace-relative with forward slashes.")]
@@ -234,17 +236,7 @@ internal sealed class EditTools
         }
 
         var wanted = project.Trim();
-        var projects = state.Projects ?? [];
-
-        var match = projects.FirstOrDefault(candidate =>
-                string.Equals(candidate.Name, wanted, StringComparison.OrdinalIgnoreCase))
-            ?? projects.FirstOrDefault(candidate =>
-                context.RelativeFromPath(candidate.Path)
-                    .EndsWith(wanted.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
-            ?? throw ToolErrors.Ambiguous(
-                "formatCode",
-                $"project '{wanted}'",
-                projects.Select(candidate => candidate.Name));
+        var match = ToolLookup.FindProject(context, state, "formatCode", wanted);
 
         var directory = Path.GetDirectoryName(Path.GetFullPath(match.Path))
             ?? throw ToolErrors.NotFound("formatCode", $"directory of project '{wanted}'");

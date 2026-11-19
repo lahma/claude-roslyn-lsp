@@ -153,19 +153,7 @@ internal sealed class DiagnosticTools
 
         if (!string.IsNullOrWhiteSpace(project))
         {
-            var wanted = project.Trim();
-
-            var match = projects.FirstOrDefault(candidate =>
-                    string.Equals(candidate.Name, wanted, StringComparison.OrdinalIgnoreCase))
-                ?? projects.FirstOrDefault(candidate =>
-                    context.RelativeFromPath(candidate.Path)
-                        .EndsWith(wanted.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
-                ?? throw ToolErrors.Ambiguous(
-                    "getDiagnostics",
-                    $"project '{wanted}'",
-                    projects.Select(candidate => candidate.Name));
-
-            return DirectoryOf(match.Path);
+            return DirectoryOf(ToolLookup.FindProject(context, state, "getDiagnostics", project).Path);
         }
 
         if (string.IsNullOrWhiteSpace(path))

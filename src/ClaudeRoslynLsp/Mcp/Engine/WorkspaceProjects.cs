@@ -199,12 +199,14 @@ internal static class WorkspaceProjects
 
         while ((line = text.IndexOf(SlnMarker, line, StringComparison.Ordinal)) >= 0)
         {
-            // `Project("{GUID}") = "Name", "Relative\Path.csproj", "{GUID}"` - the path is the
-            // fourth quoted run, counting the type guid as the first.
+            // `Project("{TYPE-GUID}") = "Name", "Relative\Path.csproj", "{PROJECT-GUID}"` - the path
+            // is the third quoted run: the type guid, the name, then the path. Taking the fourth read
+            // the project guid instead, which the extension filter then dropped, so every .sln listed
+            // no project at all (issue #4).
             var cursor = line;
             string? path = null;
 
-            for (var field = 0; field < 4; field++)
+            for (var field = 0; field < 3; field++)
             {
                 var quote = text.IndexOf('"', cursor);
 

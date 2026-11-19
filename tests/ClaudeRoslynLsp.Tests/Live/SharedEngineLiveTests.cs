@@ -345,8 +345,53 @@ public class SharedEngineLiveTests
 
         Assert.That(definition.GetProperty("result").EnumerateArray(), Is.Not.Empty);
 
+        await ByteOrderMarkSurvivesFormattingAsync(engine, attached);
+
         await attached.DisposeAsync();
         await hostFactory.StopHostingAsync();
+    }
+
+    /// <summary>
+    /// Issue #3, end to end, in the reporter's arrangement: the MCP server hosts, the LSP client
+    /// attaches and opens a file that starts with a byte order mark the way Claude Code does — the mark
+    /// as the text's first character (C67) — and `formatCode` on that already formatted file must
+    /// find nothing to change, where it used to delete the file's first real character.
+    /// </summary>
+    private async Task ByteOrderMarkSurvivesFormattingAsync(OwnedRoslynEngine engine, LspHost attached)
+    {
+        const string Relative = "Hello.Core/Settings.cs";
+        const string Text =
+            "using System;\r\n\r\nnamespace Hello.Core\r\n{\r\n    public class Settings\r\n    {\r\n"
+            + "        public TimeSpan Timeout { get; set; }\r\n    }\r\n}\r\n";
+
+        var path = Path.Combine(WorkspaceRoot, Relative.Replace('/', Path.DirectorySeparatorChar));
+        var bytes = (byte[])[0xEF, 0xBB, 0xBF, .. Encoding.UTF8.GetBytes(Text)];
+        await File.WriteAllBytesAsync(path, bytes, Cancellation);
+
+        var uri = new Uri(path).AbsoluteUri;
+        var item = "{\"uri\":\"" + uri + "\",\"languageId\":\"csharp\",\"version\":1,\"text\":"
+                   + JsonSerializer.Serialize("\uFEFF" + Text, TestJson.String) + "}";
+
+        await attached.NotifyAsync("textDocument/didOpen", "{\"textDocument\":" + item + "}");
+        await WaitUntilAsync(() => engine.IsDocumentOpen(uri), TimeSpan.FromSeconds(30));
+
+        var context = ToolContext(engine);
+
+        foreach (var preview in new[] { true, false })
+        {
+            var result = await EditTools.FormatCodeAsync(
+                context,
+                paths: [Relative],
+                preview: preview,
+                cancellationToken: Cancellation);
+
+            Assert.That(result.Status, Is.EqualTo(ToolStatus.Ok), result.Note);
+            Assert.That(result.FilesChanged, Is.EqualTo(0), result.Diff);
+            Assert.That(result.Note, Is.EqualTo(EditResult.NothingToDoNote));
+        }
+
+        Assert.That(await File.ReadAllBytesAsync(path, Cancellation), Is.EqualTo(bytes));
+        _output.WriteLine("formatCode on an LSP-opened BOM file  nothing to change, bytes unchanged");
     }
 
     private SharingRoslynFactory Sharing(IRoslynConnectionFactory inner, SessionRegistry registry, string name) =>
@@ -543,6 +588,9 @@ public class SharedEngineLiveTests
 
             await SendAsync("""{"jsonrpc":"2.0","method":"initialized","params":{}}""").ConfigureAwait(false);
         }
+
+        internal Task NotifyAsync(string method, string parameters) =>
+            SendAsync($$"""{"jsonrpc":"2.0","method":"{{method}}","params":{{parameters}}}""");
 
         internal async Task<JsonElement> RequestAsync(string method, string parameters, TimeSpan? patience = null)
         {

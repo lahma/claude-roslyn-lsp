@@ -339,6 +339,47 @@ public class AdapterSessionTests
     }
 
     /// <summary>
+    /// Issue #3, C67, D111: the mark a client sends as a document's first character never reaches
+    /// Roslyn or the mirror — whether it arrives as the three raw bytes or as a JSON escape, on
+    /// <c>didOpen</c> and on the full-text <c>didChange</c> after it.
+    /// </summary>
+    [TestCase("\uFEFF")]
+    [TestCase("\\ufeff")]
+    public async Task AClientsByteOrderMarkNeverReachesRoslyn(string mark)
+    {
+        await using var harness = new SessionHarness();
+
+        await harness.SendAsync(Initialize(1), Cancellation);
+        await harness.AwaitResponseAsync(1, Cancellation);
+        await harness.SendAsync(Notification("initialized"), Cancellation);
+        var backend = await harness.AwaitBackendAsync(Cancellation);
+
+        await harness.SendAsync(DidOpen("file:///w/a.cs", 1, mark + "using System;"), Cancellation);
+        await harness.WaitUntilAsync(
+            () => backend.ReceivedMethods.Count(x => x == "textDocument/didOpen") == 1,
+            Cancellation);
+
+        await harness.SendAsync(DidChange("file:///w/a.cs", 2, mark + "using Foo;"), Cancellation);
+        await harness.WaitUntilAsync(
+            () => backend.ReceivedMethods.Count(x => x == "textDocument/didChange") == 1,
+            Cancellation);
+
+        var opened = backend.ReceivedMessages.Single(x => x.Contains("textDocument/didOpen", StringComparison.Ordinal));
+        var changed = backend.ReceivedMessages.Single(x => x.Contains("textDocument/didChange", StringComparison.Ordinal));
+
+        using var openDocument = JsonDocument.Parse(opened);
+        using var changeDocument = JsonDocument.Parse(changed);
+
+        Assert.That(
+            openDocument.RootElement.GetProperty("params").GetProperty("textDocument").GetProperty("text").GetString(),
+            Is.EqualTo("using System;"));
+        Assert.That(
+            changeDocument.RootElement.GetProperty("params").GetProperty("contentChanges")[0].GetProperty("text").GetString(),
+            Is.EqualTo("using Foo;"));
+        Assert.That(harness.Session.Documents.Find("file:///w/a.cs")!.Text, Is.EqualTo("using Foo;"));
+    }
+
+    /// <summary>
     /// <c>shutdown</c> reaches Roslyn before the client is answered, and <c>exit</c> reaches it before
     /// the process stops — the ordering an editor's quit depends on.
     /// </summary>

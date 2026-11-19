@@ -22,6 +22,11 @@ $DotNetChannel = "STS"
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = 1
 $env:DOTNET_NOLOGO = 1
 
+# .NET 11 and later ship the Windows SDK as a .tar.gz, and Windows tar refuses to extract into a
+# destination reached through a symlink. This makes dotnet-install download the zip instead
+# (Fallout-build/Fallout#730, from Fallout 10.5.0's bootstrap template).
+$env:DOTNET_INSTALL_SKIP_TAR = "1"
+
 ###########################################################################
 # EXECUTION
 ###########################################################################

@@ -11,9 +11,9 @@
        process launch, download, unzip, hashing, named pipes - is pure BCL. -->
   <ItemGroup Label="App">
     <!-- Exact pin: the MCP SDK's AOT/serializer contract is verified against this version only. -->
-    <PackageVersion Include="ModelContextProtocol" Version="[2.2.0]" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.12" />
+    <PackageVersion Include="ModelContextProtocol" Version="[2.4.0]" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.15" />
   </ItemGroup>
 
   <ItemGroup Label="Test">

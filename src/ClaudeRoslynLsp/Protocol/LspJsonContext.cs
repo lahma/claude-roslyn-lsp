@@ -37,6 +37,7 @@ namespace ClaudeRoslynLsp.Protocol;
 [JsonSerializable(typeof(DidOpenNotification))]
 [JsonSerializable(typeof(DidOpenParams))]
 [JsonSerializable(typeof(DidChangeParams))]
+[JsonSerializable(typeof(DidChangeNotification))]
 [JsonSerializable(typeof(TextDocumentParams))]
 [JsonSerializable(typeof(RegistrationParams))]
 [JsonSerializable(typeof(UnregistrationParams))]

@@ -3,9 +3,12 @@
 #
 # Every leg runs `fallout SmokeTest`, which depends on PublishAot - so each leg builds its own
 # Native AOT binary, drives a real LSP handshake and a real MCP handshake against it, and only then
-# uploads the archive. Nothing reaches a release without having answered `initialize` over both
-# protocols on the hardware it was compiled for; the arm64 legs run on arm64 runners for exactly
-# that reason.
+# uploads the archive. `PackRuntime` then packs the leg's RID-specific tool package (D22) and drives
+# the same legs against the binary inside it, because `dotnet pack -r` publishes again; the tag's
+# publish.yml run collects the five packages from here, because only a runner of the target OS can
+# build them and only publish.yml may push them. Nothing reaches a release or nuget.org without having
+# answered `initialize` over both protocols on the hardware it was compiled for; the arm64 legs run
+# on arm64 runners for exactly that reason.
 #
 # Action majors are pinned to match the generated build.yml (checkout@v7, setup-dotnet@v6);
 # upload-artifact@v7 and download-artifact@v8 are the current majors and are the matching pair
@@ -22,6 +25,11 @@ on:
   push:
     tags:
       - 'v*'
+  # A manual run builds, smoke-tests, glibc-checks and packs all five legs and releases nothing: the
+  # release job below runs only for a tag. It is how a runner or toolchain change is proven before
+  # the tag exists rather than at release time, and its tool packages are what
+  # `fallout CollectRuntimePackages --release-run-id <id>` rehearses against.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -35,7 +43,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Named, not ubuntu-latest: a Linux binary needs the glibc of the image it is built on,
+          # and PublishAot and PackRuntime fail above the recorded floor (AGENTS.md R3).
+          - os: ubuntu-24.04
             rid: linux-x64
           - os: ubuntu-24.04-arm
             rid: linux-arm64
@@ -56,18 +66,26 @@ jobs:
           global-json-file: global.json
       - name: 'Restore: dotnet tools'
         run: dotnet tool restore
-      - name: 'Run: SmokeTest'
-        run: dotnet fallout SmokeTest --runtime ${{ matrix.rid }}
+      - name: 'Run: SmokeTest, PackRuntime'
+        run: dotnet fallout SmokeTest PackRuntime --runtime ${{ matrix.rid }}
       - name: 'Upload: archives'
         uses: actions/upload-artifact@v7
         with:
           name: archives-${{ matrix.rid }}
           path: artifacts/archives/*
           if-no-files-found: error
+      # The name is the contract with Build.Publish.cs's RuntimePackageArtifactPrefix.
+      - name: 'Upload: tool package'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tool-package-${{ matrix.rid }}
+          path: artifacts/packages/*.nupkg
+          if-no-files-found: error
 
   release:
     name: release
     needs: publish
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

@@ -1,5 +1,7 @@
 # claude-roslyn-lsp
 
+<!-- mcp-name: io.github.lahma/claude-roslyn-lsp -->
+
 Microsoft's Roslyn language server, mediated so that a coding agent can actually use it — as an
 **LSP server** for the agents that speak LSP, and as an **MCP server** for the refactorings LSP
 clients have no button for. It contains no compiler. Roslyn runs in a child process this binary
@@ -107,14 +109,18 @@ The SDK is what you want in practice, for two reasons that are not this adapter'
 evaluates project files and restores packages server-side, which is MSBuild's job, and `dnx` — the
 launch channel the Claude Code plugin uses — is part of the SDK. Anyone doing C# work has it.
 
-The adapter itself is self-contained. The Native AOT binary has no runtime dependency at all.
+The adapter itself is self-contained. The Native AOT binary has no runtime dependency at all — on
+Linux it needs **glibc 2.34 or newer** (Ubuntu 22.04, Debian 12, RHEL 9, Fedora 35 and later), and
+the release build fails rather than ship one that needs more. `dnx` delivers that same binary on the
+five platforms below, and a framework-dependent build everywhere else.
 
 ## Install
 
-Two channels. **Claude Code gets the plugin**, which carries both servers and the workflow skill and
-runs them through `dnx` — no download step, and the SDK is required for C# work anyway. **Every
-other client gets the Native AOT binary** from GitHub Releases: a file-based client wants an
-absolute path and a start measured in milliseconds.
+Two channels, one binary. **Claude Code gets the plugin**, which carries both servers and the
+workflow skill and runs them through `dnx` — no download step, and the SDK is required for C# work
+anyway. **Every other client gets the Native AOT binary** from GitHub Releases: a file-based client
+wants an absolute path. Since 0.3.0 `dnx` runs the same Native AOT binary too, so both channels start
+in a few hundred milliseconds.
 
 ### Claude Code: the plugin
 
@@ -215,7 +221,12 @@ binary downloads is a separate matter and covers more platforms than this table 
 
 The same binary is published to nuget.org as
 [`claude-roslyn-lsp`](https://www.nuget.org/packages/claude-roslyn-lsp), a .NET tool package carrying
-the `McpServer` package type. `dnx` — part of the .NET 10 SDK — downloads and runs it in one step:
+the `McpServer` package type, and listed in the official
+[MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.lahma/claude-roslyn-lsp`. The
+package is a pointer: `dnx` — part of the .NET 10 SDK — fetches `claude-roslyn-lsp.<rid>`, the
+Native AOT binary for Windows, Linux and macOS on the five platforms in the table above, or the
+framework-dependent `claude-roslyn-lsp.any` anywhere else (Alpine, Intel macOS), and runs it in one
+step:
 
 ```bash
 dnx claude-roslyn-lsp@0.2.0 --yes doctor
@@ -462,7 +473,7 @@ project exists to replace.
 | `applyCodeAction` | Applies one of them, optionally across the document, the project or the whole solution. | **destructive**, not idempotent |
 | `renameSymbol` | A solution-wide semantic rename: overrides, interface implementations, other projects. Not a search and replace, and not a file rename. | write, **not** destructive, idempotent |
 | `fixDiagnostics` | Roslyn's own fix-all for one diagnostic id (`IDE0005`, `CA1822`, …) across a file, a project or the solution. | **destructive**, idempotent |
-| `formatCode` | Formats with Roslyn, honouring `.editorconfig`, optionally organising usings. Never shells out to `dotnet format`. | write, **not** destructive, idempotent |
+| `formatCode` | Formats with Roslyn, honouring `.editorconfig`, optionally organising usings. Never shells out to `dotnet format`. Keeps each file's line endings and final newline: `end_of_line` and `insert_final_newline` are not applied. | write, **not** destructive, idempotent |
 
 Every tool declares `openWorldHint: false` — nothing here leaves the machine, let alone the
 workspace — and returns structured content. `applyCodeAction` and `fixDiagnostics` are marked
@@ -1087,8 +1098,9 @@ git clone https://github.com/lahma/claude-roslyn-lsp.git
 cd claude-roslyn-lsp
 
 ./build.sh Test          # restore, compile, run the tests
-./build.sh SmokeTest     # AOT publish, then three real stdio sessions against the binary
-./build.sh Pack          # the NuGet tool package, into artifacts/packages
+./build.sh SmokeTest     # AOT publish, then four real stdio sessions against the binary
+./build.sh Pack          # the pointer and 'any' tool packages, into artifacts/packages
+./build.sh PackRuntime   # this platform's Native AOT tool package
 
 CLAUDE_ROSLYN_LSP_LIVE_TESTS=1 ./build.sh Test LiveTest   # + the real Roslyn, downloaded
 ```
@@ -1117,10 +1129,12 @@ them falls behind. `dotnet fallout UpdateRoslynPin` is the only thing allowed to
 Roslyn version and its hashes.
 
 `SmokeTest` is the check the unit tests cannot be: it publishes the Native AOT binary and drives two
-real LSP sessions and one MCP handshake against it, reading stdout as *frames*, so any byte that is
-not part of one fails the build. It needs no Roslyn download — a scripted backend reproducing a real
-5.12 startup ships inside the binary behind a hidden verb, which is what lets every release platform
-be proven on its own hardware.
+real LSP sessions and two MCP sessions against it, reading LSP stdout as *frames*, so any byte that
+is not part of one fails the build, and sending a mis-cased argument that must be refused rather than
+dropped. It needs no Roslyn download — a scripted backend reproducing a real 5.12 startup ships
+inside the binary behind a hidden verb, which is what lets every release platform be proven on its
+own hardware. `Pack` and `PackRuntime` drive the same sessions against the binaries inside the
+tool packages, because those are publishes of their own.
 
 ## Contributing
 

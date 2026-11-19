@@ -79,8 +79,8 @@ where the argument lives; the reserved rows point there rather than restating it
 | D5 | **A bare `ServiceCollection` for the MCP server**, not `Host.CreateApplicationBuilder`. The SDK registers `McpServer` as a singleton and running it directly is the SDK's own AOT test-app shape; the generic host would add configuration providers, metrics and lifetime machinery to a cold start that a client waits on. `PosixSignalRegistration` handles SIGINT/SIGTERM instead. |
 | D6 | **`JsonSerializerIsReflectionEnabledByDefault=false`, in the product *and* the test project.** A type missing from a `JsonSerializerContext` then fails under `dotnet test`, where it costs a minute, instead of only after a Native AOT publish, where it costs a release. Every serializer call passes an explicit `JsonTypeInfo<T>` so nothing can fall back to reflection by accident. |
 | D7 | **Two source-generated JSON contexts, never chained together.** `Protocol/LspJsonContext` carries LSP wire shapes, spelled with an explicit `[JsonPropertyName]` on every property because they are somebody else's specification; `Mcp/Models/RoslynToolJsonContext` carries the tool vocabulary in camelCase and goes **first** in the MCP server's `TypeInfoResolverChain`, with the SDK's resolver second. A shared resolver would let one vocabulary leak into the other, and the leak would look like a working feature. |
-| D8 | **No `RuntimeIdentifiers` in the csproj, and `PublishAot` keyed off `RuntimeIdentifier`.** Listing RIDs would pull an ILCompiler pack per RID on every restore; the RID list lives in `Build.cs` and the release matrix and reaches the SDK only through `-r`. `dotnet pack` of a tool package runs its own publish, which has no RID, so an unconditional `PublishAot=true` would fail it — keying the property off `RuntimeIdentifier` gives the release path AOT and the pack path a portable IL tool from one project file. No `PublishSingleFile` (ignored under AOT), no `SelfContained` (implied). |
-| D9 | **xunit.v3 3.x with the `xunit.runner.visualstudio` VSTest bridge**, plus `Microsoft.NET.Test.Sdk`, so the stock Fallout `ITest` component works unmodified. No mocking or assertion libraries: fakes are hand-rolled, which keeps the test project's dependency tree as auditable as the product's. Held at 3.x deliberately — xunit.v3 4.0.0 drops VSTest-mode support, and VSTest mode is how Fallout reports failures with their text rather than as a bare pass/fail. |
+| D8 | **No `RuntimeIdentifiers` in the csproj, and `PublishAot` unconditional.** Listing RIDs would pull an ILCompiler pack per RID on every restore; the RID list lives in the release matrix and in the csproj's `ToolPackageRuntimeIdentifiers`, which only shapes the tool packages (D22) and restores nothing per RID — `ToolPackageTests` keeps the two equal — and a RID reaches publish and pack only through `-r`. `PublishAot` is set without a condition: with it, a RID-less `dotnet pack` builds the pointer package alone, where with it false the same command packs every RID package framework-dependent under the native names; and it keeps the AOT, trim and single-file analyzers on for every `dotnet build` and `dotnet test`, so an AOT-hostile line (IL2026, IL3050) is a build error without stating the analyzers separately (re-checked when the explicit block went). Publish output carries neither symbols nor the XML docs (`CopyOutputSymbolsToPublishDirectory`, `PublishDocumentationFile`): Native AOT's symbols alone are ~100 MB on Windows, and a stale one once landed in a sibling's package. No `PublishSingleFile` (ignored under AOT), no `SelfContained` (implied). |
+| D9 | **NUnit 5 on Microsoft.Testing.Platform, run by a hand-written `Test` target.** `global.json` sets `test.runner`, the test project sets `EnableNUnitRunner`, and `build/Build.cs`'s `Test` runs `dotnet test --project` after `Compile` with the platform's telemetry off: Fallout's stock `ITest` drives VSTest only (Fallout-build/Fallout#674), and MTP mode rejects both its positional project argument and its `--logger trx`. `[assembly: FixtureLifeCycle(InstancePerTestCase)]` keeps xunit's fresh instance per test, and fixtures run one at a time, NUnit's default. A failing test exits 2 and a run that finds no test exits 8. No mocking or assertion libraries: NUnit's own constraint model, and fakes hand-rolled, which keeps the test project's dependency tree as auditable as the product's. This replaced xunit.v3 3.x on the VSTest bridge, held there only because `ITest` needed VSTest — the reason went with `ITest`. |
 | D10 | **Environment variables only, and `FromEnvironment` never throws.** One `ClaudeRoslynLspOptions` record, read once per process. A malformed value falls back to the documented default and is reported through the stderr logger rather than by failing startup: a server that refuses to start leaves its client with a dead process and no channel to complain on, because stdout is the protocol. `CLAUDE_PLUGIN_OPTION_<NAME>` is read **first**, with blank treated as absent, then the plain `<NAME>` — see *The plugin-option rule*. There is no configuration file and no `Microsoft.Extensions.Configuration`. |
 | D11 | **`Cli/CliRuntime.cs` owns the console, and the protocol streams are raw `Stream`s.** stdin and stdout are opened once, as bytes. Never `Console.In`/`Console.Out`: a `TextWriter` applies an encoding and, on Windows, rewrites `\n` as `\r\n`, which would put a `Content-Length` header out of step with the body it measured — a corruption that produces no error, only a client that stops answering. |
 | D12 | **Framing is ours, bounded, and strict.** `Protocol/LspFrameReader` accepts only `Content-Length` and `Content-Type`, requires CRLF, caps the header section at 64 KiB and the body at 32 MiB, and treats anything else as an unrecoverable protocol error. Strictness here is not pedantry: this reader sits *between* two peers that both claim to speak LSP, so accepting something Roslyn would reject only moves the failure somewhere harder to see. `LspFrameWriter` writes each frame in a single `WriteAsync` behind a gate, because a header separated from its body can be interleaved with another frame's. |
@@ -93,7 +93,7 @@ where the argument lives; the reserved rows point there rather than restating it
 | D19 | **A Roslyn crash is absorbed, not forwarded.** Settled as **D57**. |
 | D20 | **The MCP tool table and its annotations.** Settled by WP5a; the table is *The MCP tool surface* below and the arguments are **D60-D69**. camelCase verb-noun names, 1-based positions, workspace-relative paths, structured content, and a `preview` flag on every mutating tool. |
 | D21 | **The MCP server applies its own edits.** Settled by WP5a as **D61** and **D62**. It is the LSP *client* in that direction, so it writes files itself, preserving BOM and line endings, and then tells Roslyn what changed — including C33's synthetic project event, which WP5b's engine owns (D75). |
-| D22 | **NuGet is the plugin's launch channel; the AOT archives are everything else's.** The plugin runs `dnx claude-roslyn-lsp@{version}` for both servers — no download step, and an SDK is required for C# work anyway — while file-based clients point at a Native AOT binary from GitHub Releases. The package is pushed by **trusted publishing**: the workflow exchanges its GitHub OIDC token for an API key that lives minutes, so no NuGet API key exists in this repository or in its secrets. The exchange is C# inside the build (`build/Build.Publish.cs`), not a marketplace action. |
+| D22 | **NuGet is the plugin's launch channel, and since 0.3.0 it delivers the Native AOT binary.** The plugin runs `dnx claude-roslyn-lsp@{version}` for both servers — no download step, and an SDK is required for C# work anyway — while file-based clients point at the same binaries from GitHub Releases. `dnx` resolves a **pointer** package that names one RID-specific package per release-matrix RID, then fetches the one for the user's platform, or the framework-dependent **`any`** package anywhere else — which covers the three Roslyn RIDs no archive is built for (D24) at no new cost, because Roslyn needs a .NET 10 runtime there anyway (D31). Measured on win-x64 for the sibling sonarqube-mcp, `initialize` + `tools/list` through `dnx` took 715 ms framework-dependent and 357 ms native, and this plugin pays that start twice per session, once per verb. Native AOT cannot cross-compile across operating systems, so each `release.yml` leg packs its own RID package (`PackRuntime`), extracts the binary, holds it to the glibc floor (R3) and drives every smoke leg against it — `dotnet pack -r` publishes again, so the archive's binary is not the package's. `publish.yml`, the only file the trusted-publishing policy names, collects the five from the same tag's `release.yml` run and pushes every RID package before the pointer, stopping at the first failure, so the pointer never names a package that does not exist. The SDK types the RID packages `DotnetToolRidPackage`, so `PackageType=McpServer` stays on the pointer alone, which nuget.org requires. The push is **trusted publishing**: the workflow exchanges its GitHub OIDC token for an API key that lives minutes, so no NuGet API key exists in this repository or in its secrets, and the exchange is C# inside the build (`build/Build.Publish.cs`), not a marketplace action. |
 | D23 | **One Roslyn per solution, shared by whichever verb started first.** Settled by WP9 and written out as **D85-D94**. Claude Code starts the plugin's `mcp` server at session start and its `lsp` server lazily, so a session that uses both used to load one solution twice and pay for it twice in memory — and Roslyn's own `--daemon` shares a process but not a workspace (C29), so the sharing had to live here. Whichever process gets there first publishes itself in `<home>/sessions/<key>.json`, serves a named pipe and multiplexes the other onto its backend; the other attaches and starts nothing. The seam turned out to be exactly the one WP5b predicted: both halves already take an `IRoslynConnectionFactory` and neither asks what is on the other end of it, so attaching is one new implementation of a two-member interface rather than a second lifecycle. `getWorkspaceStatus` answers `engine: "attached"` with the host's pid (D84), measured on the fixture at **0.0-0.1 s to attach** against 2.4-4.6 s to load, and one 296 MB process instead of two. |
 | D24 | **Eight runtime identifiers, and a host outside them is named rather than corrected.** `roslyn-language-server` is a 33 KB shim; the payload is `roslyn-language-server.<rid>`, and Microsoft publishes eight of them — `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `linux-musl-x64`, `linux-musl-arm64`, `osx-x64`, `osx-arm64` (C5, from the shim's own `DotnetToolSettings.xml`). That list is deliberately longer than this repository's five-RID release matrix, because the framework-dependent NuGet tool (D22) reaches platforms no archive is built for. musl is detected from `RuntimeInformation.RuntimeIdentifier` **and** from `/lib/ld-musl-*`, because a portable build on Alpine reports the RID it was *built* for. `win-x86` and `linux-arm` resolve to themselves and are reported unsupported: downloading the 64-bit payload for a 32-bit host produces a child that dies about an image format, which is nobody's idea of a diagnosis. |
 | D25 | **The hash table is per RID; a version override has no hash at all.** `Roslyn/RoslynServerManifest.cs` carries one base64 SHA-512 per RID for the pinned version, and `dotnet fallout UpdateRoslynPin` is the only thing allowed to write them — a hash typed in by a person is a hash nobody verified. `CLAUDE_ROSLYN_LSP_ROSLYN_VERSION` is honoured (somebody debugging against a newer build should not have to fork the adapter) but that download is verified by TLS alone, and the result carries `Verified = false` all the way to `doctor` rather than being quietly equivalent. |
@@ -130,7 +130,7 @@ where the argument lives; the reserved rows point there rather than restating it
 | D56 | **The C33 rule is the watcher, and past 64 directories it becomes one recursive watcher on the root.** A `Created` event for a new `.cs` file does *nothing* — what makes Roslyn re-evaluate is a `Changed` for the owning `.csproj` (C33) — so every appearance or disappearance of a `.cs` file emits a synthetic one for the nearest project file above it, collapsed with the rest of the 200 ms batch. Bases outside the workspace root are dropped (342 of Quartz.NET's 433 are the NuGet cache, C49), `bin obj .git node_modules .vs artifacts TestResults` are excluded, and the one exception is `project.assets.json` under `obj` — which C48 shows is not a nicety: without it a freshly cloned repository restores server-side and then never finishes loading at all. Open documents are excluded, because the client already owns their text and re-reading the saved copy would discard the live buffer. A watcher error or overflow reports every project file under the root as changed, since once events are lost there is no knowing which. Past 64 kept directories the per-directory scheme is abandoned for one recursive watcher on the workspace root with every pattern re-based, because Quartz.NET's 91 directories under a cap of 64 meant 27 of them silently unwatched. |
 | D57 | **A dead Roslyn gets two goes in ten minutes, and the client never learns it happened.** Claude Code's own restart budget is three and spending it restarts *this* process, throwing away the client session, the document mirror, the readiness state and every answer in flight. Roslyn dying is not that kind of failure: everything needed to rebuild the backend is held here. So the gate closes (a request arriving in the gap is *held*, not answered empty by a backend that has not loaded — C27 arriving late), the mirror replays one `didOpen` per document at its latest text, the solution re-opens, and the diagnostics result ids are forgotten because they are tokens in a dead server's memory. Two restarts per ten minutes: an accident comes back and works, and a Roslyn that dies three times on the same solution is deterministic, so a fourth attempt would turn one broken session into an infinite loop that also holds every request in it. Connect attempts are **generation-numbered**, because a backend that dies during its own handshake produces both a relaunch decision and an abandoned `initialize` that throws, and without the generation the second races the first and fails a session the supervisor had just decided to save. |
 | D58 | **Call-hierarchy answers are de-duplicated; it is the only result the adapter rewrites.** A multi-targeted project reports every call once per target framework (C24), which `workspace/symbol` and `rename` collapse themselves and call hierarchy does not. For an agent that is not cosmetic: a model asked "who calls this" reports twice the number, and a walk down the tree does every branch twice — eight times the work for a three-level hierarchy over two frameworks. The key is (uri, selectionRange), because `selectionRange` is the identifier itself and `data` is precisely what differs; survivors are copied verbatim so the opaque payload the next request must round-trip is untouched; an entry whose key cannot be read is kept, because dropping something this code did not understand would turn a shape change in Roslyn into a silently shorter answer; and an answer with nothing to remove keeps its original bytes. |
-| D59 | **The fixture does not compile, the live tests are one method, and the LiveTest target is CI's only real Roslyn.** `tests/fixtures/HelloSolution` is shaped like somebody else's repository — three projects, one multi-targeted, a real xunit test project — with its own empty `Directory.Build.props` and a `Directory.Packages.props` that turns CPM off, so this repository's `TargetFramework`, `TreatWarningsAsErrors` and package budget cannot reach it. `Program.cs` contains `int x = "s";` on purpose: without a real error the diagnostics bridge could be a no-op and every test would still pass. The live tests run **one** session in phases rather than several `[Fact]`s over a shared fixture, because two of the phases (killing Roslyn, shutting down) destroy what the others need and xunit does not order tests within a class. The `LiveTest` build target is the same argument at the release boundary: every smoke leg speaks to a scripted backend and proves nothing about whether Microsoft's server still answers what this adapter believes it answers. It earned its place immediately — the WP4 run that added it found C48, which every scripted test had passed. |
+| D59 | **The fixture does not compile, the live tests are one method, and the LiveTest target is CI's only real Roslyn.** `tests/fixtures/HelloSolution` is shaped like somebody else's repository — three projects, one multi-targeted, a real xunit test project — with its own empty `Directory.Build.props` and a `Directory.Packages.props` that turns CPM off, so this repository's `TargetFramework`, `TreatWarningsAsErrors` and package budget cannot reach it. `Program.cs` contains `int x = "s";` on purpose: without a real error the diagnostics bridge could be a no-op and every test would still pass. The live tests run **one** session in phases rather than several tests over a shared fixture, because two of the phases (killing Roslyn, shutting down) destroy what the others need, and tests that depend on running in one order are tests the framework is free to run in another. The `LiveTest` build target is the same argument at the release boundary: every smoke leg speaks to a scripted backend and proves nothing about whether Microsoft's server still answers what this adapter believes it answers. It earned its place immediately — the WP4 run that added it found C48, which every scripted test had passed. |
 | D60 | **The tool layer talks to an interface, and the fake lives in the test project.** `Mcp/Engine/IRoslynEngine` is the whole of what the MCP half needs from a running Roslyn, expressed at the LSP level: seventeen members, zero-based positions, `data` blobs passed through as `JsonElement`. Almost all of this product's judgement — symbol addressing, per-TFM de-duplication, code-action ids, diagnostic filtering, the edit applier, the preview cache — lives *above* that line, and none of it needs a quarter-gigabyte child process to be exercised; `FakeRoslynEngine` answers with payloads transcribed from the WP0 spikes and the whole tool suite runs in two seconds. The seam is at the LSP level rather than at a domain level on purpose: a `FindReferences(symbol)` method would put the interesting decisions on the far side of it, where no test can reach them. Its shapes are a **third** source-generated context, `Mcp/Engine/RoslynEngineJsonContext`, chained with neither of the other two — D7's rule is about chaining, not about counting, and merging this into `Protocol/LspJsonContext` would give the mediation and the MCP half one file to fight over. |
 | D61 | **Reading and writing a source file is a component, not two `File` calls.** `Edits/TextFileCodec` decodes bytes to a string and reports how to write them back; `Edits/TextOffsets` turns LSP positions into UTF-16 offsets; `Edits/WorkspacePathGuard` decides what may be written at all. A round trip through `File.ReadAllText`/`WriteAllText` silently drops a UTF-8 mark and re-encodes a UTF-16 file, which turns a one-word refactoring into a diff that touches every line — invisibly, because the code still compiles. The guard is the other half: an edit is an instruction from another process, and Roslyn hands out URIs outside the workspace as a matter of course (C25's `MetadataAsSource` temp files), so the rule is `file:` scheme plus a *resolved* path under the root, compared case-insensitively on Windows and macOS and case-sensitively elsewhere, the way the file systems themselves do. |
 | D62 | **`preview` runs the identical planning pass and simply never writes; the apply that follows reuses what was previewed.** Planning and applying are separate methods over one `WorkspaceEditPlan`, so a preview's diff is not a description of a different operation. `Edits/EditCache` then remembers the resolved edit under a key of tool plus answer-changing arguments — `preview` itself deliberately excluded, or the two calls would never meet — stamped with every read file's last write time and length. If any of them moved, the entry is dropped and the apply re-resolves: that turns "silently applied a different edit than the one that was approved" into "slightly slower", which is the right way round. The diff is budgeted (`maxDiffLines`, 200) because a solution-wide fix-all can rewrite two hundred files, and what is cut is **named** — "… 14 more hunks" is information, silence is not. Every applied result carries one fixed sentence, *Files were changed on disk; re-read a file before editing it.*, because Claude Code's own `Edit` tool refuses a file that changed since its last `Read` and the refusal is undiagnosable from its message. |
@@ -148,7 +148,7 @@ where the argument lives; the reserved rows point there rather than restating it
 | D78 | **The project list is read off the solution file, not asked for.** Roslyn's custom methods (C39) have no "describe the workspace" request, and the only thing that names a project is a log line the default child level does not emit (D37). `Mcp/Engine/WorkspaceProjects` therefore reads the `.slnx`/`.sln` for its project entries and each project file for a literal `TargetFramework(s)`; `Mcp/Engine/WorkspaceLoadTracker` layers on what Roslyn *does* report — the progress stream's `Loading N project(s)` and, when the level is raised, the per-project outcomes. The target frameworks are a text scan and a best effort, exactly as D41's project count is: a project that gets its TFM from a `Directory.Build.props` reports none, because an empty list reads as "not known" where a wrong list would read as a fact. Evaluating a project file properly means MSBuild, which hard rule 1 and the package budget both refuse. |
 | D79 | **Workstation GC is the default for the child, in both verbs.** Roslyn's payload ships `System.GC.Server: true` (C44), and C54 measured what that costs on OrchardCore: 1,931-2,089 MB of working set against **577 MB** for workstation, for a load of 20.4 s instead of 28.2 s. WP5b re-measured it on Quartz.NET (300-343 MB, C60) and on OrchardCore through the MCP half (439-473 MB, C61). The eight seconds are paid once by somebody who is waiting for a language server to start and expects to; the one and a half gigabytes are paid by every other process on the machine for as long as the session lasts — and this product exists because a Claude session is already running a model's tool calls on the same box. So `DOTNET_gcServer=0` goes into the child's environment unless `CLAUDE_ROSLYN_LSP_GC=server` asks otherwise, an explicit `DOTNET_gcServer` in the environment wins over both and is never overwritten, and `doctor` prints which of the three is in effect. |
 | D80 | **The `mcp` verb has the same backend vocabulary as `lsp`, plus one value for "none".** `mcp --smoke` runs the scripted backend in this process, `CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child` runs it as a child, and `=none` registers `NotWiredRoslynEngine`. That last one used to be what happened by default, which made `SmokeTest`'s claim about D69 accidental; with the eager start (D76) it would also have become a 70 MB download on five release runners, so it is spelled out. `SmokeTest` now drives **two** MCP legs: `=none`, which proves the handshake and `tools/list` do not depend on a backend at all, and `--smoke`, which proves that starting one from the handshake puts no byte on stdout — the channel it would corrupt. |
-| D81 | **The MCP live tests are one method in phases, with their own copy of the fixture.** D59's argument, restated where it applies again: the phases destroy each other's preconditions — the fix-all deletes the using the code-action phase asks about, the rename changes the symbol the navigation phases resolve — and xunit does not order tests within a class. The copy is private to this collection because `AdapterLiveFixture`'s is edited differently and collections run in parallel. One file in the copy is rewritten as **CRLF with a BOM** on the way in, because `.gitattributes` forces `*.cs` to LF on checkout and the property worth asserting is precisely that a rename writes a file back the way it found it (D61). The formatting phase formats a file written badly on purpose, because "the second run changes nothing" is satisfied by a first run that also changed nothing. |
+| D81 | **The MCP live tests are one method in phases, with their own copy of the fixture.** D59's argument, restated where it applies again: the phases destroy each other's preconditions — the fix-all deletes the using the code-action phase asks about, the rename changes the symbol the navigation phases resolve — and tests that depend on running in one order are tests the framework is free to run in another. The copy is private to this collection because `AdapterLiveFixture`'s is edited differently and collections run in parallel. One file in the copy is rewritten as **CRLF with a BOM** on the way in, because `.gitattributes` forces `*.cs` to LF on checkout and the property worth asserting is precisely that a rename writes a file back the way it found it (D61). The formatting phase formats a file written badly on purpose, because "the second run changes nothing" is satisfied by a first run that also changed nothing. |
 | D82 | **`workspace/diagnostic` needs the analyzer scope raised as well as the compiler one, and a fix-all looks for its site in the cheapest place that can answer.** C14's second sentence, which cost a live run: with only `dotnet_compiler_diagnostics_scope` at `fullSolution`, a closed file's compiler errors are reported and its IDE and CA diagnostics are not — so `fixDiagnostics IDE0005 scope: "solution"` answered "no occurrence of IDE0005" on a solution that has one. `IRoslynEngine` therefore has a second scope member, and `DiagnosticQuery` raises it only when `includeAnalyzers` or an explicit `ids` list says the caller wants analyzers, because every analyzer over every file is the expensive half and D48's standing answer stays `openFiles`. Raising it is still not *sufficient* on a busy machine (C57), so `fixDiagnostics` no longer depends on it: given a `path` it finds the site with a **document** pull, which always carries analyzer diagnostics, whatever scope the fix itself is asked to reach. The site and the reach are two different questions and were being answered by one call. |
 | D83 | **A workspace diagnostic pull is bounded, falls back to the last report, and is confirmed after a scope change.** Three behaviours, one method, all of them C57 and C58. Bounded, because the pull is a long poll and an unbounded one makes a second `getDiagnostics scope: "solution"` a call that never returns. Falling back to the previous report rather than to nothing, because Roslyn holding the request *means* "nothing has changed since I last told you". And sampled again for a short budget after a scope change — waiting for Roslyn's own `workspace/diagnostic/refresh` where it sends one, and stopping as soon as the report is no longer the one the first pull returned — because the change does not reach the pull that follows it and a pull already waiting is not woken by it. The budget is eight seconds and deliberately short of what a contended machine needs: sampling for thirty did not rescue that case either, and it made every call where the first pull was already right thirty seconds slower for nothing. The one case that is not a fallback is the **first** pull of a session: with nothing cached, a timeout throws a sentence naming `scope: "project"` and `scope: "file"` rather than answering with an empty list, because an empty list would say "nothing was found" about a solution nothing had looked at — which is the failure this product exists to remove. That path is not hypothetical: OrchardCore's 239 projects do not finish a first solution-wide pass inside 120 s (C61). |
 | D84 | **`getWorkspaceStatus` reports how this server got its Roslyn.** `engine: "owned"` means this process launched one of its own; `engine: "attached"`, with `hostProcessId` beside it, means it is using the one another `claude-roslyn-lsp` process launched for the same solution (D23). Reporting the distinction is the point: whether a session running both servers has one Roslyn or two is the difference between 0.3 GB and 0.6 GB on a small solution and rather more on a large one, and this is where that stops being a paragraph in the README and becomes something an answer says. `processId` still names Roslyn itself in both cases, so the two numbers answer two different questions. |
@@ -176,6 +176,9 @@ where the argument lives; the reserved rows point there rather than restating it
 | D106 | **An idle shutdown regardless of size exists and is off.** `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` recycles after that much idle time whatever the backend holds — the issue's second proposal, for a machine running a dozen sessions where four children that have answered nothing for 22 hours are 1.7 GB nobody is using. Off by default because every relaunch costs a whole solution load and the growth rule already catches the children that cost real memory; when both rules are due, this one is the reason given. It needs no baseline and skips the compaction step, which belongs to the growth rule. |
 | D107 | **`doctor` lists every live host on the machine with what its Roslyn holds, measured by `doctor` itself.** Per live session: the adapter pid, the Roslyn pid with its working set and private bytes read by `Process.GetProcessById` at report time — the operating system's numbers, not a figure a host wrote down minutes ago — the state, the last activity's age, the recycles, the baseline, the attached clients and the solution; then one total line of live hosts and their combined Roslyn memory. That is the report that answers "who is using my memory" without matching a dozen `dotnet` processes to their sessions by hand. It says in so many words that a server running with `CLAUDE_ROSLYN_LSP_SHARE=off` keeps a private Roslyn, does not publish itself, and is therefore not in the list. `Cli/SharedEngineReport` gathers and renders it, with the process sampler a parameter so the section is tested without a real Roslyn. |
 | D108 | **The SDK and the target framework stay on .NET 10 until a measured gain says otherwise.** `global.json` pins the .NET 10 SDK and `TargetFramework` is `net10.0`, through .NET 11 (STS, released 2026-11-10). Measured on the sibling `sonarqube-mcp` on 2026-11-18, `net11.0` made the AOT binary 1.9% larger and no faster; .NET 11 ends support on the same day as .NET 10 (2028-11-14); it raises the platform floor (macOS 15, x86-64-v2); and ModelContextProtocol has no `net11.0` build. Here the argument is stronger still: the Roslyn payload is `tools/net10.0/<rid>/` and needs a .NET 10 runtime whatever this binary targets (D31), so `net11.0` would make the framework-dependent `any` package (D22) need two runtimes where one does today. The SDK stays too: the .NET 11 SDK would bring back the `NuGet.Frameworks` pin (*Package budget changes*, 2026-11-19). Move when the Roslyn payload moves, at .NET 12 LTS, or when a .NET 11 feature is actually needed. |
+| D109 | **A call's argument names must be the advertised ones, exactly, or the tool does not run.** The MCP SDK binds `tools/call` arguments by exact name and ignores the rest — verified over stdio on ModelContextProtocol 2.2.0 and 2.4.0 alike in sonarqube-mcp. Here that is a safety issue, not a usability one: the four mutating tools take `preview` (D62), so `"Preview": true` was dropped and the call **wrote to disk** while the model believed it had previewed, and a mis-cased `symbol` or `path` failed as the SDK's bare "An error occurred invoking …". `Mcp/Tools/ToolArgumentNames`, a call-tool filter registered with the tools in `McpServerSetup.RegisterTools`, checks every call against the input schema `tools/list` published and answers a tool error (`isError`, so the model retries) naming each unknown name with the one it most likely meant — the same name in another case, then the nearest within two edits, then the one name it is a prefix of — each required argument not passed, and the accepted names. A case-only mismatch is **refused, not bound**: the boundary keeps one spelling, and the refusal names it. `SmokeTest` sends a mis-cased `Preview` to every shipped binary and requires the refusal, which needs no Roslyn because it comes before the tool runs. |
+| D110 | **Every release is listed in the official MCP Registry, once `dnx` can install it.** The manifest is `.mcp/server.json` (schema `2025-12-11`), as `io.github.lahma/claude-roslyn-lsp`, which the registry's GitHub OIDC login proves this repository owns. Its NuGet validator accepts exactly `registryBaseUrl: https://api.nuget.org/v3/index.json`, a `description` may be 100 characters at most, and it proves the package is ours by finding `mcp-name: io.github.lahma/claude-roslyn-lsp` in the README nuget.org serves **for that version** — and a registry version is immutable, so a version packed without the marker can never be listed. `McpServerManifestTests` holds all four. `PublishMcpRegistry` runs in the publish job after the NuGet push: it leaves a version the registry already lists alone, waits until nuget.org serves that version's README (through `ReadmeUriTemplate/6.13.0`, the resource the registry reads) **and** every package of it (through `PackageBaseAddress/3.0.0`, the one `dnx` downloads from) — the README arrives minutes before the native packages, and a listing is an invitation to run `dnx` — then exchanges a GitHub OIDC token (audience `https://registry.modelcontextprotocol.io`) at `/v0/auth/github-oidc` and posts the manifest to `/v0/publish`. A registry failure fails the job loudly but cannot hold up or undo the NuGet push. Validate the manifest at the public `/v0/validate` before tagging. |
+| D111 | **A client's byte order mark is encoding, not text, and the adapter removes it where the text enters.** Claude Code sends a UTF-8 file's mark as the document's first character in `didOpen` and `didChange` (C67). Roslyn takes it for text, so every position on the first line moved by one and the formatter proposed deleting it; and the MCP half, which applies an edit to the file as `TextFileCodec` decodes it — without the mark (D61) — applied that deletion to the first real character, wrote it and answered `ok` (issue #3). Everything else in the product, Roslyn reading a closed file included, treats the mark as encoding, so `AdapterSession` strips one leading U+FEFF from a client's document notifications before the mirror, Roslyn or a shared host sees them (`DocumentMirror.WithoutByteOrderMark`): one place, because it is the only one external client text enters by, and an attached client is always this binary. A notification that carried a mark is reserialised; every other one still crosses as the client's bytes (D47). The cost is a client that keeps the mark in its own buffer *and* applies edits Roslyn computed for line 1 — none of the agents this product serves applies LSP edits, and an editor normally decodes the mark as encoding before its buffer ever holds it. |
 
 ### The plugin-option rule
 
@@ -352,8 +355,8 @@ transitive pinning on.
   defaults — is verified against that one version and a floating range would move it under a
   release), `Microsoft.Extensions.DependencyInjection`, `Microsoft.Extensions.Logging.Console`.
   Nothing else, ever, for the reasons in hard rule 1.
-- `tests/`: `xunit.v3`, `xunit.runner.visualstudio`, `Microsoft.NET.Test.Sdk`. No mocking or
-  assertion libraries.
+- `tests/`: `NUnit` and `NUnit3TestAdapter`, whose Microsoft.Testing.Platform runner brings the
+  platform packages in transitively (D9). No mocking or assertion libraries, and no test reporter.
 - `build/`: `Fallout.Common` + `Fallout.Components` 10.5.0, and nothing pinned beside them (see
   below). The build project opts out of central package management.
 
@@ -393,6 +396,20 @@ known advisories, and 10.5.0 brings 10.0.13. `build.ps1` takes 10.5.0's bootstra
 in-process: that SDK's `Microsoft.Build.dll` asks for `NuGet.Frameworks` 7.11.0.0, Fallout brings
 7.9.0, and whether the evaluation fails depends on which copy loads first. 8.0.0 is the SDK's own
 copy and satisfies both SDKs; Fallout-build/Fallout#731 tracks the fix.
+
+**2026-11-19 — the tests move to NUnit 5 on Microsoft.Testing.Platform.** `xunit.v3`,
+`xunit.runner.visualstudio` and `Microsoft.NET.Test.Sdk` out; `NUnit` 5.0.0 and `NUnit3TestAdapter`
+6.3.1 in, with the adapter's MTP runner enabled (D9). The restored test graph goes from 40 packages to
+30, and everything beyond the two references arrives through the adapter (the platform, its VSTest
+bridge and its telemetry extension). The move kept every test: 845 run, 839 passed and 6 skipped
+before and after, the same 549 method names with the same count each, and a deliberately broken
+assertion failed the run with exit code 2; the six live tests passed under NUnit against the real
+server. Nothing else was added: no TRX or GitHub reporter, so CI reports the runner's own console
+output and exit code. bitbucket-mcp, on the same stack, added `GitHubActionsTestLogger` for
+annotations and a job summary; declined here, as in sonarqube-mcp, because the console output already
+names a failing test with its assertion, and a CI nicety is not worth a package and its graph in a
+project whose dependency tree one person audits. The telemetry extension is switched off by the
+`Test` target (`TESTINGPLATFORM_TELEMETRY_OPTOUT=1`).
 
 **2026-11-19 — app version refresh, no ids added or removed.** `ModelContextProtocol` `[2.2.0]` to
 `[2.4.0]`, still an exact pin; for net10.0 it adds no package id, only newer
@@ -466,7 +483,8 @@ src/ClaudeRoslynLsp/        One production project; AssemblyName claude-roslyn-l
                             around it, with WorkspaceLoadTracker and WorkspaceProjects (D78)
                             answering getWorkspaceStatus
   Mcp/Tools/                The five tool classes behind the ten tools (D20), the RoslynToolContext
-                            they all take, ToolLookup, DiagnosticQuery, DocumentSession, ToolErrors
+                            they all take, ToolLookup, DiagnosticQuery, DocumentSession, ToolErrors,
+                            and ToolArgumentNames (the call filter that refuses unknown names, D109)
   Mcp/Models/               Result records and RoslynToolJsonContext (camelCase, D7)
   Edits/                    The only place in the product that writes a source file (D21):
                             WorkspacePathGuard, TextFileCodec, TextOffsets, WorkspaceEditApplier +
@@ -481,7 +499,8 @@ tests/fixtures/             HelloSolution (D59) plus the empty Directory.Build.p
                             conventions out of it, and MANIFEST.md, which records what each part of
                             the fixture is for and which parts must not be tidied up
 build/                      The Fallout orchestrator (Build.cs, Build.Publish.cs, Build.Roslyn.cs,
-                            Build.CI.GitHubActions.cs, ReleaseNotesParser.cs, SemVersion.cs) —
+                            Build.CI.GitHubActions.cs, GlibcRequirements.cs, ReleaseNotesParser.cs,
+                            SemVersion.cs) —
                             `build/` is a resolver convention, and `.gitignore` must never
                             untrack it
 docs/                       roslyn-protocol-facts.md — the C-numbered findings (see above)
@@ -534,12 +553,17 @@ parse as a version header (`# 0.1.0`) — do not add a `# Changelog` title, it w
 ## Testing
 
 ```powershell
-.\build.ps1 Test                                  # the whole suite, via the orchestrator
-dotnet test tests\ClaudeRoslynLsp.Tests           # the same tests, without a publish
-dotnet test tests\ClaudeRoslynLsp.Tests --filter "FullyQualifiedName~Framing"
+.\build.ps1 Test                                            # the whole suite, via the orchestrator
+dotnet test --project tests\ClaudeRoslynLsp.Tests           # the same tests, without a publish
+dotnet test --project tests\ClaudeRoslynLsp.Tests --filter "FullyQualifiedName~Framing"
+$env:CLAUDE_ROSLYN_LSP_LIVE_TESTS='1'; dotnet test --project tests\ClaudeRoslynLsp.Tests --filter "TestCategory=Live"
 ```
 
-xunit.v3 with the VSTest bridge (D9). No mocking or assertion libraries, and no
+NUnit 5 on Microsoft.Testing.Platform (D9). A failing test exits 2 and a run that finds no test
+exits 8 — which a filtered run can hit by accident. NUnit's `Does.Contain` and `Does.StartWith`
+compare by culture and this test project does not set `InvariantGlobalization`, so string checks say
+`.Using(StringComparison.Ordinal)`; keep it that way, because a culture-sensitive match on a URI or
+a diagnostic id is a test that can pass for the wrong reason. No mocking or assertion libraries, and no
 `Microsoft.Extensions.TimeProvider.Testing` either — the framing tests drive a hand-rolled stream
 that returns one byte at a time, the adapter is driven over `System.IO.Pipelines` pipe pairs against
 the scripted backend (D29), and the readiness gate's timeout and its ten-second notice run on a
@@ -602,15 +626,19 @@ spawns it, and drives **four** real exchanges. Two of them are LSP sessions —
 `initialize`, `initialized`, a `didOpen`, a `textDocument/definition`, then, once that definition has
 been answered, `shutdown` and `exit` with the exit code asserted — one against the scripted backend
 running *inside* the server process (`lsp --smoke`) and one against the same script in a *child*
-process (`CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child`, which spawns `<self> fake-roslyn`). The other two
-are MCP handshakes (`initialize`, `initialized`, `tools/list`), whose answers are compared against
+process (`CLAUDE_ROSLYN_LSP_FAKE_BACKEND=child`, which spawns `<self> fake-roslyn` — or, under the
+`dotnet` host, `dotnet <self>.dll fake-roslyn`). The other two are MCP exchanges (`initialize`,
+`initialized`, `tools/list`, and a `tools/call` of `renameSymbol` with a mis-cased `Preview` that
+must come back as D109's refusal rather than run), whose `tools/list` answers are compared against
 `ExpectedToolNames` verbatim — the only assertion this repository makes about the tool inventory of
 the *published* binary rather than of a reflected type list, and therefore the only thing that would
 catch an AOT publish which dropped a tool class or a serializer context that could not describe a
 result type. The first of them runs with `CLAUDE_ROSLYN_LSP_FAKE_BACKEND=none`, so no Roslyn is
 wired in at all (D69, D80), which is exactly the point: the handshake and `tools/list` must not
 depend on a backend. The second runs `mcp --smoke`, where a backend *is* started from the handshake
-(D76) — the leg that proves the eager start puts no byte on the protocol channel.
+(D76) — the leg that proves the eager start puts no byte on the protocol channel. The same legs
+(`AssertServerAnswers`) run against every binary that ships: the archive's (`SmokeTest`), each RID
+tool package's (`PackRuntime`) and the `any` fallback's (`Pack`).
 
 Each leg proves something the others cannot. The LSP legs read stdout as *frames*, so any byte that
 is not part of one fails the test: that is what proves the "nothing else writes to stdout" rule on a
@@ -624,7 +652,7 @@ because a server that shut down with the request still held would otherwise pass
 leg is the only one that proves the plumbing: that this RID can spawn a child at all, that its three
 redirected handles are wired the right way round, and that nothing the child writes at startup lands
 on what is now a protocol channel — which the real server does do in one of its transports (C7). CI
-runs `Test`, `SmokeTest` **and** `LiveTest` on every push and pull request, with
+runs `Test`, `SmokeTest`, `LiveTest` **and** `Pack` on every push and pull request, with
 `CLAUDE_ROSLYN_LSP_LIVE_TESTS: 1` set for the whole job — so the 70 MB download is paid per run and
 `RoslynServerManifest.cs` is in the cache key, because a pin bump has to miss the cache or the job
 would test the new pin against the old payload.
@@ -713,10 +741,11 @@ those cases a 70 MB file.
 
 ## Release engineering
 
-Releases are cut by pushing a `v*` tag, which starts **two independent workflows**: `release.yml`
-(binaries + the GitHub Release) and `publish.yml` (nuget.org, D22). They do not depend on each other,
-deliberately: a nuget.org outage or a policy mismatch must not be able to hold up the GitHub Release,
-and neither must the reverse.
+Releases are cut by pushing a `v*` tag, which starts **two workflows**: `release.yml` (binaries, the
+RID tool packages and the GitHub Release) and `publish.yml` (nuget.org and the MCP Registry, D22,
+D110). The coupling runs one way: `publish.yml` collects the five native tool packages the same tag's
+`release.yml` legs built, so a failed leg stops both, but `release.yml` never waits for `publish.yml`
+— a nuget.org outage or a policy mismatch cannot hold up the GitHub Release.
 
 `.github/workflows/release.yml` is hand-written (the `[GitHubActions]` generator has no matrix
 support) and runs five publish legs — one per RID, each on its own hardware — followed by a `release`
@@ -724,25 +753,35 @@ job that assembles the GitHub Release:
 
 | RID | Runner |
 |---|---|
-| `linux-x64` | `ubuntu-latest` |
+| `linux-x64` | `ubuntu-24.04` (named, for the glibc floor: R3) |
 | `linux-arm64` | `ubuntu-24.04-arm` |
 | `win-x64` | `windows-latest` |
 | `win-arm64` | `windows-11-arm` |
 | `osx-arm64` | `macos-latest` |
 
-Every leg runs `dotnet fallout SmokeTest --runtime <rid>`, and `SmokeTest` depends on `PublishAot`, so
-each leg compiles its own binary, speaks both protocols to it *on the architecture it targets*, and
-only then uploads the archive. **Never ship a binary that has not answered a handshake on its own
-architecture** — that is why the arm64 legs run on arm64 runners instead of being cross-compiled.
-`fail-fast` is off so one broken runtime cannot mask the state of the other four.
+Every leg runs `dotnet fallout SmokeTest PackRuntime --runtime <rid>`. `SmokeTest` depends on
+`PublishAot`, so each leg compiles its own binary, speaks both protocols to it *on the architecture it
+targets*, and only then uploads the archive; `PackRuntime` then runs `dotnet pack -r <rid>`, extracts
+the binary from the package — a second publish, not the archive's binary — holds it to the glibc
+floor on Linux, drives the same legs against it and uploads the package as `tool-package-<rid>`, the
+name `CollectRuntimePackages` looks for. **Never ship a binary that has not answered a handshake on
+its own architecture** — that is why the arm64 legs run on arm64 runners instead of being
+cross-compiled. `fail-fast` is off so one broken runtime cannot mask the state of the other four.
+
+A manual run (`gh workflow run release.yml --ref <branch>`) is the **dry run**: all five legs build,
+smoke-test, glibc-check and pack, and the `release` job, which runs only for a tag, releases nothing.
+Its packages are what `CollectRuntimePackages` is rehearsed against before a tag exists:
+`GITHUB_TOKEN=$(gh auth token) dotnet fallout CollectRuntimePackages --release-run-id <id>`.
+`ToolPackageTests` keeps the csproj's `ToolPackageRuntimeIdentifiers` (minus `any`) equal to the
+matrix, requires `any`, and checks that every leg uploads `tool-package-<rid>`.
 
 `CHANGELOG.md` stays the version authority here too: `CreateGitHubRelease` refuses to publish unless
 `GITHUB_REF_NAME` equals `v{version parsed from CHANGELOG.md}`. To release, land the changelog entry
 first, then tag that commit. `Prerelease` follows the version string (`Version.Contains('-')`), so a
 `0.1.0-rc.1` tag publishes as a prerelease and never displaces the latest stable release.
 
-Two properties of the release path are inherited from the template, where a throwaway tag established
-them, and both still apply:
+Three properties of the release path are worth not rediscovering; the first two are inherited from
+the template, where a throwaway tag established them:
 
 - **R1 — arm64 runners are available and need no extra native-toolchain setup** on a public
   repository; both arm64 legs complete a full AOT publish plus handshake. If that ever regresses, the
@@ -755,6 +794,14 @@ them, and both still apply:
   the extracting user. `PublishAot` therefore invokes the **`tar` CLI**
   (`ProcessTasks.StartProcess`), which is present on the GitHub runners and in Git Bash. Windows RIDs
   keep using `ZipTo`: a zip carries no Unix mode and the payload is a `.exe`.
+- **R3 — the Linux binaries need glibc 2.34 or newer, and a publish that needs more fails.** A Native
+  AOT binary is linked against the glibc of the image that builds it and will not start on an older
+  one. `PublishAot` and `PackRuntime` read the binary's version-needs table back after every Linux
+  publish (`build/GlibcRequirements.cs`, pure C# over the ELF, no `objdump`) and fail above `MaxGlibc`
+  in `build/Build.cs`, because the floor follows the runner image: `ubuntu-latest` moving to Ubuntu
+  26.04 would otherwise raise it without a single change here. The `linux-x64` release leg and the
+  CI job therefore name `ubuntu-24.04`, and README.md states the floor. Raise it only on purpose, in
+  both places.
 
 The release body is composed from `artifacts/release-notes.md`, which `Build.WriteReleaseNotes`
 reflows out of `CHANGELOG.md`'s newest section — one single-line bullet per entry — because
@@ -766,8 +813,16 @@ entries as `- ` bullets with wrapped continuation lines and this keeps working.
 
 `.github/workflows/publish.yml` is **generated** from the second `[GitHubActions]` attribute in
 `build/Build.CI.GitHubActions.cs` (hard rule 4 — never hand-edit it). One Ubuntu job runs
-`dotnet fallout Compile Test Pack Publish` with `permissions: { contents: read, id-token: write }`,
-`environment: nuget` and `env: NUGET_USER: lahma`.
+`dotnet fallout Compile Test Pack Publish PublishMcpRegistry` with
+`permissions: { contents: read, actions: read, id-token: write }`, the job's `GITHUB_TOKEN`,
+`environment: nuget` and `env: NUGET_USER: lahma`. `Pack` builds the pointer and the `any` fallback
+here, and drives every smoke leg against the fallback as `dotnet claude-roslyn-lsp.dll`, the way the
+CLI runs a framework-dependent tool. `Publish` depends on `CollectRuntimePackages`, which finds the
+tag's `release.yml` run by `head_sha` and `event=push`, polls until its five `tool-package-<rid>`
+artifacts exist — failing at once if the run finished without one — and downloads them (that is
+what `actions: read` is for). It then refuses an incomplete set, and pushes every RID package first
+and the pointer last, stopping at the first failure. Our policy accepted the six new package ids
+without a change.
 
 Three shapes are load-bearing and were chosen, not defaulted:
 
@@ -796,6 +851,14 @@ dotnet fallout Publish --skip                      # must fail with "GitHub OIDC
 
 That last failure is the success signal: it proves the tagged path routed all the way to the token
 exchange. Clear the three variables afterwards.
+
+After a push, nuget.org serves each package on its own schedule: on the sibling repositories the
+README and `any` came within minutes and the native packages took 14-25 minutes, and `dnx` resolves
+through the registration index, which trails the flat container. `PublishMcpRegistry` waits for all
+of them (D110). Do not trust the target summary for the push itself — `--skip-duplicate` once masked
+a 409 as success; the log has one `PUT … Created` line per package. The proof a release reached
+users is a real `dnx claude-roslyn-lsp@<version> --yes doctor` that leaves
+`claude-roslyn-lsp.<rid>` in the NuGet package cache.
 
 Three things about the exchange are worth not rediscovering:
 

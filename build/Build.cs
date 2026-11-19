@@ -23,17 +23,16 @@ using Serilog;
 
 using static Fallout.Common.Tools.DotNet.DotNetTasks;
 
-using Project = Fallout.Solutions.Project;
-
 /// <summary>
 /// The Fallout orchestrator for claude-roslyn-lsp.
 /// </summary>
 /// <remarks>
-/// Restore / Compile / Test come from the Fallout.Components interfaces; only the two things that
-/// are specific to shipping a Native AOT binary that speaks two protocols are hand-written:
-/// <c>PublishAot</c> (publish + archive per RID) and <c>SmokeTest</c>, which drives a real
-/// <c>Content-Length</c>-framed LSP handshake <em>and</em> a real MCP handshake against the published
-/// binary.
+/// Restore and Compile come from the Fallout.Components interfaces. Hand-written are <c>Test</c>
+/// (NUnit on Microsoft.Testing.Platform, which Fallout's VSTest-only <c>ITest</c> cannot drive, D9)
+/// and the things specific to shipping a Native AOT binary that speaks two protocols:
+/// <c>PublishAot</c> (publish + archive per RID, held to the glibc floor on Linux) and
+/// <c>SmokeTest</c>, which drives real <c>Content-Length</c>-framed LSP sessions <em>and</em> real MCP
+/// sessions against the published binary.
 /// </remarks>
 [ShutdownDotNetAfterServerBuild]
 partial class Build : FalloutBuild,
@@ -44,10 +43,9 @@ partial class Build : FalloutBuild,
     IHasGitRepository,
     IRestore,
     ICompile,
-    ITest,
     ICreateGitHubRelease
 {
-    public static int Main() => Execute<Build>(x => ((ITest)x).Test);
+    public static int Main() => Execute<Build>(x => x.Test);
 
     /// <summary>
     /// The binary's product name. It is also the MCP <c>serverInfo.name</c> and the LSP
@@ -80,6 +78,17 @@ partial class Build : FalloutBuild,
         "resolveSymbol",
     ];
 
+    /// <summary>
+    /// The newest glibc a Linux binary may need, which makes it the oldest Linux it starts on (R3).
+    /// </summary>
+    /// <remarks>
+    /// A Native AOT binary is linked against the glibc of the image that builds it, so this floor moves
+    /// whenever the runner image does - <c>ubuntu-latest</c> becoming Ubuntu 26.04 would raise it with no
+    /// change here. <see cref="AssertGlibcFloor"/> fails a publish that needs more. Raise it only on
+    /// purpose, together with README.md's requirement.
+    /// </remarks>
+    static readonly Version MaxGlibc = new(2, 34);
+
     /// <summary>How long SmokeTest waits for the MCP responses before giving up.</summary>
     static readonly TimeSpan SmokeTestTimeout = TimeSpan.FromSeconds(30);
 
@@ -106,6 +115,7 @@ partial class Build : FalloutBuild,
     // Spelled out rather than derived from ProductName: on Linux the path is case-sensitive, and the
     // project directory is PascalCase where the product is kebab-case.
     AbsolutePath ServerProject => SourceDirectory / "ClaudeRoslynLsp" / "ClaudeRoslynLsp.csproj";
+    AbsolutePath TestProject => TestsDirectory / "ClaudeRoslynLsp.Tests" / "ClaudeRoslynLsp.Tests.csproj";
     AbsolutePath ChangelogPath => RootDirectory / "CHANGELOG.md";
     AbsolutePath PublishDirectory => ArtifactsDirectory / "publish" / Runtime;
     AbsolutePath StagingDirectory => ArtifactsDirectory / "staging" / Runtime;
@@ -113,6 +123,7 @@ partial class Build : FalloutBuild,
     AbsolutePath ReleaseNotesFile => ArtifactsDirectory / "release-notes.md";
 
     bool IsWindowsRuntime => Runtime.StartsWith("win", StringComparison.OrdinalIgnoreCase);
+    bool IsLinuxRuntime => Runtime.StartsWith("linux", StringComparison.OrdinalIgnoreCase);
     string ExecutableName => IsWindowsRuntime ? ProductName + ".exe" : ProductName;
     string ArchiveExtension => IsWindowsRuntime ? ".zip" : ".tar.gz";
     AbsolutePath PublishedExecutable => PublishDirectory / ExecutableName;
@@ -181,13 +192,27 @@ partial class Build : FalloutBuild,
             ArtifactsDirectory.CreateOrCleanDirectory();
         });
 
-    IEnumerable<Project> ITest.TestProjects => Solution.GetAllProjects("*.Tests");
-
     Configure<DotNetBuildSettings> ICompile.CompileSettings => _ => _
         .SetProperty("Version", Version);
 
-    Configure<DotNetTestSettings> ITest.TestSettings => _ => _
-        .SetProperty("Version", Version);
+    /// <summary>
+    /// The NUnit suite on Microsoft.Testing.Platform (D9), against what <c>Compile</c> built.
+    /// </summary>
+    /// <remarks>
+    /// Hand-written because Fallout's <c>ITest</c> drives VSTest only (Fallout-build/Fallout#674): MTP
+    /// mode rejects both its positional project argument and its <c>--logger trx</c>. A failing test
+    /// exits 2 and a run that finds no test exits 8, and either fails the target. With
+    /// <c>CLAUDE_ROSLYN_LSP_LIVE_TESTS=1</c> the live tests run too, as they do in CI.
+    /// </remarks>
+    Target Test => _ => _
+        .Description("Runs the NUnit suite on Microsoft.Testing.Platform")
+        .DependsOn<ICompile>(x => x.Compile)
+        .Executes(() =>
+        {
+            var configuration = ((IHasConfiguration)this).Configuration;
+            Environment.SetEnvironmentVariable("TESTINGPLATFORM_TELEMETRY_OPTOUT", "1");
+            DotNet($"test --project {TestProject} --configuration {configuration} --no-build --no-progress");
+        });
 
     Target PublishAot => _ => _
         .Description("Publishes a Native AOT binary for --runtime and archives it into artifacts/archives")
@@ -209,6 +234,8 @@ partial class Build : FalloutBuild,
 
             Assert.True(PublishedExecutable.FileExists(),
                 $"Native AOT publish did not produce '{PublishedExecutable}'");
+
+            var glibc = IsLinuxRuntime ? AssertGlibcFloor(PublishedExecutable) : null;
 
             // Archive exactly the three files a user needs, not the whole publish directory.
             StagingDirectory.CreateOrCleanDirectory();
@@ -241,60 +268,110 @@ partial class Build : FalloutBuild,
             Log.Information("Created {Archive}", ArchiveFile);
             ReportSummary(_ => _
                 .AddPair("Runtime", Runtime)
-                .AddPair("Archive", ArchiveFile.Name));
+                .AddPair("Archive", ArchiveFile.Name)
+                .AddPairWhenValueNotNull("Needs glibc", glibc));
         });
 
+    /// <summary>
+    /// R3: fails when a Linux binary needs a newer glibc than <see cref="MaxGlibc"/>, and returns the
+    /// version it does need.
+    /// </summary>
+    string AssertGlibcFloor(AbsolutePath executable)
+    {
+        var needed = GlibcRequirements.Read(executable);
+
+        if (needed.Count == 0)
+        {
+            Log.Information("{Executable} names no glibc version", executable);
+            return null;
+        }
+
+        var highest = needed[^1];
+
+        Assert.True(highest <= MaxGlibc,
+            $"'{executable}' needs GLIBC_{highest}, newer than the recorded floor GLIBC_{MaxGlibc}, so it " +
+            "would no longer start on every Linux README.md promises. The build image has most likely moved: build " +
+            "on the older one, or raise MaxGlibc in build/Build.cs and the README's requirement on purpose.");
+
+        Log.Information("{Executable} needs glibc {Highest} or newer (floor {Floor})", executable, highest, MaxGlibc);
+        return highest.ToString();
+    }
+
     Target SmokeTest => _ => _
-        .Description("Drives three real protocol exchanges against the published AOT binary")
+        .Description("Drives four real protocol exchanges and an argument-name check against the published AOT binary")
         .DependsOn(PublishAot)
         .Executes(() =>
         {
-            // Written so it resolves. Solution discovery treats an explicit setting that names
-            // nothing as a hard failure rather than a fall-through (D39), and a failed selection
-            // opens the readiness gate at once - which would let the definition request through
-            // before the backend reported the workspace loaded and quietly turn the gate assertion
-            // below into a test of nothing.
-            File.WriteAllText(SmokeSolutionPath, "<Solution />");
-
-            // Leg 1: the LSP verb against the scripted backend running INSIDE the server process.
-            // This is the leg that proves the mediation itself survived Native AOT compilation on
-            // this architecture - framing, the readiness gate, the id map, shutdown ordering.
-            RunLspHandshake("in-process fake backend", new Dictionary<string, string>
-            {
-                ["CLAUDE_ROSLYN_LSP_SOLUTION"] = SmokeSolutionPath,
-            }, arguments: "lsp --smoke");
-
-            // Leg 2: the same exchange with the scripted backend in a CHILD PROCESS, which is the
-            // only leg that proves the plumbing: that this RID can spawn a child at all, that its
-            // three redirected handles are wired the right way round, and that nothing the child
-            // writes at startup lands on what is now a protocol channel. The real server does
-            // exactly that in one of its transports (C7), so it is not a hypothetical.
-            RunLspHandshake("child-process fake backend", new Dictionary<string, string>
-            {
-                ["CLAUDE_ROSLYN_LSP_SOLUTION"] = SmokeSolutionPath,
-                ["CLAUDE_ROSLYN_LSP_FAKE_BACKEND"] = "child",
-            }, arguments: "lsp");
-
-            // Leg 3: the MCP verb with NO backend wired in at all (D69). The handshake and
-            // tools/list must not depend on one - that is what lets a client render the tool surface
-            // in the seconds before anything has been launched, and what keeps this leg free of a
-            // 70 MB download on five release runners.
-            var toolNames = Handshake(
-                new Dictionary<string, string> { ["CLAUDE_ROSLYN_LSP_FAKE_BACKEND"] = "none" },
-                ExpectedToolNames,
-                arguments: "mcp");
-
-            // Leg 4: the MCP verb with the scripted backend and the eager start (D76) actually
-            // running. It proves the one thing leg 3 cannot: that launching a backend from the
-            // initialized notification does not put a byte on stdout, which is the protocol channel.
-            Handshake(environment: null, ExpectedToolNames, arguments: "mcp --smoke");
+            var tools = AssertServerAnswers(PublishedServer);
 
             ReportSummary(_ => _
                 .AddPair("Runtime", Runtime)
                 .AddPair("LSP legs", "2")
                 .AddPair("MCP legs", "2")
-                .AddPair("Tools", toolNames.Length.ToString()));
+                .AddPair("Tools", tools.ToString()));
         });
+
+    /// <summary>
+    /// How to start one server under test: a native binary, or <c>dotnet</c> with the framework-dependent
+    /// dll - the archive's binary, a tool package's, or the <c>any</c> fallback's.
+    /// </summary>
+    /// <param name="FileName">The program to start.</param>
+    /// <param name="Arguments">What goes before the verb: empty for a binary, the quoted dll for <c>dotnet</c>.</param>
+    /// <param name="WorkingDirectory">Where it runs, and where the smoke solution is written.</param>
+    sealed record ServerUnderTest(string FileName, string Arguments, AbsolutePath WorkingDirectory);
+
+    ServerUnderTest PublishedServer => new(PublishedExecutable, string.Empty, PublishDirectory);
+
+    /// <summary>
+    /// The legs every shipped binary must pass - the archive's, each RID tool package's and the
+    /// <c>any</c> fallback's - returning how many tools <c>tools/list</c> answered with.
+    /// </summary>
+    int AssertServerAnswers(ServerUnderTest server)
+    {
+        // Written so it resolves. Solution discovery treats an explicit setting that names
+        // nothing as a hard failure rather than a fall-through (D39), and a failed selection
+        // opens the readiness gate at once - which would let the definition request through
+        // before the backend reported the workspace loaded and quietly turn the gate assertion
+        // below into a test of nothing.
+        var smokeSolution = server.WorkingDirectory / "SmokeTest.slnx";
+        File.WriteAllText(smokeSolution, "<Solution />");
+
+        // Leg 1: the LSP verb against the scripted backend running INSIDE the server process.
+        // This is the leg that proves the mediation itself survived Native AOT compilation on
+        // this architecture - framing, the readiness gate, the id map, shutdown ordering.
+        RunLspHandshake(server, "in-process fake backend", new Dictionary<string, string>
+        {
+            ["CLAUDE_ROSLYN_LSP_SOLUTION"] = smokeSolution,
+        }, arguments: "lsp --smoke");
+
+        // Leg 2: the same exchange with the scripted backend in a CHILD PROCESS, which is the
+        // only leg that proves the plumbing: that this RID can spawn a child at all, that its
+        // three redirected handles are wired the right way round, and that nothing the child
+        // writes at startup lands on what is now a protocol channel. The real server does
+        // exactly that in one of its transports (C7), so it is not a hypothetical.
+        RunLspHandshake(server, "child-process fake backend", new Dictionary<string, string>
+        {
+            ["CLAUDE_ROSLYN_LSP_SOLUTION"] = smokeSolution,
+            ["CLAUDE_ROSLYN_LSP_FAKE_BACKEND"] = "child",
+        }, arguments: "lsp");
+
+        // Leg 3: the MCP verb with NO backend wired in at all (D69). The handshake and
+        // tools/list must not depend on one - that is what lets a client render the tool surface
+        // in the seconds before anything has been launched, and what keeps this leg free of a
+        // 70 MB download on five release runners.
+        var toolNames = Handshake(
+            server,
+            new Dictionary<string, string> { ["CLAUDE_ROSLYN_LSP_FAKE_BACKEND"] = "none" },
+            ExpectedToolNames,
+            arguments: "mcp");
+
+        // Leg 4: the MCP verb with the scripted backend and the eager start (D76) actually
+        // running. It proves the one thing leg 3 cannot: that launching a backend from the
+        // initialized notification does not put a byte on stdout, which is the protocol channel.
+        Handshake(server, environment: null, ExpectedToolNames, arguments: "mcp --smoke");
+
+        return toolNames.Length;
+    }
 
     /// <summary>
     /// Drives the published binary against the fixture solution and a <b>real</b> Roslyn.
@@ -329,6 +406,7 @@ partial class Build : FalloutBuild,
             Assert.True(program.FileExists(), $"The fixture's Program.cs is missing: {program}");
 
             RunLspHandshake(
+                PublishedServer,
                 "real Roslyn against the fixture solution",
                 new Dictionary<string, string>
                 {
@@ -378,20 +456,6 @@ partial class Build : FalloutBuild,
     static readonly TimeSpan LspAnswerTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>
-    /// A solution path handed to the smoke legs so the adapter sends <c>solution/open</c> and the
-    /// scripted backend starts its load timeline.
-    /// </summary>
-    /// <remarks>
-    /// It is an empty <c>.slnx</c> written into the publish directory, and it has to exist: nothing
-    /// here opens a real solution - the fake answers <c>solution/open</c> from a script - but
-    /// discovery refuses to fall through when an explicit setting names something that is not there
-    /// (D39), and a refused selection opens the readiness gate immediately. What the path is for is
-    /// to take the adapter down the configured branch rather than the misc-files one (C28), so that
-    /// the gate is actually exercised.
-    /// </remarks>
-    string SmokeSolutionPath => (PublishDirectory / "SmokeTest.slnx").ToString();
-
-    /// <summary>
     /// Spawns the published binary as an LSP server and drives a whole session over stdio:
     /// <c>initialize</c>, <c>initialized</c>, a <c>didOpen</c> and a <c>textDocument/definition</c>;
     /// then, once the definition has been answered, <c>shutdown</c> and <c>exit</c>.
@@ -422,6 +486,7 @@ partial class Build : FalloutBuild,
     /// startup says why there and nowhere else.
     /// </para>
     /// </remarks>
+    /// <param name="server">The binary under test.</param>
     /// <param name="legName">What this leg is called in the log and in failure messages.</param>
     /// <param name="environment">Extra environment variables that select the backend.</param>
     /// <param name="arguments">The verb and its flags.</param>
@@ -436,6 +501,7 @@ partial class Build : FalloutBuild,
     /// </param>
     /// <param name="answerTimeout">How long a held request may take. Null uses the smoke budget.</param>
     void RunLspHandshake(
+        ServerUnderTest server,
         string legName,
         IReadOnlyDictionary<string, string> environment,
         string arguments,
@@ -478,10 +544,10 @@ partial class Build : FalloutBuild,
 
         var diagnostics = new List<string>();
 
-        using var process = new Process { StartInfo = StartInfoFor(arguments, environment) };
+        using var process = new Process { StartInfo = StartInfoFor(server, arguments, environment) };
         process.ErrorDataReceived += (_, e) => Collect(diagnostics, e.Data);
 
-        Log.Information("Starting {Executable} {Arguments} ({Leg})", PublishedExecutable, arguments, legName);
+        Log.Information("Starting {Executable} {Arguments} ({Leg})", server.FileName, arguments, legName);
         process.Start();
         process.BeginErrorReadLine();
 
@@ -997,12 +1063,17 @@ partial class Build : FalloutBuild,
     /// Drives one MCP handshake and asserts the inventory it answers with, returning the names for
     /// any further assertion the caller wants to make.
     /// </summary>
+    /// <param name="server">The binary under test.</param>
     /// <param name="environment">Extra environment variables for the server process, or null.</param>
     /// <param name="expectedToolNames">The complete set <c>tools/list</c> must return.</param>
     /// <param name="arguments">The verb. This binary has no default one, so it is never empty.</param>
-    string[] Handshake(IReadOnlyDictionary<string, string> environment, string[] expectedToolNames, string arguments)
+    string[] Handshake(
+        ServerUnderTest server,
+        IReadOnlyDictionary<string, string> environment,
+        string[] expectedToolNames,
+        string arguments)
     {
-        var responses = RunHandshake(arguments, environment);
+        var responses = RunHandshake(server, arguments, environment);
 
         var serverName = responses[InitializeId]
             .GetProperty("result").GetProperty("serverInfo").GetProperty("name").GetString();
@@ -1023,6 +1094,19 @@ partial class Build : FalloutBuild,
         Assert.True(toolNames.SequenceEqual(expected, StringComparer.Ordinal),
             $"tools/list returned [{string.Join(", ", toolNames)}], expected [{string.Join(", ", expected)}]");
 
+        // D109 on the binary itself: a mis-cased `preview` is refused, as a tool error naming the right
+        // spelling, instead of being dropped - which would make the rename write to disk while the
+        // caller believed it was looking at a diff. It is refused before the tool runs, so this needs no
+        // backend: with none wired (leg 3) the tool itself would only have answered `failed`.
+        var call = responses[ArgumentCheckId].GetProperty("result");
+        var refusal = call.GetProperty("content")[0].GetProperty("text").GetString();
+
+        Assert.True(
+            call.TryGetProperty("isError", out var isError) && isError.GetBoolean() &&
+            refusal?.Contains("'Preview' is spelled 'preview'", StringComparison.Ordinal) == true,
+            $"tools/call renameSymbol with a mis-cased Preview answered '{refusal}', expected the argument-name " +
+            "refusal (D109)");
+
         Log.Information("MCP handshake OK: {Server} exposed {Count} tool(s){Mode}",
             serverName,
             toolNames.Length,
@@ -1033,9 +1117,10 @@ partial class Build : FalloutBuild,
 
     const int InitializeId = 1;
     const int ToolsListId = 2;
+    const int ArgumentCheckId = 3;
 
     /// <summary>
-    /// Spawns the published binary, drives one initialize / initialized / tools/list exchange and
+    /// Spawns the server, drives one initialize / initialized / tools/list / tools/call exchange and
     /// returns the responses keyed by JSON-RPC id.
     /// </summary>
     /// <remarks>
@@ -1043,32 +1128,35 @@ partial class Build : FalloutBuild,
     /// down as soon as stdin hits EOF and drops whatever is still in flight, so closing stdin first
     /// loses responses. Responses are matched by id because the order is not guaranteed.
     /// </remarks>
+    /// <param name="server">The binary under test.</param>
     /// <param name="arguments">The verb to launch with.</param>
     /// <param name="environment">
     /// Extra environment variables for the server process, layered on top of this process's own. Null
     /// inherits the environment unchanged.
     /// </param>
     IReadOnlyDictionary<int, JsonElement> RunHandshake(
+        ServerUnderTest server,
         string arguments,
         IReadOnlyDictionary<string, string> environment = null)
     {
-        // The literal ids must stay in sync with InitializeId / ToolsListId; the JSON is written out
-        // verbatim rather than interpolated so it reads exactly as it goes on the wire.
+        // The literal ids must stay in sync with InitializeId / ToolsListId / ArgumentCheckId; the JSON
+        // is written out verbatim rather than interpolated so it reads exactly as it goes on the wire.
         var requests = new[]
         {
             """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fallout-smoketest","version":"1.0.0"}}}""",
             """{"jsonrpc":"2.0","method":"notifications/initialized"}""",
             """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""",
+            """{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"renameSymbol","arguments":{"symbol":"Program","newName":"Renamed","Preview":true}}}""",
         };
 
         var responses = new Dictionary<int, JsonElement>();
         var diagnostics = new List<string>();
         Exception readerFailure = null;
 
-        using var process = new Process { StartInfo = StartInfoFor(arguments, environment) };
+        using var process = new Process { StartInfo = StartInfoFor(server, arguments, environment) };
         process.ErrorDataReceived += (_, e) => Collect(diagnostics, e.Data);
 
-        Log.Information("Starting {Executable} {Arguments}", PublishedExecutable, arguments);
+        Log.Information("Starting {Executable} {Arguments}", server.FileName, arguments);
         process.Start();
         process.BeginErrorReadLine();
 
@@ -1114,7 +1202,8 @@ partial class Build : FalloutBuild,
             {
                 lock (responses)
                 {
-                    if (responses.ContainsKey(InitializeId) && responses.ContainsKey(ToolsListId))
+                    if (responses.ContainsKey(InitializeId) && responses.ContainsKey(ToolsListId)
+                        && responses.ContainsKey(ArgumentCheckId))
                     {
                         break;
                     }
@@ -1134,8 +1223,8 @@ partial class Build : FalloutBuild,
                 }
 
                 Assert.True(stopwatch.Elapsed < SmokeTestTimeout,
-                    $"Timed out after {SmokeTestTimeout.TotalSeconds:0} s waiting for the initialize and " +
-                    $"tools/list responses.{FormatDiagnostics(diagnostics)}");
+                    $"Timed out after {SmokeTestTimeout.TotalSeconds:0} s waiting for the initialize, " +
+                    $"tools/list and tools/call responses.{FormatDiagnostics(diagnostics)}");
 
                 Thread.Sleep(millisecondsTimeout: 25);
             }
@@ -1160,16 +1249,20 @@ partial class Build : FalloutBuild,
         }
     }
 
-    /// <summary>The start info both legs use: redirected streams, UTF-8, and the verb.</summary>
+    /// <summary>The start info every leg uses: redirected streams, UTF-8, and the verb.</summary>
+    /// <param name="server">The binary under test.</param>
     /// <param name="arguments">The verb to launch with.</param>
     /// <param name="environment">Extra variables layered on this process's own block, or null.</param>
-    ProcessStartInfo StartInfoFor(string arguments, IReadOnlyDictionary<string, string> environment)
+    static ProcessStartInfo StartInfoFor(
+        ServerUnderTest server,
+        string arguments,
+        IReadOnlyDictionary<string, string> environment)
     {
         var startInfo = new ProcessStartInfo
                         {
-                            FileName = PublishedExecutable,
-                            Arguments = arguments,
-                            WorkingDirectory = PublishDirectory,
+                            FileName = server.FileName,
+                            Arguments = server.Arguments.Length == 0 ? arguments : server.Arguments + " " + arguments,
+                            WorkingDirectory = server.WorkingDirectory,
                             UseShellExecute = false,
                             RedirectStandardInput = true,
                             RedirectStandardOutput = true,

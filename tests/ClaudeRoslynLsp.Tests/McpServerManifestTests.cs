@@ -188,6 +188,52 @@ public class McpServerManifestTests
             Is.EqualTo(EnvironmentSurface.Canonical.OrderBy(name => name, StringComparer.Ordinal)));
     }
 
+    /// <summary>
+    /// D110: what the official MCP Registry's validator accepts. Each of these was a refusal for the
+    /// sibling repositories: an older schema, a <c>registryBaseUrl</c> other than the one value its
+    /// NuGet validator allows, and a description over 100 characters.
+    /// </summary>
+    [Test]
+    public void ManifestIsWhatTheMcpRegistryAccepts()
+    {
+        var root = FindRepositoryRoot();
+        using var manifest = ReadManifest(root);
+
+        Assert.That(
+            manifest.RootElement.GetProperty("$schema").GetString(),
+            Is.EqualTo("https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"));
+        Assert.That(
+            SingleNuGetPackage(manifest).GetProperty("registryBaseUrl").GetString(),
+            Is.EqualTo("https://api.nuget.org/v3/index.json"));
+        Assert.That(manifest.RootElement.GetProperty("description").GetString()!.Length, Is.LessThanOrEqualTo(100));
+    }
+
+    /// <summary>
+    /// The registry proves the package is ours by finding <c>mcp-name: &lt;server name&gt;</c> in the
+    /// README nuget.org serves for that exact version, and a registry version is immutable — so a
+    /// release packed without the marker can never be listed. The README packed is the repository's.
+    /// </summary>
+    [Test]
+    public void ThePackedReadmeCarriesTheRegistryOwnershipMarker()
+    {
+        var root = FindRepositoryRoot();
+        using var manifest = ReadManifest(root);
+
+        var name = manifest.RootElement.GetProperty("name").GetString();
+        var readme = File.ReadAllText(Path.Combine(root, "README.md"));
+
+        Assert.That(readme, Contains.Substring($"mcp-name: {name}").Using(StringComparison.Ordinal));
+
+        var packed = XDocument
+            .Load(Path.Combine(root, ServerProjectPath))
+            .Descendants("None")
+            .Where(item => (string?)item.Attribute("Pack") == "true")
+            .Select(item => (string?)item.Attribute("Include"))
+            .ToList();
+
+        Assert.That(packed, Does.Contain("../../README.md"));
+    }
+
     private static JsonElement SingleNuGetPackage(JsonDocument manifest)
     {
         var packages = manifest.RootElement.GetProperty("packages")

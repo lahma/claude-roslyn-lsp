@@ -22,45 +22,47 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
-  <!-- D4: the NuGet channel is what the Claude Code plugin launches. `dotnet pack` produces a
-       framework-dependent .NET tool package, so the plugin's two `dnx claude-roslyn-lsp@{version}`
-       entries (one ending in `lsp`, one in `mcp`) run the same binary with no download step of
-       their own; the Native AOT binaries published to GitHub Releases are what every file-based
-       client (Copilot CLI, OpenCode, Neovim, Helix, Zed) points at. PackageType McpServer is what nuget.org filters on
-       to show the MCP tab and generate client configuration; PackAsTool already makes it a tool
-       package, so DotnetTool is deliberately NOT listed alongside it (the mcpserver template does
-       the same). The package id, the assembly name, the tool command and the plugin name are all
-       the same string here - `claude-roslyn-lsp` is unreserved on nuget.org. -->
+  <!-- D22: the NuGet channel is what the Claude Code plugin launches - both of its entries run
+       `dnx claude-roslyn-lsp@{version}`, one ending in `lsp` and one in `mcp`. Since 0.3.0 it delivers
+       the same Native AOT binary as the GitHub Releases, as RID-specific tool packages: `dotnet pack`
+       builds the pointer package, which names one package per RID below, `dotnet pack -r <rid>` builds
+       each of those on a runner of that OS (Native AOT cannot cross-compile across operating systems),
+       and `dotnet pack -r any -p:PublishAot=false` builds the framework-dependent fallback for every
+       other platform - which includes the three Roslyn RIDs no archive is built for (D24).
+       PackageType McpServer is what nuget.org filters on to show the MCP tab and generate client
+       configuration; PackAsTool already makes it a tool package, so DotnetTool is deliberately NOT
+       listed alongside it (the mcpserver template does the same). The SDK gives the RID packages the
+       DotnetToolRidPackage type instead, so only the pointer carries McpServer - which matters,
+       because nuget.org refuses a McpServer package that is not also a DotnetTool. The package id,
+       the assembly name, the tool command and the plugin name are all the same string. -->
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackAsTool>true</PackAsTool>
     <PackageType>McpServer</PackageType>
     <PackageId>claude-roslyn-lsp</PackageId>
     <ToolCommandName>claude-roslyn-lsp</ToolCommandName>
-    <!-- The tool half is framework-dependent, so it must keep working on a runtime newer than the
-         one it was built against. -->
+    <!-- The `any` fallback package is framework-dependent, so it must keep working on a runtime newer
+         than the one it was built against. -->
     <RollForward>Major</RollForward>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>lsp;language-server;roslyn;csharp;dotnet;refactoring;claude-code;mcp;mcp-server;model-context-protocol;stdio</PackageTags>
-    <Description>Roslyn C# language server adapter for Claude Code and other agents. Runs as an LSP server (`claude-roslyn-lsp lsp`) that mediates Microsoft's roslyn-language-server so navigation and edit-time diagnostics work reliably, and as an MCP server (`claude-roslyn-lsp mcp`) that exposes semantic refactoring - rename, code actions, fix-all, formatting and on-demand diagnostics - to models that would otherwise reach for grep and sed. Pure BCL, Native AOT, no compiler packages of its own.</Description>
+    <Description>Roslyn C# language server adapter for Claude Code and other agents. Runs as an LSP server (`claude-roslyn-lsp lsp`) that mediates Microsoft's roslyn-language-server so navigation and edit-time diagnostics work reliably, and as an MCP server (`claude-roslyn-lsp mcp`) that exposes semantic refactoring - rename, code actions, fix-all, formatting and on-demand diagnostics - to models that would otherwise reach for grep and sed. `dnx claude-roslyn-lsp` runs the Native AOT binary on Windows, Linux and macOS (x64 and Arm64 where built) and a framework-dependent build elsewhere. Pure BCL, no compiler packages of its own.</Description>
   </PropertyGroup>
 
-  <!-- PackTool.targets packs $(PublishDir), so `dotnet pack` runs a publish of this project. Left
-       alone that publish would inherit PublishAot=true above and fail for want of a RuntimeIdentifier
-       (D8 keeps RIDs out of the csproj). The AOT publish always passes -r, so keying the property off
-       RuntimeIdentifier gives the release path AOT and the pack path a portable IL tool. -->
-  <PropertyGroup Condition="'$(RuntimeIdentifier)' == ''">
-    <PublishAot>false</PublishAot>
-  </PropertyGroup>
-
-  <!-- The three analyzers below are what turn an AOT-hostile line of code (IL2026, IL3050) into a
-       build error under TreatWarningsAsErrors. The SDK derives them from PublishAot, so leaving
-       them implicit would switch them off for every RID-less build - which is every `dotnet build`,
-       every `dotnet test` and every IDE session. Stated explicitly, they no longer depend on it. -->
+  <!-- The RIDs the pointer package names: exactly the release matrix's five legs (ToolPackageTests
+       keeps the two lists equal), plus `any` for the framework-dependent fallback. Not
+       RuntimeIdentifiers (D8): this property only shapes the tool packages and restores nothing per
+       RID. PublishAot is unconditional: with it set, a RID-less `dotnet pack` builds the pointer
+       alone, where with it false the same command packs every RID package framework-dependent
+       under the native names. It also keeps the AOT, trim and single-file analyzers on for every
+       build, `dotnet build` and `dotnet test` included, so an AOT-hostile line (IL2026, IL3050) is a
+       build error under TreatWarningsAsErrors without stating them separately. A published tool
+       needs neither symbols nor the XML docs, and Native AOT's symbols alone are ~100 MB on Windows,
+       so neither is copied to publish output - the archives never shipped them either. -->
   <PropertyGroup>
-    <EnableAotAnalyzer>true</EnableAotAnalyzer>
-    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
-    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
+    <ToolPackageRuntimeIdentifiers>linux-x64;linux-arm64;win-x64;win-arm64;osx-arm64;any</ToolPackageRuntimeIdentifiers>
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+    <PublishDocumentationFile>false</PublishDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>

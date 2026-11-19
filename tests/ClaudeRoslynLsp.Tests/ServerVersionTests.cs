@@ -6,8 +6,8 @@ namespace ClaudeRoslynLsp.Tests;
 /// The name and version the two handshakes report.
 /// </summary>
 /// <remarks>
-/// One string is the binary name, the NuGet package id, the plugin name, the MCP
-/// <c>serverInfo.name</c> and the LSP <c>serverInfo.name</c> — which is what lets <c>SmokeTest</c>
+/// One string is the binary name, the NuGet package id, the MCP <c>serverInfo.name</c> and the
+/// LSP <c>serverInfo.name</c> — which is what lets <c>SmokeTest</c>
 /// assert both protocols against the same constant. If it ever drifts, the smoke test fails on a
 /// release runner rather than here, which is a slower and much less obvious place to find out.
 /// </remarks>

@@ -129,15 +129,33 @@ so one install delivers the LSP server, the MCP server and the skill:
 
 ```
 /plugin marketplace add lahma/claude-roslyn-lsp
-/plugin install claude-roslyn-lsp@claude-roslyn-lsp
+/plugin install roslyn-adapter@claude-roslyn-lsp
 ```
 
 or, without starting a session:
 
 ```bash
 claude plugin marketplace add lahma/claude-roslyn-lsp
-claude plugin install claude-roslyn-lsp@claude-roslyn-lsp
+claude plugin install roslyn-adapter@claude-roslyn-lsp
 ```
+
+The plugin is called `roslyn-adapter`; the marketplace, the binary and the NuGet package are
+`claude-roslyn-lsp`. Its MCP tools appear as `mcp__plugin_roslyn-adapter_roslyn__<tool>`, which is
+the name to use in `permissions` rules.
+
+**Upgrading from 0.9.0 or earlier**, where the plugin was itself called `claude-roslyn-lsp`: the old
+name is gone from the marketplace, so `/plugin update` will not find it. Install the new one and
+remove the old one, once:
+
+```bash
+claude plugin marketplace update claude-roslyn-lsp
+claude plugin install roslyn-adapter@claude-roslyn-lsp
+claude plugin uninstall claude-roslyn-lsp@claude-roslyn-lsp
+```
+
+Plugin options are kept per plugin, so set them again if you had any; rename any
+`mcp__plugin_claude-roslyn-lsp_roslyn__*` entries in your permission rules; and expect the first
+session to download Roslyn once more, into the new plugin's data directory.
 
 **Then disable the official C# plugin.** The first plugin registered for an extension wins, and
 marketplace plugins register before everything else — so with `csharp-lsp@claude-plugins-official`

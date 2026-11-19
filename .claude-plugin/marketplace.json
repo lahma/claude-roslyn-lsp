@@ -8,7 +8,7 @@
   },
   "plugins": [
     {
-      "name": "claude-roslyn-lsp",
+      "name": "roslyn-adapter",
       "source": "./",
       "category": "language-support",
       "tags": ["csharp", "dotnet", "roslyn", "lsp", "refactoring", "mcp"]

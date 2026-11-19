@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests;
 
@@ -84,41 +84,27 @@ public class ConfigSnippetTests
     private static readonly Regex QuotedItem = new("""["']([^"']*)["']""", RegexOptions.Compiled);
 
     /// <summary>Every checked-in client configuration file, repository-relative.</summary>
-    public static TheoryData<string> Snippets
-    {
-        get
-        {
-            var data = new TheoryData<string>();
-
-            foreach (var path in SnippetPaths())
-            {
-                data.Add(path);
-            }
-
-            return data;
-        }
-    }
+    public static IEnumerable<string> Snippets => SnippetPaths();
 
     /// <summary>
     /// The pack exists at all, and holds one file per client rather than a directory nobody filled
     /// in.
     /// </summary>
     /// <remarks>
-    /// Every test below is a <see cref="TheoryAttribute"/> over the same enumeration, and an empty
+    /// Every test below is a <see cref="TestCaseSourceAttribute"/> over the same enumeration, and an empty
     /// enumeration makes all of them pass. This is the assertion that stops that.
     /// </remarks>
-    [Fact]
+    [Test]
     public void TheClientConfigurationPackIsNotEmpty()
     {
-        Assert.True(
-            SnippetPaths().Count >= 10,
+        Assert.That(
+            SnippetPaths().Count >= 10, Is.True,
             $"Only {SnippetPaths().Count} client configuration files were found. README.md documents one per "
-            + "client and every other test in this file is a theory over that list.");
+            + "client and every other test in this file runs once per file in that list.");
     }
 
     /// <summary>Each file parses in the format its extension claims.</summary>
-    [Theory]
-    [MemberData(nameof(Snippets))]
+    [TestCaseSource(nameof(Snippets))]
     public void EverySnippetParses(string path)
     {
         var text = Read(path);
@@ -151,8 +137,7 @@ public class ConfigSnippetTests
     /// agree with a stale list. A misspelled variable is the worst kind of configuration bug: the
     /// server starts, the value is discarded, and the answers are confidently about something else.
     /// </remarks>
-    [Theory]
-    [MemberData(nameof(Snippets))]
+    [TestCaseSource(nameof(Snippets))]
     public void EverySnippetNamesOnlyVariablesTheAdapterReads(string path)
     {
         foreach (Match mention in VariableMention.Matches(Read(path)))
@@ -164,8 +149,8 @@ public class ConfigSnippetTests
                 name = name["CLAUDE_PLUGIN_OPTION_".Length..];
             }
 
-            Assert.True(
-                EnvironmentSurface.Accepted.Contains(name),
+            Assert.That(
+                EnvironmentSurface.Accepted.Contains(name), Is.True,
                 $"{path} sets '{mention.Value}', which nothing in ClaudeRoslynLspOptions reads. Fix the "
                 + "spelling, or read it — a documented variable that does nothing has no symptom to search "
                 + "for.");
@@ -181,18 +166,17 @@ public class ConfigSnippetTests
     /// a Lua <c>cmd</c> table (Neovim), and <c>path</c> beside <c>arguments</c> (Zed). All of them
     /// end up here.
     /// </remarks>
-    [Theory]
-    [MemberData(nameof(Snippets))]
+    [TestCaseSource(nameof(Snippets))]
     public void EverySnippetLaunchesTheBinaryWithAVerb(string path)
     {
         var vectors = ArgumentVectors(path);
 
-        Assert.True(vectors.Count > 0, $"{path} contains no launch arguments at all; it launches nothing.");
+        Assert.That(vectors.Count > 0, Is.True, $"{path} contains no launch arguments at all; it launches nothing.");
 
         foreach (var vector in vectors)
         {
-            Assert.True(
-                Verbs.Contains(vector[^1]),
+            Assert.That(
+                Verbs.Contains(vector[^1]), Is.True,
                 $"{path} launches with [{string.Join(", ", vector)}], whose last argument is not one of "
                 + $"{string.Join("/", Verbs.Order(StringComparer.Ordinal))}. This binary has no default verb: "
                 + "with none it exits 2 before the handshake, which a client reports as a server that failed "
@@ -210,7 +194,7 @@ public class ConfigSnippetTests
     /// file. A mapping that is missing or misspelled produces configuration nothing ever triggers,
     /// with no error anywhere — just an agent that carries on using grep on C#.
     /// </remarks>
-    [Fact]
+    [Test]
     public void EveryExtensionMappingSendsCSharpFilesToCsharp()
     {
         var mapped = 0;
@@ -230,19 +214,19 @@ public class ConfigSnippetTests
                 .Where(property => property.Name is "fileExtensions" or "extensionToLanguage")
                 .Select(property => property.Value))
             {
-                Assert.Equal(JsonValueKind.Object, map.ValueKind);
+                Assert.That(map.ValueKind, Is.EqualTo(JsonValueKind.Object));
 
-                Assert.True(
-                    map.TryGetProperty(".cs", out var language),
+                Assert.That(
+                    map.TryGetProperty(".cs", out var language), Is.True,
                     $"{path} declares an extension map with no '.cs' entry, which is the one extension this "
                     + "server exists for.");
 
-                Assert.Equal("csharp", language.GetString());
+                Assert.That(language.GetString(), Is.EqualTo("csharp"));
                 mapped++;
             }
         }
 
-        Assert.True(mapped >= 2, $"Only {mapped} extension maps were found; Copilot CLI and Claude Code both "
+        Assert.That(mapped >= 2, Is.True, $"Only {mapped} extension maps were found; Copilot CLI and Claude Code both "
             + "need one, so this scan has stopped finding them.");
     }
 
@@ -255,7 +239,7 @@ public class ConfigSnippetTests
     /// binary. A pin left behind at release time is the mirror image, and neither fails anywhere
     /// else: <c>dnx</c> happily resolves both.
     /// </remarks>
-    [Fact]
+    [Test]
     public void EveryDnxLaunchPinsTheChangelogVersion()
     {
         var expected = $"{PackageId}@{ChangelogVersion()}";
@@ -273,15 +257,15 @@ public class ConfigSnippetTests
                     continue;
                 }
 
-                Assert.Equal(expected, package);
+                Assert.That(package, Is.EqualTo(expected));
 
-                Assert.Contains("--yes", vector, StringComparer.Ordinal);
+                Assert.That(vector, Does.Contain("--yes"));
                 pinned++;
             }
         }
 
-        Assert.True(
-            pinned >= 2,
+        Assert.That(
+            pinned >= 2, Is.True,
             $"Only {pinned} dnx launches were found. The plugin manifest and .github/lsp.json both run one, "
             + "so this scan has stopped finding them and the pin is no longer checked anywhere.");
     }
@@ -293,7 +277,7 @@ public class ConfigSnippetTests
         var root = RepositoryLayout.Root;
         var clients = Path.Combine(root, ClientDirectory.Replace('/', Path.DirectorySeparatorChar));
 
-        Assert.True(Directory.Exists(clients), $"{ClientDirectory} does not exist.");
+        Assert.That(Directory.Exists(clients), Is.True, $"{ClientDirectory} does not exist.");
 
         var paths = Directory
             .EnumerateFiles(clients, "*", SearchOption.AllDirectories)
@@ -454,23 +438,23 @@ public class ConfigSnippetTests
 
             if (trimmed.StartsWith('['))
             {
-                Assert.True(
-                    trimmed.EndsWith(']') && Balanced(trimmed, '[', ']'),
+                Assert.That(
+                    trimmed.EndsWith(']') && Balanced(trimmed, '[', ']'), Is.True,
                     $"{path}:{number} is an unbalanced table header: {trimmed}");
 
                 continue;
             }
 
-            Assert.True(
-                trimmed.Contains('=', StringComparison.Ordinal),
+            Assert.That(
+                trimmed.Contains('=', StringComparison.Ordinal), Is.True,
                 $"{path}:{number} is neither a table header nor an assignment: {trimmed}");
 
-            Assert.True(
-                trimmed.Count(character => character == '"') % 2 == 0,
+            Assert.That(
+                trimmed.Count(character => character == '"') % 2 == 0, Is.True,
                 $"{path}:{number} has an unterminated string: {trimmed}");
 
-            Assert.True(
-                Balanced(trimmed, '[', ']') && Balanced(trimmed, '{', '}'),
+            Assert.That(
+                Balanced(trimmed, '[', ']') && Balanced(trimmed, '{', '}'), Is.True,
                 $"{path}:{number} has unbalanced brackets: {trimmed}");
         }
     }
@@ -487,13 +471,13 @@ public class ConfigSnippetTests
                 .Select(line => line.TrimEnd('\r'))
                 .Where(line => !line.TrimStart().StartsWith("--", StringComparison.Ordinal)));
 
-        Assert.True(Balanced(code, '(', ')'), $"{path} has unbalanced parentheses.");
-        Assert.True(Balanced(code, '{', '}'), $"{path} has unbalanced braces.");
+        Assert.That(Balanced(code, '(', ')'), Is.True, $"{path} has unbalanced parentheses.");
+        Assert.That(Balanced(code, '{', '}'), Is.True, $"{path} has unbalanced braces.");
 
         foreach (var (line, number) in code.Split('\n').Select((line, index) => (line, index + 1)))
         {
-            Assert.True(
-                line.Count(character => character == '\'') % 2 == 0,
+            Assert.That(
+                line.Count(character => character == '\'') % 2 == 0, Is.True,
                 $"{path}:{number} has an unterminated string: {line.Trim()}");
         }
     }
@@ -506,7 +490,7 @@ public class ConfigSnippetTests
     {
         var first = File.ReadLines(RepositoryLayout.Path_(ChangelogPath)).First().Trim();
 
-        Assert.StartsWith("# ", first, StringComparison.Ordinal);
+        Assert.That(first, Does.StartWith("# ").Using(StringComparison.Ordinal));
         return first[2..].Trim();
     }
 }

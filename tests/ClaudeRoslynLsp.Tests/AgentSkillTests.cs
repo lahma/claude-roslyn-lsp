@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 using ModelContextProtocol.Server;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests;
 
@@ -69,14 +69,14 @@ public class AgentSkillTests
     /// <summary>The Agent Skills spec's <c>name</c> rule: lowercase alphanumerics, single hyphens.</summary>
     private static readonly Regex SkillName = new("^[a-z0-9]+(-[a-z0-9]+)*$", RegexOptions.Compiled);
 
-    [Fact]
+    [Test]
     public void EveryToolTheSkillNamesExists()
     {
         var toolNames = ToolNames();
         var unknown = ReferencedToolNames().Where(name => !toolNames.Contains(name)).ToList();
 
-        Assert.True(
-            unknown.Count == 0,
+        Assert.That(
+            unknown.Count == 0, Is.True,
             $"{SkillDirectory}/SKILL.md names tools this server does not have: {string.Join(", ", unknown)}. "
             + "Rename them, or drop the guidance that used them.");
     }
@@ -101,13 +101,13 @@ public class AgentSkillTests
     /// never mention it.
     /// </para>
     /// </remarks>
-    [Fact]
+    [Test]
     public void EveryToolIsNamedInTheSkill()
     {
         var referenced = ReferencedToolNames();
 
-        Assert.True(
-            referenced.Count > 0,
+        Assert.That(
+            referenced.Count > 0, Is.True,
             $"{SkillDirectory}/SKILL.md names no tool at all. It is the playbook for ten of them; a version "
             + "of it that names none teaches nothing and would pass every other check here.");
 
@@ -116,8 +116,8 @@ public class AgentSkillTests
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
 
-        Assert.True(
-            missing.Count == 0,
+        Assert.That(
+            missing.Count == 0, Is.True,
             $"{SkillDirectory}/SKILL.md never mentions {string.Join(", ", missing)}. A tool the skill leaves out "
             + "is a tool the workflow it teaches silently drops — place it in a playbook, in backticks.");
     }
@@ -128,36 +128,36 @@ public class AgentSkillTests
     /// the directory name: clients that take the command from the directory and clients that take it
     /// from the field would otherwise disagree about what this skill is called.
     /// </summary>
-    [Fact]
+    [Test]
     public void FrontmatterFollowsTheAgentSkillsSpec()
     {
         var lines = File.ReadAllLines(SkillFile());
 
-        Assert.Equal("---", lines[0]);
+        Assert.That(lines[0], Is.EqualTo("---"));
 
         var end = Array.IndexOf(lines, "---", 1);
-        Assert.True(end > 0, "SKILL.md has no closing frontmatter delimiter.");
+        Assert.That(end > 0, Is.True, "SKILL.md has no closing frontmatter delimiter.");
 
         var frontmatter = lines[1..end];
 
         var name = Value(frontmatter, "name");
-        Assert.Equal(SkillDirectory[(SkillDirectory.LastIndexOf('/') + 1)..], name);
-        Assert.Matches(SkillName, name);
-        Assert.True(name.Length <= 64, $"name is {name.Length} characters; the spec allows 64.");
+        Assert.That(name, Is.EqualTo(SkillDirectory[(SkillDirectory.LastIndexOf('/') + 1)..]));
+        Assert.That(name, Does.Match(SkillName));
+        Assert.That(name.Length <= 64, Is.True, $"name is {name.Length} characters; the spec allows 64.");
 
         var description = Value(frontmatter, "description");
-        Assert.False(string.IsNullOrWhiteSpace(description), "description is required and drives invocation.");
-        Assert.True(
-            description.Length <= 1024,
+        Assert.That(string.IsNullOrWhiteSpace(description), Is.False, "description is required and drives invocation.");
+        Assert.That(
+            description.Length <= 1024, Is.True,
             $"description is {description.Length} characters; the spec allows 1024.");
 
-        Assert.Equal("MIT", Value(frontmatter, "license"));
+        Assert.That(Value(frontmatter, "license"), Is.EqualTo("MIT"));
 
         // Not required by the spec, and required here: this skill teaches tools that only exist
         // when the adapter is attached, which is a precondition no other field carries. A reader
         // who has the skill and not the server needs to be told that in the file itself.
-        Assert.False(
-            string.IsNullOrWhiteSpace(Value(frontmatter, "compatibility")),
+        Assert.That(
+            string.IsNullOrWhiteSpace(Value(frontmatter, "compatibility")), Is.False,
             "SKILL.md has no 'compatibility' line saying what has to be attached for its guidance to apply.");
     }
 
@@ -191,7 +191,7 @@ public class AgentSkillTests
 
         // Self-check: the scan is only as good as its verb set, so an empty one would mean it matches
         // nothing and passes for the wrong reason.
-        Assert.NotEmpty(verbs);
+        Assert.That(verbs, Is.Not.Empty);
 
         var referenced = new HashSet<string>(StringComparer.Ordinal);
 
@@ -213,7 +213,7 @@ public class AgentSkillTests
     private static string Value(string[] frontmatter, string key)
     {
         var index = Array.FindIndex(frontmatter, line => line.StartsWith(key + ":", StringComparison.Ordinal));
-        Assert.True(index >= 0, $"SKILL.md frontmatter has no '{key}' key.");
+        Assert.That(index >= 0, Is.True, $"SKILL.md frontmatter has no '{key}' key.");
 
         var head = frontmatter[index][(key.Length + 1)..].Trim();
         List<string> folded = head is ">-" or ">" or "|" or "|-" ? [] : [head];
@@ -235,7 +235,7 @@ public class AgentSkillTests
             if (File.Exists(Path.Combine(directory.FullName, RootMarker)))
             {
                 var file = Path.Combine(directory.FullName, SkillDirectory, "SKILL.md");
-                Assert.True(File.Exists(file), $"The shipped skill is missing: {SkillDirectory}/SKILL.md.");
+                Assert.That(File.Exists(file), Is.True, $"The shipped skill is missing: {SkillDirectory}/SKILL.md.");
                 return file;
             }
 

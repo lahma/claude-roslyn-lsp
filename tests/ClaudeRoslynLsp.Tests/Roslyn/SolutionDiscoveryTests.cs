@@ -1,6 +1,6 @@
 using ClaudeRoslynLsp.Roslyn;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Roslyn;
 
@@ -20,7 +20,7 @@ public class SolutionDiscoveryTests
         EndProject
         """;
 
-    [Fact]
+    [Test]
     public void OneSolutionInTheRootIsTheAnswer()
     {
         using var temp = TempWorkspace.Create("discovery-single");
@@ -28,14 +28,14 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Equal(SolutionDiscoveryOutcome.Scored, result.Outcome);
-        Assert.Equal(solution, result.SolutionPath);
-        Assert.Single(result.Candidates);
-        Assert.Equal(2, result.Candidates[0].ProjectCount);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.Scored));
+        Assert.That(result.SolutionPath, Is.EqualTo(solution));
+        Assert.That(result.Candidates, Has.Exactly(1).Items);
+        Assert.That(result.Candidates[0].ProjectCount, Is.EqualTo(2));
     }
 
     /// <summary>Name matching the folder is worth more than everything else combined (D41).</summary>
-    [Fact]
+    [Test]
     public void TheSolutionNamedAfterTheRootFolderWins()
     {
         using var temp = TempWorkspace.Create("discovery-name");
@@ -46,12 +46,12 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Equal(expected, result.SolutionPath);
-        Assert.Equal(2, result.Candidates.Count);
-        Assert.Contains("name matches the folder", result.Candidates[0].Reason, StringComparison.Ordinal);
+        Assert.That(result.SolutionPath, Is.EqualTo(expected));
+        Assert.That(result.Candidates.Count, Is.EqualTo(2));
+        Assert.That(result.Candidates[0].Reason, Contains.Substring("name matches the folder").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void SlnxBeatsSlnAndProjectCountBreaksTheRest()
     {
         using var temp = TempWorkspace.Create("discovery-slnx");
@@ -60,13 +60,13 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Equal(modern, result.SolutionPath);
-        Assert.Equal(1, result.Candidates[0].ProjectCount);
-        Assert.Contains("+10 .slnx", result.Candidates[0].Reason, StringComparison.Ordinal);
+        Assert.That(result.SolutionPath, Is.EqualTo(modern));
+        Assert.That(result.Candidates[0].ProjectCount, Is.EqualTo(1));
+        Assert.That(result.Candidates[0].Reason, Contains.Substring("+10 .slnx").Using(StringComparison.Ordinal));
     }
 
     /// <summary>A solution at the root is the repository's; one three directories down is a sample.</summary>
-    [Fact]
+    [Test]
     public void AShallowerSolutionWinsATieWithADeeperOne()
     {
         using var temp = TempWorkspace.Create("discovery-depth");
@@ -75,11 +75,11 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Equal(root, result.SolutionPath);
-        Assert.Equal(0, result.Candidates[0].Depth);
+        Assert.That(result.SolutionPath, Is.EqualTo(root));
+        Assert.That(result.Candidates[0].Depth, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public void NestedSolutionsAreFoundToDepthThree()
     {
         using var temp = TempWorkspace.Create("discovery-nested");
@@ -88,11 +88,11 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Single(result.Candidates);
-        Assert.EndsWith("Deep.sln", result.SolutionPath, StringComparison.Ordinal);
+        Assert.That(result.Candidates, Has.Exactly(1).Items);
+        Assert.That(result.SolutionPath, Does.EndWith("Deep.sln").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void BuildOutputDirectoriesAreNeverDescendedInto()
     {
         using var temp = TempWorkspace.Create("discovery-skip");
@@ -104,11 +104,11 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Empty(result.Candidates);
-        Assert.Equal(SolutionDiscoveryOutcome.None, result.Outcome);
+        Assert.That(result.Candidates, Is.Empty);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.None));
     }
 
-    [Fact]
+    [Test]
     public void WithNoSolutionEveryProjectIsOpened()
     {
         using var temp = TempWorkspace.Create("discovery-projects");
@@ -117,26 +117,26 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Equal(SolutionDiscoveryOutcome.ProjectsOnly, result.Outcome);
-        Assert.Equal(2, result.ProjectPaths.Count);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.ProjectsOnly));
+        Assert.That(result.ProjectPaths.Count, Is.EqualTo(2));
 
         // D42: test projects are candidates too. An agent asked to fix a failing test needs them.
-        Assert.Contains(result.ProjectPaths, path => path.EndsWith("App.Tests.csproj", StringComparison.Ordinal));
+        Assert.That(result.ProjectPaths, Has.Some.Matches<string>(path => path!.EndsWith("App.Tests.csproj", StringComparison.Ordinal)));
     }
 
-    [Fact]
+    [Test]
     public void AnEmptyTreeIsMiscFilesMode()
     {
         using var temp = TempWorkspace.Create("discovery-empty");
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Equal(SolutionDiscoveryOutcome.None, result.Outcome);
-        Assert.False(result.HasWorkspace);
-        Assert.Contains("misc-files mode", result.Explanation, StringComparison.Ordinal);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.None));
+        Assert.That(result.HasWorkspace, Is.False);
+        Assert.That(result.Explanation, Contains.Substring("misc-files mode").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void AnExplicitSettingWins()
     {
         using var temp = TempWorkspace.Create("discovery-explicit");
@@ -145,12 +145,12 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root, wanted);
 
-        Assert.Equal(SolutionDiscoveryOutcome.Explicit, result.Outcome);
-        Assert.Equal(wanted, result.SolutionPath);
-        Assert.Empty(result.Candidates);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.Explicit));
+        Assert.That(result.SolutionPath, Is.EqualTo(wanted));
+        Assert.That(result.Candidates, Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public void AnExplicitSettingMayBeRelativeToTheRoot()
     {
         using var temp = TempWorkspace.Create("discovery-relative");
@@ -158,10 +158,10 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root, Path.Combine("src", "Wanted.slnx"));
 
-        Assert.Equal(wanted, result.SolutionPath);
+        Assert.That(result.SolutionPath, Is.EqualTo(wanted));
     }
 
-    [Fact]
+    [Test]
     public void AnExplicitProjectIsOpenedAsAProject()
     {
         using var temp = TempWorkspace.Create("discovery-explicit-project");
@@ -169,12 +169,12 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root, project);
 
-        Assert.Null(result.SolutionPath);
-        Assert.Equal([project], result.ProjectPaths);
+        Assert.That(result.SolutionPath, Is.Null);
+        Assert.That(result.ProjectPaths, Is.EqualTo([project]));
     }
 
     /// <summary>D39: never a silent fallback to a different solution.</summary>
-    [Fact]
+    [Test]
     public void AnExplicitSettingThatIsNotThereFailsInsteadOfGuessing()
     {
         using var temp = TempWorkspace.Create("discovery-explicit-missing");
@@ -182,14 +182,14 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root, temp.Path_("Gone.sln"), "CLAUDE_ROSLYN_LSP_SOLUTION");
 
-        Assert.Equal(SolutionDiscoveryOutcome.Failed, result.Outcome);
-        Assert.Null(result.SolutionPath);
-        Assert.Contains("CLAUDE_ROSLYN_LSP_SOLUTION", result.Failure, StringComparison.Ordinal);
-        Assert.Contains("does not exist", result.Failure, StringComparison.Ordinal);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.Failed));
+        Assert.That(result.SolutionPath, Is.Null);
+        Assert.That(result.Failure, Contains.Substring("CLAUDE_ROSLYN_LSP_SOLUTION").Using(StringComparison.Ordinal));
+        Assert.That(result.Failure, Contains.Substring("does not exist").Using(StringComparison.Ordinal));
     }
 
     /// <summary>D40: the repository has already answered this question for its editor.</summary>
-    [Fact]
+    [Test]
     public void TheVsCodeDefaultSolutionSettingIsHonoured()
     {
         using var temp = TempWorkspace.Create("discovery-vscode");
@@ -202,11 +202,11 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Equal(SolutionDiscoveryOutcome.DefaultSolutionSetting, result.Outcome);
-        Assert.Equal(wanted, result.SolutionPath);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.DefaultSolutionSetting));
+        Assert.That(result.SolutionPath, Is.EqualTo(wanted));
     }
 
-    [Fact]
+    [Test]
     public void TheVsCodeSettingIsReadEvenWithCommentsAndTrailingCommas()
     {
         using var temp = TempWorkspace.Create("discovery-vscode-jsonc");
@@ -221,10 +221,10 @@ public class SolutionDiscoveryTests
             }
             """);
 
-        Assert.Equal("Chosen.sln", SolutionDiscovery.ReadDefaultSolution(temp.Root));
+        Assert.That(SolutionDiscovery.ReadDefaultSolution(temp.Root), Is.EqualTo("Chosen.sln"));
     }
 
-    [Fact]
+    [Test]
     public void DisableMeansNoSolutionAtAll()
     {
         using var temp = TempWorkspace.Create("discovery-disable");
@@ -233,12 +233,12 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Equal(SolutionDiscoveryOutcome.Disabled, result.Outcome);
-        Assert.Null(result.SolutionPath);
-        Assert.False(result.HasWorkspace);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.Disabled));
+        Assert.That(result.SolutionPath, Is.Null);
+        Assert.That(result.HasWorkspace, Is.False);
     }
 
-    [Fact]
+    [Test]
     public void AnExplicitEnvironmentSettingOutranksTheVsCodeSetting()
     {
         using var temp = TempWorkspace.Create("discovery-precedence");
@@ -248,11 +248,11 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root, "Wanted.sln");
 
-        Assert.Equal(SolutionDiscoveryOutcome.Explicit, result.Outcome);
-        Assert.Equal(wanted, result.SolutionPath);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.Explicit));
+        Assert.That(result.SolutionPath, Is.EqualTo(wanted));
     }
 
-    [Fact]
+    [Test]
     public void ABrokenSettingsFileIsTreatedAsAbsentRatherThanAsAFailure()
     {
         using var temp = TempWorkspace.Create("discovery-vscode-broken");
@@ -261,13 +261,12 @@ public class SolutionDiscoveryTests
 
         var result = SolutionDiscovery.Discover(temp.Root);
 
-        Assert.Null(SolutionDiscovery.ReadDefaultSolution(temp.Root));
-        Assert.Equal(SolutionDiscoveryOutcome.Scored, result.Outcome);
+        Assert.That(SolutionDiscovery.ReadDefaultSolution(temp.Root), Is.Null);
+        Assert.That(result.Outcome, Is.EqualTo(SolutionDiscoveryOutcome.Scored));
     }
 
-    [Theory]
-    [InlineData(".sln", 2)]
-    [InlineData(".slnx", 3)]
+    [TestCase(".sln", 2)]
+    [TestCase(".slnx", 3)]
     public void ProjectsAreCountedFromTheSolutionText(string extension, int expected)
     {
         using var temp = TempWorkspace.Create("discovery-count");
@@ -284,18 +283,18 @@ public class SolutionDiscoveryTests
 
         var path = temp.File_("App" + extension, content);
 
-        Assert.Equal(expected, SolutionDiscovery.CountProjects(path));
+        Assert.That(SolutionDiscovery.CountProjects(path), Is.EqualTo(expected));
     }
 
-    [Fact]
+    [Test]
     public void ScoringIsTheSumOfTheThreeSignals()
     {
         var score = SolutionDiscovery.Score(
             Path.Combine("repo", "repo.slnx"), rootName: "repo", projectCount: 7, out var reason);
 
-        Assert.Equal(117, score);
-        Assert.Contains("+100", reason, StringComparison.Ordinal);
-        Assert.Contains("+10 .slnx", reason, StringComparison.Ordinal);
-        Assert.Contains("+7 project(s)", reason, StringComparison.Ordinal);
+        Assert.That(score, Is.EqualTo(117));
+        Assert.That(reason, Contains.Substring("+100").Using(StringComparison.Ordinal));
+        Assert.That(reason, Contains.Substring("+10 .slnx").Using(StringComparison.Ordinal));
+        Assert.That(reason, Contains.Substring("+7 project(s)").Using(StringComparison.Ordinal));
     }
 }

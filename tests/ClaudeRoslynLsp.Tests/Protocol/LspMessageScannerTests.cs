@@ -3,7 +3,7 @@ using System.Text.Json;
 
 using ClaudeRoslynLsp.Protocol;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Protocol;
 
@@ -21,65 +21,65 @@ namespace ClaudeRoslynLsp.Tests.Protocol;
 /// </remarks>
 public class LspMessageScannerTests
 {
-    [Fact]
+    [Test]
     public void ANumericRequestIdIsReadAndLocated()
     {
         var body = Utf8("""{"jsonrpc":"2.0","id":42,"method":"textDocument/definition","params":{}}""");
         var info = LspMessageScanner.Scan(body);
 
-        Assert.Equal(LspMessageKind.Request, info.Kind);
-        Assert.Equal("textDocument/definition", info.Method);
-        Assert.Equal(JsonRpcId.FromNumber(42), info.Id);
-        Assert.Equal("42", Encoding.UTF8.GetString(info.IdToken(body)));
+        Assert.That(info.Kind, Is.EqualTo(LspMessageKind.Request));
+        Assert.That(info.Method, Is.EqualTo("textDocument/definition"));
+        Assert.That(info.Id, Is.EqualTo(JsonRpcId.FromNumber(42)));
+        Assert.That(Encoding.UTF8.GetString(info.IdToken(body)), Is.EqualTo("42"));
     }
 
-    [Fact]
+    [Test]
     public void AStringRequestIdKeepsItsQuotesInTheToken()
     {
         var body = Utf8("""{"jsonrpc":"2.0","id":"init-1","method":"initialize"}""");
         var info = LspMessageScanner.Scan(body);
 
-        Assert.Equal(LspMessageKind.Request, info.Kind);
-        Assert.Equal(JsonRpcId.FromText("init-1"), info.Id);
+        Assert.That(info.Kind, Is.EqualTo(LspMessageKind.Request));
+        Assert.That(info.Id, Is.EqualTo(JsonRpcId.FromText("init-1")));
 
         // With the quotes: what gets spliced back in has to be a complete JSON token.
-        Assert.Equal("\"init-1\"", Encoding.UTF8.GetString(info.IdToken(body)));
+        Assert.That(Encoding.UTF8.GetString(info.IdToken(body)), Is.EqualTo("\"init-1\""));
     }
 
     /// <summary>
     /// An escaped character makes the token longer than the string it denotes, which is exactly the
     /// case a naive "length plus two" would get wrong.
     /// </summary>
-    [Fact]
+    [Test]
     public void AnEscapedStringIdIsLocatedByItsEncodedLength()
     {
         var body = Utf8("""{"jsonrpc":"2.0","id":"a\"b\\c","method":"shutdown"}""");
         var info = LspMessageScanner.Scan(body);
 
-        Assert.Equal(JsonRpcId.FromText("a\"b\\c"), info.Id);
-        Assert.Equal("\"a\\\"b\\\\c\"", Encoding.UTF8.GetString(info.IdToken(body)));
+        Assert.That(info.Id, Is.EqualTo(JsonRpcId.FromText("a\"b\\c")));
+        Assert.That(Encoding.UTF8.GetString(info.IdToken(body)), Is.EqualTo("\"a\\\"b\\\\c\""));
     }
 
     /// <summary>
     /// JSON-RPC 2.0 forbids a null request id, so a message carrying one is a notification here — and
     /// answering it would produce a response no client can correlate.
     /// </summary>
-    [Fact]
+    [Test]
     public void AnExplicitNullIdIsANotification()
     {
         var info = LspMessageScanner.Scan(Utf8("""{"jsonrpc":"2.0","id":null,"method":"exit"}"""));
 
-        Assert.Equal(LspMessageKind.Notification, info.Kind);
-        Assert.Equal(JsonRpcIdKind.Null, info.Id.Kind);
+        Assert.That(info.Kind, Is.EqualTo(LspMessageKind.Notification));
+        Assert.That(info.Id.Kind, Is.EqualTo(JsonRpcIdKind.Null));
     }
 
-    [Fact]
+    [Test]
     public void ANotificationHasNoIdToken()
     {
         var info = LspMessageScanner.Scan(Utf8("""{"jsonrpc":"2.0","method":"initialized","params":{}}"""));
 
-        Assert.Equal(LspMessageKind.Notification, info.Kind);
-        Assert.False(info.HasIdToken);
+        Assert.That(info.Kind, Is.EqualTo(LspMessageKind.Notification));
+        Assert.That(info.HasIdToken, Is.False);
     }
 
     /// <summary>
@@ -88,25 +88,23 @@ public class LspMessageScannerTests
     /// </summary>
     /// <param name="message">The message.</param>
     /// <param name="isError">Whether it is the error form.</param>
-    [Theory]
-    [InlineData("""{"jsonrpc":"2.0","id":1,"result":[]}""", false)]
-    [InlineData("""{"jsonrpc":"2.0","id":1,"result":null}""", false)]
-    [InlineData("""{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}""", true)]
+    [TestCase("""{"jsonrpc":"2.0","id":1,"result":[]}""", false)]
+    [TestCase("""{"jsonrpc":"2.0","id":1,"result":null}""", false)]
+    [TestCase("""{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}""", true)]
     public void AResponseIsRecognisedByWhichMemberItCarries(string message, bool isError)
     {
         var info = LspMessageScanner.Scan(Utf8(message));
 
-        Assert.Equal(isError ? LspMessageKind.ErrorResponse : LspMessageKind.Response, info.Kind);
-        Assert.Null(info.Method);
+        Assert.That(info.Kind, Is.EqualTo(isError ? LspMessageKind.ErrorResponse : LspMessageKind.Response));
+        Assert.That(info.Method, Is.Null);
     }
 
-    [Theory]
-    [InlineData("not json at all")]
-    [InlineData("[1,2,3]")]
-    [InlineData("{\"jsonrpc\":\"2.0\"}")]
+    [TestCase("not json at all")]
+    [TestCase("[1,2,3]")]
+    [TestCase("{\"jsonrpc\":\"2.0\"}")]
     public void SomethingThatIsNotAJsonRpcMessageIsInvalidRatherThanThrowing(string message)
     {
-        Assert.Equal(LspMessageKind.Invalid, LspMessageScanner.Scan(Utf8(message)).Kind);
+        Assert.That(LspMessageScanner.Scan(Utf8(message)).Kind, Is.EqualTo(LspMessageKind.Invalid));
     }
 
     /// <summary>
@@ -114,7 +112,7 @@ public class LspMessageScannerTests
     /// before the message's own — a scanner that walked into objects would pick the wrong token and
     /// rewrite a call-hierarchy payload instead of the request id.
     /// </summary>
-    [Fact]
+    [Test]
     public void AnIdNestedInsideParamsIsNotMistakenForTheMessagesOwn()
     {
         var body = Utf8("""
@@ -123,49 +121,48 @@ public class LspMessageScannerTests
 
         var info = LspMessageScanner.Scan(body);
 
-        Assert.Equal(JsonRpcId.FromNumber(42), info.Id);
-        Assert.Equal("42", Encoding.UTF8.GetString(info.IdToken(body)));
+        Assert.That(info.Id, Is.EqualTo(JsonRpcId.FromNumber(42)));
+        Assert.That(Encoding.UTF8.GetString(info.IdToken(body)), Is.EqualTo("42"));
 
         // And the rewrite lands on the right one.
         var rewritten = Encoding.UTF8.GetString(LspMessageScanner.RewriteId(body, info, "5"u8));
 
-        Assert.Contains("\"id\":999", rewritten, StringComparison.Ordinal);
-        Assert.Contains("\"id\":\"inner\"", rewritten, StringComparison.Ordinal);
-        Assert.Contains("\"id\":5,\"method\"", rewritten, StringComparison.Ordinal);
+        Assert.That(rewritten, Contains.Substring("\"id\":999").Using(StringComparison.Ordinal));
+        Assert.That(rewritten, Contains.Substring("\"id\":\"inner\"").Using(StringComparison.Ordinal));
+        Assert.That(rewritten, Contains.Substring("\"id\":5,\"method\"").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// <c>$/cancelRequest</c> is the one place the protocol puts an id one level down, so it gets its
     /// own reader — and it must not be confused by the notification's absence of an id of its own.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheCancelledIdIsReadOutOfParams()
     {
-        Assert.True(LspMessageScanner.TryReadCancelRequestId(
+        Assert.That(LspMessageScanner.TryReadCancelRequestId(
             Utf8("""{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":17}}"""),
-            out var numeric));
+            out var numeric), Is.True);
 
-        Assert.Equal(JsonRpcId.FromNumber(17), numeric);
+        Assert.That(numeric, Is.EqualTo(JsonRpcId.FromNumber(17)));
 
-        Assert.True(LspMessageScanner.TryReadCancelRequestId(
+        Assert.That(LspMessageScanner.TryReadCancelRequestId(
             Utf8("""{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"abc"}}"""),
-            out var text));
+            out var text), Is.True);
 
-        Assert.Equal(JsonRpcId.FromText("abc"), text);
+        Assert.That(text, Is.EqualTo(JsonRpcId.FromText("abc")));
 
-        Assert.False(LspMessageScanner.TryReadCancelRequestId(
+        Assert.That(LspMessageScanner.TryReadCancelRequestId(
             Utf8("""{"jsonrpc":"2.0","method":"$/cancelRequest","params":{}}"""),
-            out _));
+            out _), Is.False);
     }
 
     /// <summary>
     /// A rewritten message differs from the original in the id token and in nothing else — asserted
     /// byte for byte, because "looks the same when reparsed" is a weaker claim than the design makes.
     /// </summary>
-    [Theory]
-    [InlineData("""{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":1.50,"b":"é"}}""", "1", "1000")]
-    [InlineData("""{"jsonrpc":"2.0","id":"x","method":"m"}""", "\"x\"", "7")]
-    [InlineData("""{"id":123456,"jsonrpc":"2.0","method":"m","params":[]}""", "123456", "1")]
+    [TestCase("""{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":1.50,"b":"é"}}""", "1", "1000")]
+    [TestCase("""{"jsonrpc":"2.0","id":"x","method":"m"}""", "\"x\"", "7")]
+    [TestCase("""{"id":123456,"jsonrpc":"2.0","method":"m","params":[]}""", "123456", "1")]
     public void RewritingAnIdChangesOnlyTheIdToken(string message, string oldToken, string newToken)
     {
         var body = Utf8(message);
@@ -174,7 +171,7 @@ public class LspMessageScannerTests
 
         var expected = Utf8(ReplaceFirst(message, "\"id\":" + oldToken, "\"id\":" + newToken));
 
-        Assert.Equal(expected, rewritten);
+        Assert.That(rewritten, Is.EqualTo(expected));
     }
 
     /// <summary>
@@ -183,7 +180,7 @@ public class LspMessageScannerTests
     /// is the only test that can hold that claim at the scale where an off-by-one in the offsets
     /// would still be rare enough to look like flakiness.
     /// </summary>
-    [Fact]
+    [Test]
     public void TenThousandMessagesSurviveAForwardAndRestoreCycleByteForByte()
     {
         for (var index = 0; index < 10_000; index++)
@@ -191,7 +188,7 @@ public class LspMessageScannerTests
             var original = Utf8(MessageNumber(index));
             var scanned = LspMessageScanner.Scan(original);
 
-            Assert.Equal(LspMessageKind.Request, scanned.Kind);
+            Assert.That(scanned.Kind, Is.EqualTo(LspMessageKind.Request));
 
             // Forward: the peer's id token is remembered and replaced with the adapter's own.
             var remembered = scanned.IdToken(original).ToArray();
@@ -201,7 +198,7 @@ public class LspMessageScannerTests
             var forwardedInfo = LspMessageScanner.Scan(forwarded);
             var restored = LspMessageScanner.RewriteId(forwarded, forwardedInfo, remembered);
 
-            Assert.Equal(original, restored);
+            Assert.That(restored, Is.EqualTo(original));
         }
     }
 
@@ -259,7 +256,7 @@ public class LspMessageScannerTests
     private static string ReplaceFirst(string text, string search, string replacement)
     {
         var index = text.IndexOf(search, StringComparison.Ordinal);
-        Assert.True(index >= 0, $"'{search}' is not in '{text}'.");
+        Assert.That(index >= 0, Is.True, $"'{search}' is not in '{text}'.");
 
         return string.Concat(text.AsSpan(0, index), replacement, text.AsSpan(index + search.Length));
     }
@@ -270,19 +267,19 @@ public class LspMessageScannerTests
 /// <summary>The id value type: how it compares, hashes and renders.</summary>
 public class JsonRpcIdTests
 {
-    [Fact]
+    [Test]
     public void NumbersAndStringsAreDistinctEvenWhenTheyLookAlike()
     {
-        Assert.NotEqual(JsonRpcId.FromNumber(7), JsonRpcId.FromText("7"));
-        Assert.Equal(JsonRpcId.FromNumber(7), JsonRpcId.FromNumber(7));
-        Assert.Equal(JsonRpcId.FromText("7"), JsonRpcId.FromText("7"));
+        Assert.That(JsonRpcId.FromText("7"), Is.Not.EqualTo(JsonRpcId.FromNumber(7)));
+        Assert.That(JsonRpcId.FromNumber(7), Is.EqualTo(JsonRpcId.FromNumber(7)));
+        Assert.That(JsonRpcId.FromText("7"), Is.EqualTo(JsonRpcId.FromText("7")));
     }
 
     /// <summary>
     /// Both forms key the correlation tables, so a dictionary has to keep them apart. A client using
     /// string ids and an adapter using numeric ones is the ordinary case, not an exotic one.
     /// </summary>
-    [Fact]
+    [Test]
     public void BothFormsCanKeyADictionaryWithoutColliding()
     {
         var table = new Dictionary<JsonRpcId, string>
@@ -292,39 +289,39 @@ public class JsonRpcIdTests
             [JsonRpcId.Null] = "null",
         };
 
-        Assert.Equal("number", table[JsonRpcId.FromNumber(1)]);
-        Assert.Equal("text", table[JsonRpcId.FromText("1")]);
-        Assert.Equal("null", table[JsonRpcId.Null]);
+        Assert.That(table[JsonRpcId.FromNumber(1)], Is.EqualTo("number"));
+        Assert.That(table[JsonRpcId.FromText("1")], Is.EqualTo("text"));
+        Assert.That(table[JsonRpcId.Null], Is.EqualTo("null"));
     }
 
-    [Fact]
+    [Test]
     public void OnlyNumbersAndStringsCanCorrelateARequest()
     {
-        Assert.True(JsonRpcId.FromNumber(1).IsCorrelatable);
-        Assert.True(JsonRpcId.FromText("a").IsCorrelatable);
-        Assert.False(JsonRpcId.Null.IsCorrelatable);
-        Assert.False(JsonRpcId.Absent.IsCorrelatable);
+        Assert.That(JsonRpcId.FromNumber(1).IsCorrelatable, Is.True);
+        Assert.That(JsonRpcId.FromText("a").IsCorrelatable, Is.True);
+        Assert.That(JsonRpcId.Null.IsCorrelatable, Is.False);
+        Assert.That(JsonRpcId.Absent.IsCorrelatable, Is.False);
     }
 
-    [Fact]
+    [Test]
     public void OnlyAnIdThisAdapterCouldHaveIssuedReadsBackAsAnInteger()
     {
-        Assert.True(JsonRpcId.FromNumber(11).TryGetInt32(out var value));
-        Assert.Equal(11, value);
+        Assert.That(JsonRpcId.FromNumber(11).TryGetInt32(out var value), Is.True);
+        Assert.That(value, Is.EqualTo(11));
 
-        Assert.False(JsonRpcId.FromText("11").TryGetInt32(out _));
-        Assert.False(JsonRpcId.FromNumber(long.MaxValue).TryGetInt32(out _));
-        Assert.False(JsonRpcId.Absent.TryGetInt32(out _));
+        Assert.That(JsonRpcId.FromText("11").TryGetInt32(out _), Is.False);
+        Assert.That(JsonRpcId.FromNumber(long.MaxValue).TryGetInt32(out _), Is.False);
+        Assert.That(JsonRpcId.Absent.TryGetInt32(out _), Is.False);
     }
 
-    [Fact]
+    [Test]
     public void AStringIdIsEncodedAsAQuotedEscapedToken()
     {
         var token = Encoding.UTF8.GetString(JsonRpcId.FromText("a\"b").ToTokenBytes());
 
         using var document = JsonDocument.Parse(token);
 
-        Assert.Equal(JsonValueKind.String, document.RootElement.ValueKind);
-        Assert.Equal("a\"b", document.RootElement.GetString());
+        Assert.That(document.RootElement.ValueKind, Is.EqualTo(JsonValueKind.String));
+        Assert.That(document.RootElement.GetString(), Is.EqualTo("a\"b"));
     }
 }

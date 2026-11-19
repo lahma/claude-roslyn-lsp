@@ -4,7 +4,7 @@ using ClaudeRoslynLsp.Adapter;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -27,23 +27,22 @@ namespace ClaudeRoslynLsp.Tests.Adapter;
 /// </remarks>
 public class FileWatchBridgeTests
 {
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>Build output and machine state are never reported.</summary>
-    [Theory]
-    [InlineData(@"C:\w\src\A.cs", false)]
-    [InlineData("/w/src/A.cs", false)]
-    [InlineData(@"C:\w\src\bin\Debug\A.dll", true)]
-    [InlineData("/w/src/bin/Debug/A.dll", true)]
-    [InlineData(@"C:\w\src\obj\Debug\A.g.cs", true)]
-    [InlineData("/w/src/obj/Debug/A.g.cs", true)]
-    [InlineData(@"C:\w\.git\HEAD", true)]
-    [InlineData(@"C:\w\node_modules\x\index.js", true)]
-    [InlineData(@"C:\w\artifacts\publish\A.exe", true)]
-    [InlineData(@"C:\w\TestResults\log.trx", true)]
-    [InlineData("/w/src/.vs/state.json", true)]
+    [TestCase(@"C:\w\src\A.cs", false)]
+    [TestCase("/w/src/A.cs", false)]
+    [TestCase(@"C:\w\src\bin\Debug\A.dll", true)]
+    [TestCase("/w/src/bin/Debug/A.dll", true)]
+    [TestCase(@"C:\w\src\obj\Debug\A.g.cs", true)]
+    [TestCase("/w/src/obj/Debug/A.g.cs", true)]
+    [TestCase(@"C:\w\.git\HEAD", true)]
+    [TestCase(@"C:\w\node_modules\x\index.js", true)]
+    [TestCase(@"C:\w\artifacts\publish\A.exe", true)]
+    [TestCase(@"C:\w\TestResults\log.trx", true)]
+    [TestCase("/w/src/.vs/state.json", true)]
     public void BuildOutputAndMachineStateAreExcluded(string path, bool excluded) =>
-        Assert.Equal(excluded, FileWatchBridge.IsExcluded(path));
+        Assert.That(FileWatchBridge.IsExcluded(path), Is.EqualTo(excluded));
 
     /// <summary>
     /// The one exception: <c>project.assets.json</c> lives under <c>obj</c> and <em>is</em> the
@@ -56,47 +55,44 @@ public class FileWatchBridgeTests
     /// name as <c>obj\project.assets.json</c>, so the exception never matched and the restore result
     /// was dropped. That is C48's failure exactly: a load that never finishes, with nothing to read.
     /// The paths reaching this predicate are not all the host's own — a watcher's <c>baseUri</c> and
-    /// glob come from Roslyn — so the theory drives both spellings on both platforms deliberately.
+    /// glob come from Roslyn — so the test cases drive both spellings on both platforms deliberately.
     /// </remarks>
     /// <param name="path">The path under test.</param>
     /// <param name="excluded">Whether it should be dropped.</param>
-    [Theory]
-    [InlineData(@"C:\w\src\Hello.Core\obj\project.assets.json", false)]
-    [InlineData("/w/src/Hello.Core/obj/project.assets.json", false)]
-    [InlineData(@"C:\w\src\Hello.Core\obj\project.nuget.cache", true)]
-    [InlineData("/w/src/Hello.Core/obj/project.nuget.cache", true)]
+    [TestCase(@"C:\w\src\Hello.Core\obj\project.assets.json", false)]
+    [TestCase("/w/src/Hello.Core/obj/project.assets.json", false)]
+    [TestCase(@"C:\w\src\Hello.Core\obj\project.nuget.cache", true)]
+    [TestCase("/w/src/Hello.Core/obj/project.nuget.cache", true)]
     public void TheRestoreResultSurvivesTheObjExclusion(string path, bool excluded) =>
-        Assert.Equal(excluded, FileWatchBridge.IsExcluded(path));
+        Assert.That(FileWatchBridge.IsExcluded(path), Is.EqualTo(excluded));
 
     /// <summary>The file name is the last segment whichever separator the path was written with.</summary>
     /// <param name="path">The path under test.</param>
     /// <param name="expected">Its last segment.</param>
-    [Theory]
-    [InlineData(@"C:\w\src\obj\project.assets.json", "project.assets.json")]
-    [InlineData("/w/src/obj/project.assets.json", "project.assets.json")]
-    [InlineData(@"src/mixed\Calculator.cs", "Calculator.cs")]
-    [InlineData("Calculator.cs", "Calculator.cs")]
+    [TestCase(@"C:\w\src\obj\project.assets.json", "project.assets.json")]
+    [TestCase("/w/src/obj/project.assets.json", "project.assets.json")]
+    [TestCase(@"src/mixed\Calculator.cs", "Calculator.cs")]
+    [TestCase("Calculator.cs", "Calculator.cs")]
     public void TheFileNameIsTheLastSegmentUnderEitherSeparator(string path, string expected) =>
-        Assert.Equal(expected, FileWatchBridge.FileNameOf(path));
+        Assert.That(FileWatchBridge.FileNameOf(path), Is.EqualTo(expected));
 
     /// <summary>
     /// C33: only an appearance or a disappearance needs the synthetic project event. A plain edit of
     /// an existing file is something Roslyn already handles.
     /// </summary>
-    [Theory]
-    [InlineData("A.cs", FileWatchBridge.Created, true)]
-    [InlineData("A.cs", FileWatchBridge.Deleted, true)]
-    [InlineData("A.cs", FileWatchBridge.Changed, false)]
-    [InlineData("A.txt", FileWatchBridge.Created, false)]
-    [InlineData("A.csproj", FileWatchBridge.Created, false)]
+    [TestCase("A.cs", FileWatchBridge.Created, true)]
+    [TestCase("A.cs", FileWatchBridge.Deleted, true)]
+    [TestCase("A.cs", FileWatchBridge.Changed, false)]
+    [TestCase("A.txt", FileWatchBridge.Created, false)]
+    [TestCase("A.csproj", FileWatchBridge.Created, false)]
     public void OnlyAnAppearingOrVanishingSourceFileNeedsTheProjectNudge(
         string name,
         int changeType,
         bool expected) =>
-        Assert.Equal(expected, FileWatchBridge.NeedsProjectNudge(@"C:\w\src\" + name, changeType));
+        Assert.That(FileWatchBridge.NeedsProjectNudge(@"C:\w\src\" + name, changeType), Is.EqualTo(expected));
 
     /// <summary>The nudge names the nearest project above the file, not the first one anywhere.</summary>
-    [Fact]
+    [Test]
     public void TheNearestProjectFileIsTheOneWalkingUpwards()
     {
         using var workspace = TempWorkspace.Create("watch-nearest");
@@ -107,31 +103,31 @@ public class FileWatchBridgeTests
 
         var found = FileWatchBridge.NearestProjectFile(deep, workspace.Root);
 
-        Assert.NotNull(found);
-        Assert.Equal("Hello.Core.csproj", Path.GetFileName(found));
+        Assert.That(found, Is.Not.Null);
+        Assert.That(Path.GetFileName(found), Is.EqualTo("Hello.Core.csproj"));
     }
 
     /// <summary>The walk stops at the workspace root rather than climbing out of it.</summary>
-    [Fact]
+    [Test]
     public void TheWalkNeverClimbsPastTheWorkspaceRoot()
     {
         using var workspace = TempWorkspace.Create("watch-root");
 
         var loose = workspace.File_("src/Loose.cs", "class L { }");
 
-        Assert.Null(FileWatchBridge.NearestProjectFile(loose, workspace.Root));
+        Assert.That(FileWatchBridge.NearestProjectFile(loose, workspace.Root), Is.Null);
     }
 
     /// <summary>With no workspace root there is nothing to walk and nothing to watch.</summary>
-    [Fact]
+    [Test]
     public void WithNoWorkspaceRootThereIsNothingToNudge() =>
-        Assert.Null(FileWatchBridge.NearestProjectFile(@"C:\w\src\A.cs", root: null));
+        Assert.That(FileWatchBridge.NearestProjectFile(@"C:\w\src\A.cs", root: null), Is.Null);
 
     /// <summary>
     /// The lost-event recovery reports every build file in the workspace as changed, which is the
     /// only thing that makes Roslyn re-evaluate what it missed.
     /// </summary>
-    [Fact]
+    [Test]
     public void AResynchronisationReportsEveryBuildFileUnderTheRoot()
     {
         using var workspace = TempWorkspace.Create("watch-resync");
@@ -154,27 +150,28 @@ public class FileWatchBridgeTests
         bridge.Resynchronise();
         time.Advance(FileWatchBridge.BatchWindow);
 
-        var changes = Changes(Assert.Single(channel.ToServer));
+        Assert.That(channel.ToServer, Has.Exactly(1).Items);
+        var changes = Changes(channel.ToServer.Single());
         var names = changes.Select(x => Path.GetFileName(new Uri(x.Uri).LocalPath)).Order(StringComparer.Ordinal);
 
-        Assert.Equal(
-            ["Directory.Build.props", "Hello.App.csproj", "Hello.Core.csproj", "project.assets.json"],
-            names);
+        Assert.That(
+            names,
+            Is.EqualTo(["Directory.Build.props", "Hello.App.csproj", "Hello.Core.csproj", "project.assets.json"]));
 
         // Everything is Changed: C33's mechanism is a project re-evaluation, not a file event.
-        Assert.All(changes, x => Assert.Equal(FileWatchBridge.Changed, x.Type));
+        Assert.That(changes.Select(x => x.Type), Has.All.EqualTo(FileWatchBridge.Changed));
 
         // The generated props under obj/ is build output and stays out, even though it matches.
-        Assert.DoesNotContain(changes, x => x.Uri.Contains("nuget.g.props", StringComparison.Ordinal));
+        Assert.That(changes, Has.None.Matches<(string Uri, int Type)>(x => x.Uri.Contains("nuget.g.props", StringComparison.Ordinal)));
 
-        Assert.Equal(1, projectFilesChanged);
+        Assert.That(projectFilesChanged, Is.EqualTo(1));
     }
 
     /// <summary>
     /// The end-to-end rule: a <c>.cs</c> file that appears is reported <em>and</em> its project is
     /// reported as changed, in one batch (C33).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ANewSourceFileAlsoReportsItsProjectAsChanged()
     {
         using var workspace = TempWorkspace.Create("watch-c33");
@@ -206,27 +203,28 @@ public class FileWatchBridgeTests
 
         var changes = channel.ToServer.SelectMany(Changes).ToArray();
 
-        Assert.Contains(
+        Assert.That(
             changes,
-            x => x.Uri.EndsWith("Triangle.cs", StringComparison.Ordinal) && x.Type == FileWatchBridge.Created);
+            Has.Some.Matches<(string Uri, int Type)>(x => x.Uri.EndsWith("Triangle.cs", StringComparison.Ordinal) && x.Type == FileWatchBridge.Created));
 
-        Assert.Contains(
+        Assert.That(
             changes,
-            x => x.Uri.EndsWith("Hello.Core.csproj", StringComparison.Ordinal)
-                 && x.Type == FileWatchBridge.Changed);
+            Has.Some.Matches<(string Uri, int Type)>(x => x.Uri.EndsWith("Hello.Core.csproj", StringComparison.Ordinal)
+                 && x.Type == FileWatchBridge.Changed));
 
         // FileSystemWatcher reports a new file as Created and then Changed as the bytes land, so the
         // project nudge is asserted by name rather than by being the only Changed entry.
         var nudges = changes.Where(x => x.Type == FileWatchBridge.Changed && x.Uri.EndsWith(".csproj", StringComparison.Ordinal));
 
-        Assert.Equal(new Uri(project).AbsoluteUri, Assert.Single(nudges).Uri);
+        Assert.That(nudges, Has.Exactly(1).Items);
+        Assert.That(nudges.Single().Uri, Is.EqualTo(new Uri(project).AbsoluteUri));
     }
 
     /// <summary>
     /// A file the client has open is not reported: Roslyn already has the live buffer, and telling
     /// it to re-read the saved copy would discard the unsaved edits.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnOpenDocumentIsNotReportedAsAWatchedFileChange()
     {
         using var workspace = TempWorkspace.Create("watch-open");
@@ -255,16 +253,16 @@ public class FileWatchBridgeTests
         File.WriteAllText(path, "class O { int x; }");
         await Task.Delay(700, Cancellation);
 
-        Assert.DoesNotContain(
+        Assert.That(
             channel.ToServer.SelectMany(Changes),
-            x => x.Uri.EndsWith("Open.cs", StringComparison.Ordinal));
+            Has.None.Matches<(string Uri, int Type)>(x => x.Uri.EndsWith("Open.cs", StringComparison.Ordinal)));
     }
 
     /// <summary>
     /// C32: 113 of Roslyn's watchers are rooted in the NuGet package cache. Standing up filesystem
     /// watchers there would be absurd, so a base outside the workspace root is dropped.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task WatchersRootedOutsideTheWorkspaceAreDropped()
     {
         using var workspace = TempWorkspace.Create("watch-outside");
@@ -294,11 +292,11 @@ public class FileWatchBridgeTests
 
         await WaitAsync(() => bridge.WatcherCount > 0, Cancellation);
 
-        Assert.Equal(1, bridge.WatcherCount);
+        Assert.That(bridge.WatcherCount, Is.EqualTo(1));
     }
 
     /// <summary>Without a workspace root nothing can be watched, and nothing throws.</summary>
-    [Fact]
+    [Test]
     public void WithNoWorkspaceRootNothingIsWatched()
     {
         var channel = new StubAdapterChannel();
@@ -310,15 +308,15 @@ public class FileWatchBridgeTests
         bridge.Schedule([new CollapsedWatcher("file:///nowhere/", ["**/*.cs"])]);
         time.Advance(FileWatchBridge.RebuildDelay);
 
-        Assert.Equal(0, bridge.WatcherCount);
-        Assert.Empty(channel.ToServer);
+        Assert.That(bridge.WatcherCount, Is.EqualTo(0));
+        Assert.That(channel.ToServer, Is.Empty);
     }
 
     /// <summary>
     /// Past the threshold the per-directory scheme is abandoned for one recursive watcher on the
     /// root, and every pattern is re-based so it still matches from there (C49).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ManyDirectoriesCollapseIntoOneRecursiveRootWatcher()
     {
         using var workspace = TempWorkspace.Create("watch-collapse");
@@ -349,7 +347,7 @@ public class FileWatchBridgeTests
 
         // One handle for all of them, rather than sixty-four of ninety-one and no word about the
         // twenty-seven that were dropped.
-        Assert.Equal(1, bridge.WatcherCount);
+        Assert.That(bridge.WatcherCount, Is.EqualTo(1));
 
         // And a project file deep in the tree still reaches Roslyn, which a re-based bare pattern is
         // the only reason for.
@@ -360,14 +358,14 @@ public class FileWatchBridgeTests
 
         var changes = channel.ToServer.SelectMany(Changes).ToArray();
 
-        Assert.Contains(changes, x => x.Uri.EndsWith("Late.cs", StringComparison.Ordinal));
-        Assert.Contains(changes, x => x.Uri.EndsWith("P3.csproj", StringComparison.Ordinal));
+        Assert.That(changes, Has.Some.Matches<(string Uri, int Type)>(x => x.Uri.EndsWith("Late.cs", StringComparison.Ordinal)));
+        Assert.That(changes, Has.Some.Matches<(string Uri, int Type)>(x => x.Uri.EndsWith("P3.csproj", StringComparison.Ordinal)));
     }
 
     /// <summary>Reads a <c>workspace/didChangeWatchedFiles</c> back into something assertable.</summary>
     private static (string Uri, int Type)[] Changes(JsonElement notification)
     {
-        Assert.Equal("workspace/didChangeWatchedFiles", notification.GetProperty("method").GetString());
+        Assert.That(notification.GetProperty("method").GetString(), Is.EqualTo("workspace/didChangeWatchedFiles"));
 
         return notification.GetProperty("params").GetProperty("changes").EnumerateArray()
             .Select(x => (x.GetProperty("uri").GetString()!, x.GetProperty("type").GetInt32()))

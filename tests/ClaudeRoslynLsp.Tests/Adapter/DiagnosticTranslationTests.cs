@@ -4,7 +4,7 @@ using ClaudeRoslynLsp.Adapter;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -48,16 +48,16 @@ public class DiagnosticTranslationTests
     /// The default floor keeps errors and warnings and drops the rest. IDE0005 and CA1822 are
     /// exactly the entries an agent does not want and an IDE does.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheDefaultFloorKeepsErrorsAndWarningsOnly()
     {
         var kept = DiagnosticTranslation.Select(
             Items(Cs0029, Warning, Ca1822, Ide0005),
             DiagnosticTranslation.SeverityWarning);
 
-        Assert.Equal(2, kept.Count);
-        Assert.Equal("CS0029", CodeOf(kept[0]));
-        Assert.Equal("CS0168", CodeOf(kept[1]));
+        Assert.That(kept.Count, Is.EqualTo(2));
+        Assert.That(CodeOf(kept[0]), Is.EqualTo("CS0029"));
+        Assert.That(CodeOf(kept[1]), Is.EqualTo("CS0168"));
     }
 
     /// <summary>
@@ -65,16 +65,16 @@ public class DiagnosticTranslationTests
     /// because it is reported at 0:0 for the whole using block and reads as "something is wrong at
     /// the top of this file".
     /// </summary>
-    [Fact]
+    [Test]
     public void AnUnnecessaryTaggedNonErrorGoesEvenBelowTheFloor()
     {
         var kept = DiagnosticTranslation.Select(Items(Ide0005), DiagnosticTranslation.SeverityHint);
 
-        Assert.Empty(kept);
+        Assert.That(kept, Is.Empty);
     }
 
     /// <summary>An <c>Unnecessary</c>-tagged <em>error</em> stays: that is a real one with a fade hint.</summary>
-    [Fact]
+    [Test]
     public void AnUnnecessaryTaggedErrorStays()
     {
         const string unusedButFatal = """
@@ -84,14 +84,14 @@ public class DiagnosticTranslationTests
 
         var kept = DiagnosticTranslation.Select(Items(unusedButFatal), DiagnosticTranslation.SeverityWarning);
 
-        Assert.Single(kept);
+        Assert.That(kept, Has.Exactly(1).Items);
     }
 
     /// <summary>
     /// C16: tags at or above 2147483640 are Visual Studio's private values and must not be
     /// forwarded — several clients treat an unknown tag as a reason to drop the whole diagnostic.
     /// </summary>
-    [Fact]
+    [Test]
     public void PrivateTagsAreStripped()
     {
         const string errorWithPrivateTags = """
@@ -102,12 +102,12 @@ public class DiagnosticTranslationTests
         var published = Publish(Items(errorWithPrivateTags), DiagnosticTranslation.SeverityWarning);
         var tags = published[0].GetProperty("tags");
 
-        Assert.Equal(1, tags.GetArrayLength());
-        Assert.Equal(1, tags[0].GetInt32());
+        Assert.That(tags.GetArrayLength(), Is.EqualTo(1));
+        Assert.That(tags[0].GetInt32(), Is.EqualTo(1));
     }
 
     /// <summary>A diagnostic whose every tag was private loses the member rather than carrying an empty array.</summary>
-    [Fact]
+    [Test]
     public void ATagsMemberThatEmptiesOutIsDroppedEntirely()
     {
         const string onlyPrivateTags = """
@@ -117,11 +117,11 @@ public class DiagnosticTranslationTests
 
         var published = Publish(Items(onlyPrivateTags), DiagnosticTranslation.SeverityWarning);
 
-        Assert.False(published[0].TryGetProperty("tags", out _));
+        Assert.That(published[0].TryGetProperty("tags", out _), Is.False);
     }
 
     /// <summary>Severity first, then line: the order somebody reading only the first few wants.</summary>
-    [Fact]
+    [Test]
     public void SortingIsSeverityThenPosition()
     {
         const string lateError = """
@@ -140,11 +140,11 @@ public class DiagnosticTranslationTests
             Items(earlyWarning, lateError, earlyError),
             DiagnosticTranslation.SeverityWarning);
 
-        Assert.Equal(["E1", "E2", "W1"], kept.Select(CodeOf).ToArray());
+        Assert.That(kept.Select(CodeOf).ToArray(), Is.EqualTo(["E1", "E2", "W1"]));
     }
 
     /// <summary>Fifty per file, because the first fifty say what the next four hundred would.</summary>
-    [Fact]
+    [Test]
     public void TheCapIsFiftyPerFile()
     {
         var many = Enumerable.Range(0, 200).Select(line => $$$"""
@@ -156,74 +156,73 @@ public class DiagnosticTranslationTests
             Items([.. many]),
             DiagnosticTranslation.SeverityWarning);
 
-        Assert.Equal(DiagnosticTranslation.MaxPerFile, kept.Count);
+        Assert.That(kept.Count, Is.EqualTo(DiagnosticTranslation.MaxPerFile));
     }
 
     /// <summary>
     /// The mirror version rides along, which is how a client discards a set an edit has overtaken.
     /// </summary>
-    [Fact]
+    [Test]
     public void ThePublishCarriesTheVersionWhenThereIsOne()
     {
         var withVersion = Notification(DiagnosticTranslation.BuildPublish(
             "file:///w/A.cs", 7, Items(Cs0029), DiagnosticTranslation.SeverityWarning).Body);
 
-        Assert.Equal("textDocument/publishDiagnostics", withVersion.GetProperty("method").GetString());
-        Assert.Equal("file:///w/A.cs", withVersion.GetProperty("params").GetProperty("uri").GetString());
-        Assert.Equal(7, withVersion.GetProperty("params").GetProperty("version").GetInt32());
+        Assert.That(withVersion.GetProperty("method").GetString(), Is.EqualTo("textDocument/publishDiagnostics"));
+        Assert.That(withVersion.GetProperty("params").GetProperty("uri").GetString(), Is.EqualTo("file:///w/A.cs"));
+        Assert.That(withVersion.GetProperty("params").GetProperty("version").GetInt32(), Is.EqualTo(7));
     }
 
     /// <summary>
     /// And is omitted when there is none — a closed file has no mirror version, and a fabricated one
     /// would make the client discard the set.
     /// </summary>
-    [Fact]
+    [Test]
     public void ThePublishOmitsTheVersionWhenThereIsNone()
     {
         var withoutVersion = Notification(DiagnosticTranslation.BuildPublish(
             "file:///w/A.cs", null, Items(Cs0029), DiagnosticTranslation.SeverityWarning).Body);
 
-        Assert.False(withoutVersion.GetProperty("params").TryGetProperty("version", out _));
+        Assert.That(withoutVersion.GetProperty("params").TryGetProperty("version", out _), Is.False);
     }
 
     /// <summary>A report with nothing in it still publishes, which is how a fixed file is cleared.</summary>
-    [Fact]
+    [Test]
     public void AnEmptyReportStillPublishesAnEmptyArray()
     {
         var (body, count) = DiagnosticTranslation.BuildPublish(
             "file:///w/A.cs", null, default, DiagnosticTranslation.SeverityWarning);
 
-        Assert.Equal(0, count);
-        Assert.Equal(0, Notification(body).GetProperty("params").GetProperty("diagnostics").GetArrayLength());
+        Assert.That(count, Is.EqualTo(0));
+        Assert.That(Notification(body).GetProperty("params").GetProperty("diagnostics").GetArrayLength(), Is.EqualTo(0));
     }
 
     /// <summary>A diagnostic with no severity is kept, because hiding an unclassified one is worse.</summary>
-    [Fact]
+    [Test]
     public void ADiagnosticWithNoSeverityIsTreatedAsAnError()
     {
         const string noSeverity = """
             {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"message":"?"}
             """;
 
-        Assert.Single(DiagnosticTranslation.Select(Items(noSeverity), DiagnosticTranslation.SeverityError));
+        Assert.That(DiagnosticTranslation.Select(Items(noSeverity), DiagnosticTranslation.SeverityError), Has.Exactly(1).Items);
     }
 
     /// <summary>The floor is spelled with names, and an unrecognised value falls back rather than failing.</summary>
-    [Theory]
-    [InlineData(null, DiagnosticTranslation.SeverityWarning)]
-    [InlineData("error", DiagnosticTranslation.SeverityError)]
-    [InlineData("ERRORS", DiagnosticTranslation.SeverityError)]
-    [InlineData("warning", DiagnosticTranslation.SeverityWarning)]
-    [InlineData("information", DiagnosticTranslation.SeverityInformation)]
-    [InlineData("hint", DiagnosticTranslation.SeverityHint)]
-    [InlineData("all", DiagnosticTranslation.SeverityHint)]
-    [InlineData("3", DiagnosticTranslation.SeverityInformation)]
-    [InlineData("banana", DiagnosticTranslation.SeverityWarning)]
+    [TestCase(null, DiagnosticTranslation.SeverityWarning)]
+    [TestCase("error", DiagnosticTranslation.SeverityError)]
+    [TestCase("ERRORS", DiagnosticTranslation.SeverityError)]
+    [TestCase("warning", DiagnosticTranslation.SeverityWarning)]
+    [TestCase("information", DiagnosticTranslation.SeverityInformation)]
+    [TestCase("hint", DiagnosticTranslation.SeverityHint)]
+    [TestCase("all", DiagnosticTranslation.SeverityHint)]
+    [TestCase("3", DiagnosticTranslation.SeverityInformation)]
+    [TestCase("banana", DiagnosticTranslation.SeverityWarning)]
     public void TheSeverityFloorIsParsedByName(string? value, int expected) =>
-        Assert.Equal(expected, DiagnosticTranslation.ParseSeverityFloor(value, NullLogger.Instance));
+        Assert.That(DiagnosticTranslation.ParseSeverityFloor(value, NullLogger.Instance), Is.EqualTo(expected));
 
     /// <summary>Everything a diagnostic carried that this class does not understand crosses verbatim.</summary>
-    [Fact]
+    [Test]
     public void OpaqueMembersCrossUnchanged()
     {
         const string withData = """
@@ -234,11 +233,11 @@ public class DiagnosticTranslationTests
 
         var published = Publish(Items(withData), DiagnosticTranslation.SeverityWarning);
 
-        Assert.Equal("x", published[0].GetProperty("data").GetProperty("UniqueIdentifier").GetString());
-        Assert.Equal(3, published[0].GetProperty("data").GetProperty("Nested").GetArrayLength());
-        Assert.Equal(
-            "https://example/CS0029",
-            published[0].GetProperty("codeDescription").GetProperty("href").GetString());
+        Assert.That(published[0].GetProperty("data").GetProperty("UniqueIdentifier").GetString(), Is.EqualTo("x"));
+        Assert.That(published[0].GetProperty("data").GetProperty("Nested").GetArrayLength(), Is.EqualTo(3));
+        Assert.That(
+            published[0].GetProperty("codeDescription").GetProperty("href").GetString(),
+            Is.EqualTo("https://example/CS0029"));
     }
 
     private static JsonElement Items(params string[] diagnostics) =>

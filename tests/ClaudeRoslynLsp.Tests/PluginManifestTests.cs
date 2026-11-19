@@ -2,7 +2,7 @@ using System.Text.Json;
 
 using ClaudeRoslynLsp.Configuration;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests;
 
@@ -71,7 +71,7 @@ public class PluginManifestTests
     /// canonical <c>SKILL.md</c> under <c>.claude/skills/</c> instead of a second copy. A plugin
     /// cannot reference files outside its own root, so any other source would force a duplicate.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheMarketplaceListsThisRepositoryAsItsOnePlugin()
     {
         var root = FindRepositoryRoot();
@@ -79,17 +79,20 @@ public class PluginManifestTests
         using var marketplace = Read(root, MarketplacePath);
         using var plugin = Read(root, PluginPath);
 
-        Assert.Equal(PluginName, marketplace.RootElement.GetProperty("name").GetString());
-        Assert.Equal(PluginName, plugin.RootElement.GetProperty("name").GetString());
+        Assert.That(marketplace.RootElement.GetProperty("name").GetString(), Is.EqualTo(PluginName));
+        Assert.That(plugin.RootElement.GetProperty("name").GetString(), Is.EqualTo(PluginName));
 
-        Assert.False(
-            string.IsNullOrWhiteSpace(marketplace.RootElement.GetProperty("owner").GetProperty("name").GetString()),
+        Assert.That(
+            string.IsNullOrWhiteSpace(marketplace.RootElement.GetProperty("owner").GetProperty("name").GetString()), Is.False,
             "A marketplace needs an owner name; users see it before they trust the source.");
 
-        var entry = Assert.Single(marketplace.RootElement.GetProperty("plugins").EnumerateArray().ToList());
+        var plugins = marketplace.RootElement.GetProperty("plugins").EnumerateArray().ToList();
 
-        Assert.Equal(PluginName, entry.GetProperty("name").GetString());
-        Assert.Equal("./", entry.GetProperty("source").GetString());
+        Assert.That(plugins, Has.Exactly(1).Items);
+        var entry = plugins.Single();
+
+        Assert.That(entry.GetProperty("name").GetString(), Is.EqualTo(PluginName));
+        Assert.That(entry.GetProperty("source").GetString(), Is.EqualTo("./"));
     }
 
     /// <summary>
@@ -97,14 +100,14 @@ public class PluginManifestTests
     /// plugin <c>version</c> is what Claude Code keys updates off: leave it behind and users are told
     /// they are already up to date.
     /// </summary>
-    [Fact]
+    [Test]
     public void ThePluginVersionIsTheVersionAuthority()
     {
         var root = FindRepositoryRoot();
 
         using var plugin = Read(root, PluginPath);
 
-        Assert.Equal(ReadChangelogVersion(root), plugin.RootElement.GetProperty("version").GetString());
+        Assert.That(plugin.RootElement.GetProperty("version").GetString(), Is.EqualTo(ReadChangelogVersion(root)));
     }
 
     /// <summary>
@@ -124,9 +127,8 @@ public class PluginManifestTests
     /// <c>&lt;PackageId&gt;</c>, so a rename has exactly one place to be made.
     /// </para>
     /// </remarks>
-    [Theory]
-    [InlineData("lspServers", "lsp")]
-    [InlineData("mcpServers", "mcp")]
+    [TestCase("lspServers", "lsp")]
+    [TestCase("mcpServers", "mcp")]
     public void EachServerRunsThePinnedPackageWithItsOwnVerb(string section, string verb)
     {
         var root = FindRepositoryRoot();
@@ -142,18 +144,18 @@ public class PluginManifestTests
 
         // A command with a space in it is a command Claude Code will look for as one file name, and
         // the failure is a server that never starts with nothing in the log to say why.
-        Assert.DoesNotContain(" ", command, StringComparison.Ordinal);
+        Assert.That(command, !Contains.Substring(" ").Using(StringComparison.Ordinal));
 
-        Assert.Equal(
-            new[] { $"{packageId}@{version}", "--yes", verb },
-            entry.GetProperty("args").EnumerateArray().Select(argument => argument.GetString()).ToArray());
+        Assert.That(
+            entry.GetProperty("args").EnumerateArray().Select(argument => argument.GetString()).ToArray(),
+            Is.EqualTo(new[] { $"{packageId}@{version}", "--yes", verb }));
     }
 
     /// <summary>
     /// The two servers are one binary, so they get one environment. Compared as an ordered sequence
     /// of pairs, which is as close to "the same block" as a parsed document can express.
     /// </summary>
-    [Fact]
+    [Test]
     public void BothServersAreGivenTheIdenticalEnvironmentBlock()
     {
         var root = FindRepositoryRoot();
@@ -163,8 +165,8 @@ public class PluginManifestTests
         var lsp = EnvironmentPairs(Server(plugin, "lspServers"));
         var mcp = EnvironmentPairs(Server(plugin, "mcpServers"));
 
-        Assert.Equal(lsp, mcp);
-        Assert.NotEmpty(lsp);
+        Assert.That(mcp, Is.EqualTo(lsp));
+        Assert.That(lsp, Is.Not.Empty);
     }
 
     /// <summary>
@@ -177,9 +179,8 @@ public class PluginManifestTests
     /// said. The adapter reads the prefixed name first and treats blank as absent, so the two halves
     /// only work together — see <see cref="ClaudeRoslynLspOptions.PluginOptionPrefix"/>.
     /// </remarks>
-    [Theory]
-    [InlineData("lspServers")]
-    [InlineData("mcpServers")]
+    [TestCase("lspServers")]
+    [TestCase("mcpServers")]
     public void EveryVariableIsWrittenUnderThePluginOptionPrefixExceptTheDataDirectory(string section)
     {
         var root = FindRepositoryRoot();
@@ -199,8 +200,8 @@ public class PluginManifestTests
                 // discarded in silence.
                 var suffix = name[ClaudeRoslynLspOptions.PluginOptionPrefix.Length..];
 
-                Assert.True(
-                    EnvironmentSurface.Accepted.Contains(suffix),
+                Assert.That(
+                    EnvironmentSurface.Accepted.Contains(suffix), Is.True,
                     $"{section} maps an option onto '{name}', but nothing in ClaudeRoslynLspOptions reads "
                     + $"'{suffix}'. The prompt would be answered and thrown away.");
 
@@ -209,16 +210,16 @@ public class PluginManifestTests
 
             exceptions.Add(name);
 
-            Assert.True(
-                name == PluginDataVariable,
+            Assert.That(
+                name == PluginDataVariable, Is.True,
                 $"{section} sets '{name}' directly. An unset option substitutes as the empty string, which "
                 + $"would shadow a {name} the user already has in their environment. Map it to "
                 + $"{ClaudeRoslynLspOptions.PluginOptionPrefix}{name} instead.");
 
-            Assert.Equal(PluginDataPlaceholder, value);
+            Assert.That(value, Is.EqualTo(PluginDataPlaceholder));
         }
 
-        Assert.Equal([PluginDataVariable], exceptions);
+        Assert.That(exceptions, Is.EqualTo([PluginDataVariable]));
     }
 
     /// <summary>
@@ -231,7 +232,7 @@ public class PluginManifestTests
     /// <c>"${user_config.solutoin}"</c> and treats it as a path. An option nothing references is the
     /// mirror image — a prompt whose answer is discarded.
     /// </remarks>
-    [Fact]
+    [Test]
     public void EveryUserConfigOptionIsReferencedByExactlyOneEnvironmentEntry()
     {
         var root = FindRepositoryRoot();
@@ -243,7 +244,7 @@ public class PluginManifestTests
             .Select(option => option.Name)
             .ToList();
 
-        Assert.NotEmpty(options);
+        Assert.That(options, Is.Not.Empty);
 
         // The two blocks are identical (asserted separately), so one of them describes both.
         var referenced = new List<string>();
@@ -255,31 +256,31 @@ public class PluginManifestTests
                 continue;
             }
 
-            Assert.True(
-                value.StartsWith("${user_config.", StringComparison.Ordinal) && value.EndsWith('}'),
+            Assert.That(
+                value.StartsWith("${user_config.", StringComparison.Ordinal) && value.EndsWith('}'), Is.True,
                 $"{name} is passed as '{value}', which is a literal, not a configured value.");
 
             referenced.Add(value["${user_config.".Length..^1]);
         }
 
-        Assert.Equal(
-            options.OrderBy(name => name, StringComparer.Ordinal),
-            referenced.OrderBy(name => name, StringComparer.Ordinal));
+        Assert.That(
+            referenced.OrderBy(name => name, StringComparer.Ordinal),
+            Is.EqualTo(options.OrderBy(name => name, StringComparer.Ordinal)));
 
-        Assert.Equal(referenced.Count, referenced.Distinct(StringComparer.Ordinal).Count());
+        Assert.That(referenced.Distinct(StringComparer.Ordinal).Count(), Is.EqualTo(referenced.Count));
 
         foreach (var option in options)
         {
             var declared = plugin.RootElement.GetProperty("userConfig").GetProperty(option);
 
-            Assert.Equal("string", declared.GetProperty("type").GetString());
+            Assert.That(declared.GetProperty("type").GetString(), Is.EqualTo("string"));
 
             // Every option is optional, and an omitted default is not the same as "": Claude Code
             // substitutes the empty string either way, and stating it keeps the prompt honest.
-            Assert.Equal(string.Empty, declared.GetProperty("default").GetString());
+            Assert.That(declared.GetProperty("default").GetString(), Is.EqualTo(string.Empty));
 
-            Assert.False(
-                string.IsNullOrWhiteSpace(declared.GetProperty("description").GetString()),
+            Assert.That(
+                string.IsNullOrWhiteSpace(declared.GetProperty("description").GetString()), Is.False,
                 $"userConfig option '{option}' has no description; that is what the user reads next to the prompt.");
         }
     }
@@ -289,7 +290,7 @@ public class PluginManifestTests
     /// configuration nothing ever triggers, and the failure is silent — no error, just an agent that
     /// keeps using grep on C#.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheLspServerIsMappedToCSharpFiles()
     {
         var root = FindRepositoryRoot();
@@ -298,7 +299,7 @@ public class PluginManifestTests
 
         var mapping = Server(plugin, "lspServers").GetProperty("extensionToLanguage");
 
-        Assert.Equal("csharp", mapping.GetProperty(".cs").GetString());
+        Assert.That(mapping.GetProperty(".cs").GetString(), Is.EqualTo("csharp"));
     }
 
     /// <summary>
@@ -312,7 +313,7 @@ public class PluginManifestTests
     /// <c>maxRestarts</c> is a budget the adapter is designed to protect by absorbing Roslyn crashes
     /// itself rather than spending.
     /// </remarks>
-    [Fact]
+    [Test]
     public void TheLspServerDeclaresItsLaunchEnvelope()
     {
         var root = FindRepositoryRoot();
@@ -321,18 +322,18 @@ public class PluginManifestTests
 
         var entry = Server(plugin, "lspServers");
 
-        Assert.Equal(120_000, entry.GetProperty("startupTimeout").GetInt32());
-        Assert.Equal(10_000, entry.GetProperty("shutdownTimeout").GetInt32());
-        Assert.True(entry.GetProperty("restartOnCrash").GetBoolean());
-        Assert.Equal(3, entry.GetProperty("maxRestarts").GetInt32());
-        Assert.True(entry.GetProperty("diagnostics").GetBoolean());
+        Assert.That(entry.GetProperty("startupTimeout").GetInt32(), Is.EqualTo(120_000));
+        Assert.That(entry.GetProperty("shutdownTimeout").GetInt32(), Is.EqualTo(10_000));
+        Assert.That(entry.GetProperty("restartOnCrash").GetBoolean(), Is.True);
+        Assert.That(entry.GetProperty("maxRestarts").GetInt32(), Is.EqualTo(3));
+        Assert.That(entry.GetProperty("diagnostics").GetBoolean(), Is.True);
     }
 
     /// <summary>
     /// The manifest names the skill directory explicitly, because the plugin's source is the
     /// repository root and the default <c>skills/</c> scan would otherwise find nothing.
     /// </summary>
-    [Fact]
+    [Test]
     public void EveryDeclaredSkillPathResolvesToASkill()
     {
         var root = FindRepositoryRoot();
@@ -344,16 +345,16 @@ public class PluginManifestTests
             .Select(path => path.GetString()!)
             .ToList();
 
-        Assert.NotEmpty(paths);
+        Assert.That(paths, Is.Not.Empty);
 
         foreach (var path in paths)
         {
-            Assert.StartsWith("./", path, StringComparison.Ordinal);
+            Assert.That(path, Does.StartWith("./").Using(StringComparison.Ordinal));
 
             var skill = Path.Combine(root, path[2..].Replace('/', Path.DirectorySeparatorChar), "SKILL.md");
 
-            Assert.True(
-                File.Exists(skill),
+            Assert.That(
+                File.Exists(skill), Is.True,
                 $"{PluginPath} declares the skill path '{path}', which has no SKILL.md. The plugin would "
                 + "install with no skill at all.");
         }
@@ -364,8 +365,9 @@ public class PluginManifestTests
     {
         var servers = plugin.RootElement.GetProperty(section).EnumerateObject().ToList();
 
-        var entry = Assert.Single(servers);
-        Assert.Equal("roslyn", entry.Name);
+        Assert.That(servers, Has.Exactly(1).Items);
+        var entry = servers.Single();
+        Assert.That(entry.Name, Is.EqualTo("roslyn"));
 
         return entry.Value;
     }
@@ -394,7 +396,7 @@ public class PluginManifestTests
     {
         var first = File.ReadLines(Path.Combine(root, ChangelogPath)).First().Trim();
 
-        Assert.StartsWith("# ", first, StringComparison.Ordinal);
+        Assert.That(first, Does.StartWith("# ").Using(StringComparison.Ordinal));
         return first[2..].Trim();
     }
 

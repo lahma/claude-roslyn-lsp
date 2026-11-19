@@ -6,7 +6,7 @@ using ClaudeRoslynLsp.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Testing;
 
@@ -25,34 +25,34 @@ namespace ClaudeRoslynLsp.Tests.Testing;
 /// </remarks>
 public class FakeRoslynServerTests
 {
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
-    [Fact]
+    [Test]
     public async Task ItAnswersInitializeWithRoslynsOwnCapabilityDocument()
     {
         await using var peer = new FakePeer();
 
         var result = (await peer.RequestAsync(1, "initialize", "{}", Cancellation)).GetProperty("result");
 
-        Assert.Equal(
-            FakeRoslynScript.RoslynServerName,
-            result.GetProperty("serverInfo").GetProperty("name").GetString());
+        Assert.That(
+            result.GetProperty("serverInfo").GetProperty("name").GetString(),
+            Is.EqualTo(FakeRoslynScript.RoslynServerName));
 
         var capabilities = result.GetProperty("capabilities");
 
         // The four the adapter has to filter. Their presence here is what makes the adapter's own
         // test of that filtering mean something.
-        Assert.True(capabilities.TryGetProperty("semanticTokensProvider", out _));
-        Assert.True(capabilities.TryGetProperty("codeLensProvider", out _));
-        Assert.True(capabilities.TryGetProperty("inlayHintProvider", out _));
-        Assert.True(capabilities.TryGetProperty("_vs_onAutoInsertProvider", out _));
+        Assert.That(capabilities.TryGetProperty("semanticTokensProvider", out _), Is.True);
+        Assert.That(capabilities.TryGetProperty("codeLensProvider", out _), Is.True);
+        Assert.That(capabilities.TryGetProperty("inlayHintProvider", out _), Is.True);
+        Assert.That(capabilities.TryGetProperty("_vs_onAutoInsertProvider", out _), Is.True);
 
         // And Roslyn advertises incremental sync although it accepts full-text changes (C17).
-        Assert.Equal(2, capabilities.GetProperty("textDocumentSync").GetProperty("change").GetInt32());
+        Assert.That(capabilities.GetProperty("textDocumentSync").GetProperty("change").GetInt32(), Is.EqualTo(2));
     }
 
     /// <summary>C27, reproduced: empty and successful, never an error.</summary>
-    [Fact]
+    [Test]
     public async Task NavigationBeforeReadinessIsEmptyAndSuccessful()
     {
         await using var peer = new FakePeer();
@@ -61,14 +61,14 @@ public class FakeRoslynServerTests
 
         var early = await peer.RequestAsync(2, "textDocument/definition", "{}", Cancellation);
 
-        Assert.False(early.TryGetProperty("error", out _));
-        Assert.Equal(0, early.GetProperty("result").GetArrayLength());
+        Assert.That(early.TryGetProperty("error", out _), Is.False);
+        Assert.That(early.GetProperty("result").GetArrayLength(), Is.EqualTo(0));
 
         peer.Server.CompleteProjectInitialization();
 
         var late = await peer.RequestAsync(3, "textDocument/definition", "{}", Cancellation);
 
-        Assert.Equal(1, late.GetProperty("result").GetArrayLength());
+        Assert.That(late.GetProperty("result").GetArrayLength(), Is.EqualTo(1));
     }
 
     /// <summary>
@@ -76,7 +76,7 @@ public class FakeRoslynServerTests
     /// stream and the log lines all arrive off <c>initialized</c>, and the notification the adapter is
     /// waiting for arrives off <c>solution/open</c>.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task TheStartupSequenceReproducesWhatTheRealServerSends()
     {
         await using var peer = new FakePeer(FakeRoslynScript.Roslyn512Startup(
@@ -93,13 +93,13 @@ public class FakeRoslynServerTests
             .Where(x => x.TryGetProperty("method", out var method) && method.GetString() == "workspace/configuration")
             .ToArray();
 
-        Assert.Equal(2, configuration.Length);
-        Assert.Equal(75, configuration[0].GetProperty("params").GetProperty("items").GetArrayLength());
-        Assert.Equal(5, configuration[1].GetProperty("params").GetProperty("items").GetArrayLength());
+        Assert.That(configuration.Length, Is.EqualTo(2));
+        Assert.That(configuration[0].GetProperty("params").GetProperty("items").GetArrayLength(), Is.EqualTo(75));
+        Assert.That(configuration[1].GetProperty("params").GetProperty("items").GetArrayLength(), Is.EqualTo(5));
 
-        Assert.Contains("window/workDoneProgress/create", peer.MethodsReceived);
-        Assert.Contains("$/progress", peer.MethodsReceived);
-        Assert.Contains("window/logMessage", peer.MethodsReceived);
+        Assert.That(peer.MethodsReceived, Does.Contain("window/workDoneProgress/create"));
+        Assert.That(peer.MethodsReceived, Does.Contain("$/progress"));
+        Assert.That(peer.MethodsReceived, Does.Contain("window/logMessage"));
 
         await peer.NotifyAsync("solution/open", """{"solution":"file:///w/Fixture/Fixture.slnx"}""", Cancellation);
 
@@ -107,10 +107,10 @@ public class FakeRoslynServerTests
             () => peer.MethodsReceived.Contains("workspace/projectInitializationComplete"),
             Cancellation);
 
-        Assert.True(peer.Server.ProjectsLoaded);
+        Assert.That(peer.Server.ProjectsLoaded, Is.True);
     }
 
-    [Fact]
+    [Test]
     public async Task ShutdownIsAnsweredAndExitStopsTheServer()
     {
         await using var peer = new FakePeer();
@@ -119,8 +119,8 @@ public class FakeRoslynServerTests
 
         var shutdown = await peer.RequestAsync(2, "shutdown", null, Cancellation);
 
-        Assert.Equal(JsonValueKind.Null, shutdown.GetProperty("result").ValueKind);
-        Assert.True(peer.Server.ShutdownRequested);
+        Assert.That(shutdown.GetProperty("result").ValueKind, Is.EqualTo(JsonValueKind.Null));
+        Assert.That(peer.Server.ShutdownRequested, Is.True);
 
         await peer.NotifyAsync("exit", null, Cancellation);
         await peer.WaitForStopAsync(Cancellation);

@@ -2,7 +2,7 @@ using ClaudeRoslynLsp.Adapter;
 using ClaudeRoslynLsp.Protocol;
 using ClaudeRoslynLsp.Testing;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -29,14 +29,14 @@ public class AdapterRecoveryTests
            "code":"IDE0005","message":"Using directive is unnecessary.","tags":[1,2147483645]}]}
         """;
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>
     /// A <c>didOpen</c> on a loaded workspace becomes a pull on the wire and a push to the client —
     /// the translation the whole product exists for, proved through the session rather than around
     /// it.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ADidOpenTurnsIntoAPullAndAPublish()
     {
         var factory = new RestartableFakeRoslynFactory(
@@ -53,22 +53,22 @@ public class AdapterRecoveryTests
         var published = await harness.AwaitPublishAsync(ProgramUri, Cancellation);
         var diagnostics = published.GetProperty("diagnostics");
 
-        Assert.Equal(1, diagnostics.GetArrayLength());
-        Assert.Equal("CS0029", diagnostics[0].GetProperty("code").GetString());
-        Assert.Equal(1, published.GetProperty("version").GetInt32());
+        Assert.That(diagnostics.GetArrayLength(), Is.EqualTo(1));
+        Assert.That(diagnostics[0].GetProperty("code").GetString(), Is.EqualTo("CS0029"));
+        Assert.That(published.GetProperty("version").GetInt32(), Is.EqualTo(1));
 
         // The pull carried no identifier (C9) and reached the backend as a real request.
-        Assert.Contains(
+        Assert.That(
             factory.Latest.ReceivedMessages,
-            x => x.Contains("\"method\":\"textDocument/diagnostic\"", StringComparison.Ordinal)
-                 && !x.Contains("\"identifier\"", StringComparison.Ordinal));
+            Has.Some.Matches<string>(x => x!.Contains("\"method\":\"textDocument/diagnostic\"", StringComparison.Ordinal)
+                 && !x.Contains("\"identifier\"", StringComparison.Ordinal)));
     }
 
     /// <summary>
     /// A backend that dies is relaunched, told about the documents the client has open, and told to
     /// open the solution again — and the client is never sent an error about any of it.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AKilledBackendIsRelaunchedWithTheMirrorReplayed()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -97,20 +97,21 @@ public class AdapterRecoveryTests
             Cancellation);
 
         // The replay is one didOpen per document at its latest text, not a queue of notifications.
-        var replay = Assert.Single(
+        Assert.That(
             second.ReceivedMessages,
-            x => x.Contains("\"method\":\"textDocument/didOpen\"", StringComparison.Ordinal));
+            Has.Exactly(1).Matches<string>(x => x!.Contains("\"method\":\"textDocument/didOpen\"", StringComparison.Ordinal)));
+        var replay = second.ReceivedMessages.Single(x => x.Contains("\"method\":\"textDocument/didOpen\"", StringComparison.Ordinal));
 
-        Assert.Contains("\"version\":3", replay, StringComparison.Ordinal);
-        Assert.Contains(ProgramUri, replay, StringComparison.Ordinal);
+        Assert.That(replay, Contains.Substring("\"version\":3").Using(StringComparison.Ordinal));
+        Assert.That(replay, Contains.Substring(ProgramUri).Using(StringComparison.Ordinal));
 
         // And the gate is shut again, which is what stops an empty answer (C27) reaching the client
         // during the gap. Not asserted as Starting specifically: by the time the replay has landed
         // the second backend has usually answered initialize, and RoslynInitialized still holds
         // every request.
-        Assert.False(harness.Session.Gate.IsOpen);
-        Assert.True(
-            harness.Session.Gate.State != ReadinessState.Failed,
+        Assert.That(harness.Session.Gate.IsOpen, Is.False);
+        Assert.That(
+            harness.Session.Gate.State != ReadinessState.Failed, Is.True,
             harness.Session.Gate.FailureReason ?? "(no reason recorded)");
 
         second.CompleteProjectInitialization();
@@ -121,7 +122,7 @@ public class AdapterRecoveryTests
     /// A request issued during the relaunch is <em>held</em> and then answered — Claude never sees
     /// the crash, only a slow answer.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ARequestIssuedDuringTheRelaunchIsHeldAndThenAnswered()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -143,14 +144,14 @@ public class AdapterRecoveryTests
         // has queued cannot have been answered, because the queue is what answers it.
         await SessionHarness.WaitAsync(() => harness.Session.Gate.HeldCount > 0, Cancellation);
 
-        Assert.Null(harness.TryFindResponse(7));
+        Assert.That(harness.TryFindResponse(7), Is.Null);
 
         factory.Latest!.CompleteProjectInitialization();
 
         var response = await harness.AwaitResponseAsync(7, Cancellation);
 
-        Assert.False(response.TryGetProperty("error", out _));
-        Assert.True(response.GetProperty("result").GetArrayLength() > 0);
+        Assert.That(response.TryGetProperty("error", out _), Is.False);
+        Assert.That(response.GetProperty("result").GetArrayLength() > 0, Is.True);
     }
 
     /// <summary>
@@ -164,7 +165,7 @@ public class AdapterRecoveryTests
     /// with <c>-32603</c> was a crash made visible to the model for no reason: every request the
     /// adapter forwards is a read, and the backend was about to be back.
     /// </remarks>
-    [Fact]
+    [Test]
     public async Task ARequestInFlightWhenTheBackendDiesIsReplayedRatherThanRefused()
     {
         using var reached = new ManualResetEventSlim(false);
@@ -201,21 +202,21 @@ public class AdapterRecoveryTests
 
         // Re-held rather than refused: the gate has it, and nothing has been sent to the client.
         await SessionHarness.WaitAsync(() => harness.Session.Gate.HeldCount > 0, Cancellation);
-        Assert.Null(harness.TryFindResponse(77));
+        Assert.That(harness.TryFindResponse(77), Is.Null);
 
         factory.Latest!.CompleteProjectInitialization();
 
         var response = await harness.AwaitResponseAsync(77, Cancellation);
 
-        Assert.False(response.TryGetProperty("error", out _));
-        Assert.True(response.GetProperty("result").GetArrayLength() > 0);
+        Assert.That(response.TryGetProperty("error", out _), Is.False);
+        Assert.That(response.GetProperty("result").GetArrayLength() > 0, Is.True);
     }
 
     /// <summary>
     /// Three deaths inside the window and the session gives up: every request is refused with a
     /// <c>doctor</c> hint, and the client is shown one message rather than a silence.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task TheFourthDeathFailsTheSessionWithADoctorHint()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -231,26 +232,28 @@ public class AdapterRecoveryTests
 
         await SessionHarness.WaitAsync(() => harness.Session.Gate.State == ReadinessState.Failed, Cancellation);
 
-        Assert.Equal(RoslynSupervisor.MaxRestarts, factory.ConnectCount - 1);
+        Assert.That(factory.ConnectCount - 1, Is.EqualTo(RoslynSupervisor.MaxRestarts));
 
         await harness.SendAsync(Definition(9, ProgramUri), Cancellation);
         var response = await harness.AwaitResponseAsync(9, Cancellation);
 
         var error = response.GetProperty("error");
 
-        Assert.Equal(JsonRpcErrors.InternalError, error.GetProperty("code").GetInt32());
-        Assert.Contains("doctor", error.GetProperty("message").GetString()!, StringComparison.Ordinal);
+        Assert.That(error.GetProperty("code").GetInt32(), Is.EqualTo(JsonRpcErrors.InternalError));
+        Assert.That(error.GetProperty("message").GetString()!, Contains.Substring("doctor").Using(StringComparison.Ordinal));
 
         // The one channel a client actually surfaces, sent once.
         var shown = harness.Notifications("window/showMessage");
 
-        Assert.Single(shown);
-        Assert.Equal(1, shown[0].GetProperty("params").GetProperty("type").GetInt32());
-        Assert.Contains("doctor", shown[0].GetProperty("params").GetProperty("message").GetString()!, StringComparison.Ordinal);
+        Assert.That(shown, Has.Exactly(1).Items);
+        Assert.That(shown[0].GetProperty("params").GetProperty("type").GetInt32(), Is.EqualTo(1));
+        Assert.That(
+            shown[0].GetProperty("params").GetProperty("message").GetString()!,
+            Contains.Substring("doctor").Using(StringComparison.Ordinal));
     }
 
     /// <summary>An orderly shutdown is not a crash, and must not spend a restart.</summary>
-    [Fact]
+    [Test]
     public async Task AnOrderlyShutdownDoesNotRelaunchAnything()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -264,9 +267,9 @@ public class AdapterRecoveryTests
         await harness.AwaitResponseAsync(50, Cancellation);
         await harness.SendAsync("""{"jsonrpc":"2.0","method":"exit"}""", Cancellation);
 
-        Assert.Equal(0, await harness.RunTask);
-        Assert.Equal(1, factory.ConnectCount);
-        Assert.Equal(0, harness.Session.Supervisor.RestartsInWindow);
+        Assert.That(await harness.RunTask, Is.EqualTo(0));
+        Assert.That(factory.ConnectCount, Is.EqualTo(1));
+        Assert.That(harness.Session.Supervisor.RestartsInWindow, Is.EqualTo(0));
     }
 
     /// <summary>

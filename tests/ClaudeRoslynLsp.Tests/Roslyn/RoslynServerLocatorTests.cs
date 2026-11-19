@@ -3,7 +3,7 @@ using ClaudeRoslynLsp.Roslyn;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Roslyn;
 
@@ -21,7 +21,7 @@ public class RoslynServerLocatorTests
     /// <summary>The file whose presence means "a Roslyn server lives here".</summary>
     private const string Assembly = RoslynServerManifest.ServerAssemblyName;
 
-    [Fact]
+    [Test]
     public async Task AnOverrideDirectoryWinsOutright()
     {
         using var temp = TempWorkspace.Create("locator-override-dir");
@@ -35,14 +35,14 @@ public class RoslynServerLocatorTests
             RoslynPathVariable = "CLAUDE_ROSLYN_LSP_ROSLYN_PATH",
         });
 
-        Assert.Equal(RoslynSourceKind.Override, result.Kind);
-        Assert.Equal(Path.Combine(server, Assembly), result.LaunchTarget);
-        Assert.Equal(RoslynLaunchKind.Managed, result.LaunchKind);
-        Assert.False(result.Verified);
-        Assert.Contains(result.Chain, step => step.Outcome == RoslynResolutionStepOutcome.Used);
+        Assert.That(result.Kind, Is.EqualTo(RoslynSourceKind.Override));
+        Assert.That(result.LaunchTarget, Is.EqualTo(Path.Combine(server, Assembly)));
+        Assert.That(result.LaunchKind, Is.EqualTo(RoslynLaunchKind.Managed));
+        Assert.That(result.Verified, Is.False);
+        Assert.That(result.Chain, Has.Some.Matches<RoslynResolutionStep>(step => step!.Outcome == RoslynResolutionStepOutcome.Used));
     }
 
-    [Fact]
+    [Test]
     public async Task AnOverrideMayNameTheAssemblyItself()
     {
         using var temp = TempWorkspace.Create("locator-override-dll");
@@ -50,16 +50,16 @@ public class RoslynServerLocatorTests
 
         var result = await Resolve(temp, new ClaudeRoslynLspOptions { Home = temp.Path_("home"), RoslynPath = assembly });
 
-        Assert.Equal(RoslynSourceKind.Override, result.Kind);
-        Assert.Equal(assembly, result.LaunchTarget);
-        Assert.Equal(RoslynLaunchKind.Managed, result.LaunchKind);
+        Assert.That(result.Kind, Is.EqualTo(RoslynSourceKind.Override));
+        Assert.That(result.LaunchTarget, Is.EqualTo(assembly));
+        Assert.That(result.LaunchKind, Is.EqualTo(RoslynLaunchKind.Managed));
     }
 
     /// <summary>
     /// The smoke test's shape: point the variable at a native executable and let
     /// <c>CLAUDE_ROSLYN_LSP_ROSLYN_ARGS</c> add the verb.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnOverrideMayNameANativeExecutable()
     {
         using var temp = TempWorkspace.Create("locator-override-exe");
@@ -67,15 +67,15 @@ public class RoslynServerLocatorTests
 
         var result = await Resolve(temp, new ClaudeRoslynLspOptions { Home = temp.Path_("home"), RoslynPath = executable });
 
-        Assert.Equal(RoslynLaunchKind.Native, result.LaunchKind);
-        Assert.Equal(executable, result.LaunchTarget);
+        Assert.That(result.LaunchKind, Is.EqualTo(RoslynLaunchKind.Native));
+        Assert.That(result.LaunchTarget, Is.EqualTo(executable));
     }
 
     /// <summary>
     /// D34. Falling back to a download would be indistinguishable from the variable being ignored,
     /// which is the configuration bug with no symptom.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnOverrideThatDoesNotResolveFailsInsteadOfFallingThrough()
     {
         using var temp = TempWorkspace.Create("locator-override-missing");
@@ -87,13 +87,13 @@ public class RoslynServerLocatorTests
             RoslynPathVariable = "CLAUDE_ROSLYN_LSP_SERVER_PATH",
         });
 
-        Assert.False(result.IsResolved);
-        Assert.Contains("CLAUDE_ROSLYN_LSP_SERVER_PATH", result.Failure, StringComparison.Ordinal);
-        Assert.Contains("deliberately not ignored", result.Failure, StringComparison.Ordinal);
-        Assert.DoesNotContain(result.Chain, step => step.Source == "cache");
+        Assert.That(result.IsResolved, Is.False);
+        Assert.That(result.Failure, Contains.Substring("CLAUDE_ROSLYN_LSP_SERVER_PATH").Using(StringComparison.Ordinal));
+        Assert.That(result.Failure, Contains.Substring("deliberately not ignored").Using(StringComparison.Ordinal));
+        Assert.That(result.Chain, Has.None.Matches<RoslynResolutionStep>(step => step!.Source == "cache"));
     }
 
-    [Fact]
+    [Test]
     public async Task AWarmCacheWinsOverEverythingAfterIt()
     {
         using var temp = TempWorkspace.Create("locator-cache");
@@ -108,13 +108,13 @@ public class RoslynServerLocatorTests
 
         var result = await Resolve(temp, options);
 
-        Assert.Equal(RoslynSourceKind.Cache, result.Kind);
-        Assert.Equal(directory, result.Directory);
-        Assert.True(result.Verified);
-        Assert.True(result.Features.SupportsClientProcessId);
+        Assert.That(result.Kind, Is.EqualTo(RoslynSourceKind.Cache));
+        Assert.That(result.Directory, Is.EqualTo(directory));
+        Assert.That(result.Verified, Is.True);
+        Assert.That(result.Features.SupportsClientProcessId, Is.True);
     }
 
-    [Fact]
+    [Test]
     public async Task ACacheEntryWhoseMarkerDisagreesWithThePinIsRejected()
     {
         using var temp = TempWorkspace.Create("locator-cache-stale");
@@ -128,13 +128,13 @@ public class RoslynServerLocatorTests
 
         var result = await Resolve(temp, options);
 
-        Assert.NotEqual(RoslynSourceKind.Cache, result.Kind);
-        Assert.Contains(
+        Assert.That(result.Kind, Is.Not.EqualTo(RoslynSourceKind.Cache));
+        Assert.That(
             result.Chain,
-            step => step.Source == "cache" && step.Outcome == RoslynResolutionStepOutcome.Rejected);
+            Has.Some.Matches<RoslynResolutionStep>(step => step!.Source == "cache" && step.Outcome == RoslynResolutionStepOutcome.Rejected));
     }
 
-    [Fact]
+    [Test]
     public async Task AGlobalToolStoreAtThePinnedVersionIsUsedButNotCalledVerified()
     {
         using var temp = TempWorkspace.Create("locator-toolstore");
@@ -148,16 +148,16 @@ public class RoslynServerLocatorTests
 
         var result = await Resolve(temp, new ClaudeRoslynLspOptions { Home = temp.Path_("home") }, store);
 
-        Assert.Equal(RoslynSourceKind.ToolStore, result.Kind);
-        Assert.Equal(payload, result.Directory);
+        Assert.That(result.Kind, Is.EqualTo(RoslynSourceKind.ToolStore));
+        Assert.That(result.Directory, Is.EqualTo(payload));
 
         // C4: the .nupkg.sha512 beside a tool-store payload is not the hash of that payload, so there
         // is nothing here that could be verified even in principle.
-        Assert.False(result.Verified);
+        Assert.That(result.Verified, Is.False);
     }
 
     /// <summary>D33: present, not used, and said so — the most useful line doctor can print.</summary>
-    [Fact]
+    [Test]
     public async Task AGlobalToolStoreAtAnotherVersionIsReportedAndNotUsed()
     {
         using var temp = TempWorkspace.Create("locator-toolstore-wrong");
@@ -169,47 +169,50 @@ public class RoslynServerLocatorTests
 
         var result = await Resolve(temp, new ClaudeRoslynLspOptions { Home = temp.Path_("home") }, store);
 
-        Assert.NotEqual(RoslynSourceKind.ToolStore, result.Kind);
+        Assert.That(result.Kind, Is.Not.EqualTo(RoslynSourceKind.ToolStore));
 
-        var step = Assert.Single(result.Chain, x => x.Source == "global tool store");
-        Assert.Equal(RoslynResolutionStepOutcome.Rejected, step.Outcome);
-        Assert.Contains("5.5.0-2.26103.6", step.Detail, StringComparison.Ordinal);
+        Assert.That(result.Chain, Has.Exactly(1).Matches<RoslynResolutionStep>(x => x!.Source == "global tool store"));
+        var step = result.Chain.Single(x => x.Source == "global tool store");
+        Assert.That(step.Outcome, Is.EqualTo(RoslynResolutionStepOutcome.Rejected));
+        Assert.That(step.Detail, Contains.Substring("5.5.0-2.26103.6").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public async Task OfflineTurnsAMissingServerIntoAnExplanationRatherThanADownload()
     {
         using var temp = TempWorkspace.Create("locator-offline");
 
         var result = await Resolve(temp, new ClaudeRoslynLspOptions { Home = temp.Path_("home"), Offline = true });
 
-        Assert.False(result.IsResolved);
-        Assert.Contains("CLAUDE_ROSLYN_LSP_OFFLINE", result.Failure, StringComparison.Ordinal);
-        Assert.Contains("install", result.Failure, StringComparison.Ordinal);
+        Assert.That(result.IsResolved, Is.False);
+        Assert.That(result.Failure, Contains.Substring("CLAUDE_ROSLYN_LSP_OFFLINE").Using(StringComparison.Ordinal));
+        Assert.That(result.Failure, Contains.Substring("install").Using(StringComparison.Ordinal));
 
-        var step = Assert.Single(result.Chain, x => x.Source == "nuget.org");
-        Assert.Equal(RoslynResolutionStepOutcome.Skipped, step.Outcome);
+        Assert.That(result.Chain, Has.Exactly(1).Matches<RoslynResolutionStep>(x => x!.Source == "nuget.org"));
+        var step = result.Chain.Single(x => x.Source == "nuget.org");
+        Assert.That(step.Outcome, Is.EqualTo(RoslynResolutionStepOutcome.Skipped));
     }
 
     /// <summary>
     /// D43: <c>doctor</c> resolves with downloads disallowed, and the chain says what it would have
     /// fetched rather than fetching it.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task WithDownloadsDisallowedTheChainSaysWhatItWouldHaveFetched()
     {
         using var temp = TempWorkspace.Create("locator-would-download");
 
         var result = await Resolve(temp, new ClaudeRoslynLspOptions { Home = temp.Path_("home") });
 
-        Assert.False(result.IsResolved);
+        Assert.That(result.IsResolved, Is.False);
 
-        var step = Assert.Single(result.Chain, x => x.Source == "nuget.org");
-        Assert.Contains("would download", step.Detail, StringComparison.Ordinal);
-        Assert.Contains("api.nuget.org", step.Detail, StringComparison.Ordinal);
+        Assert.That(result.Chain, Has.Exactly(1).Matches<RoslynResolutionStep>(x => x!.Source == "nuget.org"));
+        var step = result.Chain.Single(x => x.Source == "nuget.org");
+        Assert.That(step.Detail, Contains.Substring("would download").Using(StringComparison.Ordinal));
+        Assert.That(step.Detail, Contains.Substring("api.nuget.org").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public async Task AnUnpublishedRuntimeIdentifierIsRefusedBeforeAnyNetworkCall()
     {
         using var temp = TempWorkspace.Create("locator-bad-rid");
@@ -222,17 +225,19 @@ public class RoslynServerLocatorTests
             runtimeIdentifier: "win-x86",
             toolStoreRoot: temp.Path_("no-store"));
 
-        var result = await locator.ResolveAsync(allowDownload: true, cancellationToken: TestContext.Current.CancellationToken);
+        var result = await locator.ResolveAsync(allowDownload: true, cancellationToken: TestContext.CurrentContext.CancellationToken);
 
-        Assert.False(result.IsResolved);
-        Assert.Contains("does not publish roslyn-language-server for 'win-x86'", result.Failure, StringComparison.Ordinal);
+        Assert.That(result.IsResolved, Is.False);
+        Assert.That(
+            result.Failure,
+            Contains.Substring("does not publish roslyn-language-server for 'win-x86'").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// A version override has no hash in the pin (D25), so the result must not claim verification and
     /// must not claim the pin's feature flags either (D26).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AVersionOverrideMovesTheCacheDirectoryAndDropsTheHash()
     {
         using var temp = TempWorkspace.Create("locator-version-override");
@@ -246,10 +251,10 @@ public class RoslynServerLocatorTests
 
         var result = await Resolve(temp, options);
 
-        Assert.Equal(RoslynSourceKind.Cache, result.Kind);
-        Assert.Equal("5.5.0-2.26103.6", result.Version);
-        Assert.False(result.Verified);
-        Assert.False(result.Features.SupportsClientProcessId);
+        Assert.That(result.Kind, Is.EqualTo(RoslynSourceKind.Cache));
+        Assert.That(result.Version, Is.EqualTo("5.5.0-2.26103.6"));
+        Assert.That(result.Verified, Is.False);
+        Assert.That(result.Features.SupportsClientProcessId, Is.False);
     }
 
     private static Task<RoslynResolution> Resolve(
@@ -263,6 +268,6 @@ public class RoslynServerLocatorTests
             NullLogger.Instance,
             toolStoreRoot: toolStoreRoot ?? temp.Path_("no-store"));
 
-        return locator.ResolveAsync(allowDownload: false, cancellationToken: TestContext.Current.CancellationToken);
+        return locator.ResolveAsync(allowDownload: false, cancellationToken: TestContext.CurrentContext.CancellationToken);
     }
 }

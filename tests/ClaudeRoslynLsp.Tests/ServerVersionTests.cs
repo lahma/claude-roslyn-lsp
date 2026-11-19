@@ -1,4 +1,4 @@
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests;
 
@@ -13,19 +13,19 @@ namespace ClaudeRoslynLsp.Tests;
 /// </remarks>
 public class ServerVersionTests
 {
-    [Fact]
+    [Test]
     public void NameIsTheProductName()
     {
-        Assert.Equal("claude-roslyn-lsp", ServerVersion.Name);
+        Assert.That(ServerVersion.Name, Is.EqualTo("claude-roslyn-lsp"));
     }
 
-    [Fact]
+    [Test]
     public void VersionIsResolvedFromTheAssembly()
     {
         // The build passes -p:Version from CHANGELOG.md; a plain `dotnet test` falls back to
         // Directory.Build.props's VersionPrefix. Either way it must be a real version, never the
         // "0.0.0" that means the informational-version attribute was missing.
-        Assert.NotEqual("0.0.0", ServerVersion.Value);
-        Assert.DoesNotContain('+', ServerVersion.Value);
+        Assert.That(ServerVersion.Value, Is.Not.EqualTo("0.0.0"));
+        Assert.That(ServerVersion.Value, Does.Not.Contain('+'));
     }
 }

@@ -8,7 +8,7 @@ using ClaudeRoslynLsp.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 

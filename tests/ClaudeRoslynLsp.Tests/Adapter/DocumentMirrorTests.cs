@@ -5,7 +5,7 @@ using ClaudeRoslynLsp.Adapter;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -23,25 +23,25 @@ public class DocumentMirrorTests
 {
     private const string Uri = "file:///w/Fixture/Fixture.Core/Calculator.cs";
 
-    [Fact]
+    [Test]
     public void OpeningRecordsTheDocumentAsTheClientSentIt()
     {
         var mirror = new DocumentMirror(NullLogger.Instance);
         var document = mirror.Open(DidOpen(Uri, "csharp", 1, "class C { }"));
 
-        Assert.NotNull(document);
-        Assert.Equal(Uri, document.Uri);
-        Assert.Equal("csharp", document.LanguageId);
-        Assert.Equal(1, document.Version);
-        Assert.Equal("class C { }", document.Text);
-        Assert.Equal(1, mirror.Count);
+        Assert.That(document, Is.Not.Null);
+        Assert.That(document!.Uri, Is.EqualTo(Uri));
+        Assert.That(document.LanguageId, Is.EqualTo("csharp"));
+        Assert.That(document.Version, Is.EqualTo(1));
+        Assert.That(document.Text, Is.EqualTo("class C { }"));
+        Assert.That(mirror.Count, Is.EqualTo(1));
     }
 
     /// <summary>
     /// Full synchronisation (D13): the change carries the whole document, so the mirror replaces
     /// rather than patches. That is what makes a replay correct after any number of edits.
     /// </summary>
-    [Fact]
+    [Test]
     public void AFullTextChangeReplacesTheDocumentAndAdvancesItsVersion()
     {
         var mirror = new DocumentMirror(NullLogger.Instance);
@@ -49,22 +49,22 @@ public class DocumentMirrorTests
 
         var changed = mirror.Change(DidChange(Uri, 4, "class C { int X; }"));
 
-        Assert.NotNull(changed);
-        Assert.Equal(4, changed.Version);
-        Assert.Equal("class C { int X; }", changed.Text);
-        Assert.Equal("csharp", changed.LanguageId);
-        Assert.Equal(1, mirror.Count);
+        Assert.That(changed, Is.Not.Null);
+        Assert.That(changed!.Version, Is.EqualTo(4));
+        Assert.That(changed.Text, Is.EqualTo("class C { int X; }"));
+        Assert.That(changed.LanguageId, Is.EqualTo("csharp"));
+        Assert.That(mirror.Count, Is.EqualTo(1));
     }
 
-    [Fact]
+    [Test]
     public void ClosingForgetsTheDocument()
     {
         var mirror = new DocumentMirror(NullLogger.Instance);
         mirror.Open(DidOpen(Uri, "csharp", 1, "class C { }"));
 
-        Assert.Equal(Uri, mirror.Close(DidClose(Uri)));
-        Assert.Equal(0, mirror.Count);
-        Assert.Empty(mirror.BuildReplay());
+        Assert.That(mirror.Close(DidClose(Uri)), Is.EqualTo(Uri));
+        Assert.That(mirror.Count, Is.EqualTo(0));
+        Assert.That(mirror.BuildReplay(), Is.Empty);
     }
 
     /// <summary>
@@ -72,7 +72,7 @@ public class DocumentMirrorTests
     /// <c>textDocument/didOpen</c> per document, carrying the latest text and the latest version.
     /// Three edits before a restart replay as one notification, not four.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheReplayIsOneDidOpenPerDocumentAtItsLatestText()
     {
         var mirror = new DocumentMirror(NullLogger.Instance);
@@ -84,48 +84,47 @@ public class DocumentMirrorTests
 
         var replay = mirror.BuildReplay();
 
-        Assert.Equal(2, replay.Count);
+        Assert.That(replay.Count, Is.EqualTo(2));
 
         using var first = JsonDocument.Parse(replay[0]);
         var root = first.RootElement;
 
-        Assert.Equal("2.0", root.GetProperty("jsonrpc").GetString());
-        Assert.Equal("textDocument/didOpen", root.GetProperty("method").GetString());
-        Assert.False(root.TryGetProperty("id", out _));
+        Assert.That(root.GetProperty("jsonrpc").GetString(), Is.EqualTo("2.0"));
+        Assert.That(root.GetProperty("method").GetString(), Is.EqualTo("textDocument/didOpen"));
+        Assert.That(root.TryGetProperty("id", out _), Is.False);
 
         var item = root.GetProperty("params").GetProperty("textDocument");
 
-        Assert.Equal(Uri, item.GetProperty("uri").GetString());
-        Assert.Equal("csharp", item.GetProperty("languageId").GetString());
-        Assert.Equal(3, item.GetProperty("version").GetInt32());
-        Assert.Equal("three", item.GetProperty("text").GetString());
+        Assert.That(item.GetProperty("uri").GetString(), Is.EqualTo(Uri));
+        Assert.That(item.GetProperty("languageId").GetString(), Is.EqualTo("csharp"));
+        Assert.That(item.GetProperty("version").GetInt32(), Is.EqualTo(3));
+        Assert.That(item.GetProperty("text").GetString(), Is.EqualTo("three"));
     }
 
     /// <summary>
     /// A change for a document that was never opened still lands, because the notification's own
     /// arrival is the fact — losing it would leave the mirror silently behind the client.
     /// </summary>
-    [Fact]
+    [Test]
     public void AChangeForAnUnknownDocumentIsStillRecorded()
     {
         var mirror = new DocumentMirror(NullLogger.Instance);
         var changed = mirror.Change(DidChange(Uri, 7, "text"));
 
-        Assert.NotNull(changed);
-        Assert.Equal("csharp", changed.LanguageId);
-        Assert.Equal(1, mirror.Count);
+        Assert.That(changed, Is.Not.Null);
+        Assert.That(changed!.LanguageId, Is.EqualTo("csharp"));
+        Assert.That(mirror.Count, Is.EqualTo(1));
     }
 
-    [Theory]
-    [InlineData("not json")]
-    [InlineData("""{"jsonrpc":"2.0","method":"textDocument/didOpen"}""")]
-    [InlineData("""{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{}}""")]
+    [TestCase("not json")]
+    [TestCase("""{"jsonrpc":"2.0","method":"textDocument/didOpen"}""")]
+    [TestCase("""{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{}}""")]
     public void AnUnreadableNotificationChangesNothing(string message)
     {
         var mirror = new DocumentMirror(NullLogger.Instance);
 
-        Assert.Null(mirror.Open(Encoding.UTF8.GetBytes(message)));
-        Assert.Equal(0, mirror.Count);
+        Assert.That(mirror.Open(Encoding.UTF8.GetBytes(message)), Is.Null);
+        Assert.That(mirror.Count, Is.EqualTo(0));
     }
 
     private static byte[] DidOpen(string uri, string languageId, int version, string text) =>

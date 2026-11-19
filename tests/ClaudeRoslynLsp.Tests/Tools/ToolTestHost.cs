@@ -41,8 +41,8 @@ internal static class ToolTestHost
     /// </summary>
     /// <remarks>
     /// The SDK caches the reflected function descriptor for a method process-wide, so two test
-    /// classes building tools for the same methods at the same time — which xunit's parallelism makes
-    /// possible and the server itself never does — race on that cache.
+    /// classes building tools for the same methods at the same time — which a run that executes test
+    /// classes in parallel makes possible and the server itself never does — race on that cache.
     /// </remarks>
     private static readonly Lock BuildGate = new();
 

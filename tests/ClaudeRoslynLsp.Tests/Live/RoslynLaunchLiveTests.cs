@@ -5,7 +5,7 @@ using ClaudeRoslynLsp.Roslyn;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Live;
 
@@ -26,20 +26,26 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// stdout carries frames rather than the 646-byte banner the pipe leg has to drain (C7).
 /// </para>
 /// </remarks>
-public class RoslynLaunchLiveTests : IClassFixture<RoslynLiveFixture>
+[Category("Live")]
+public class RoslynLaunchLiveTests
 {
-    private readonly RoslynLiveFixture _fixture;
-    private readonly ITestOutputHelper _output;
+    /// <summary>The acquired server, shared by both transports.</summary>
+    private static RoslynLiveFixture _fixture = null!;
 
-    public RoslynLaunchLiveTests(RoslynLiveFixture fixture, ITestOutputHelper output)
+    private readonly TextWriter _output = TestContext.Out;
+
+    [OneTimeSetUp]
+    public static async Task AcquireRoslynAsync()
     {
-        _fixture = fixture;
-        _output = output;
+        _fixture = new RoslynLiveFixture();
+        await _fixture.InitializeAsync();
     }
 
-    [Theory]
-    [InlineData("pipe")]
-    [InlineData("stdio")]
+    [OneTimeTearDown]
+    public static async Task ReleaseRoslynAsync() => await _fixture.DisposeAsync();
+
+    [TestCase("pipe")]
+    [TestCase("stdio")]
     public async Task TheRealServerStartsHandshakesAndExits(string transportName)
     {
         _fixture.SkipIfDisabled();
@@ -50,8 +56,8 @@ public class RoslynLaunchLiveTests : IClassFixture<RoslynLiveFixture>
 
         var resolution = _fixture.Resolution!;
 
-        Assert.True(resolution.IsResolved, resolution.Failure);
-        Assert.True(File.Exists(resolution.LaunchTarget), resolution.LaunchTarget);
+        Assert.That(resolution.IsResolved, Is.True, resolution.Failure);
+        Assert.That(File.Exists(resolution.LaunchTarget), Is.True, resolution.LaunchTarget);
 
         using var guard = ChildProcessGuard.Create(NullLogger.Instance);
         var launcher = new RoslynProcessLauncher(NullLogger.Instance, guard);
@@ -66,7 +72,7 @@ public class RoslynLaunchLiveTests : IClassFixture<RoslynLiveFixture>
 
         var stopwatch = Stopwatch.StartNew();
         var result = await RoslynHandshakeProbe.RunAsync(
-            launcher, request, TimeSpan.FromSeconds(90), TestContext.Current.CancellationToken);
+            launcher, request, TimeSpan.FromSeconds(90), TestContext.CurrentContext.CancellationToken);
         stopwatch.Stop();
 
         _output.WriteLine($"transport            {transport}");
@@ -80,41 +86,41 @@ public class RoslynLaunchLiveTests : IClassFixture<RoslynLiveFixture>
         _output.WriteLine($"capabilities         {string.Join(", ", result.Capabilities)}");
         _output.WriteLine($"window/logMessage    {result.LogMessages.Count} line(s)");
 
-        Assert.True(result.Succeeded, result.Failure);
-        Assert.NotEmpty(result.Capabilities);
+        Assert.That(result.Succeeded, Is.True, result.Failure);
+        Assert.That(result.Capabilities, Is.Not.Empty);
 
         // C26: Roslyn advertises these statically whatever the client declared, which is why WP4's
         // authored capability document has to filter what it forwards. Asserted here so that a build
         // which stops doing it is noticed by this repository rather than by a user.
-        Assert.Contains("textDocumentSync", result.Capabilities);
-        Assert.Contains("semanticTokensProvider", result.Capabilities);
+        Assert.That(result.Capabilities, Does.Contain("textDocumentSync"));
+        Assert.That(result.Capabilities, Does.Contain("semanticTokensProvider"));
 
-        Assert.NotNull(result.ExitCode);
-        Assert.True(
-            result.ShutdownElapsed < RoslynHandshakeProbe.ExitBudget,
+        Assert.That(result.ExitCode, Is.Not.Null);
+        Assert.That(
+            result.ShutdownElapsed < RoslynHandshakeProbe.ExitBudget, Is.True,
             $"The server took {result.ShutdownElapsed.TotalSeconds:F1} s to exit after `exit`.");
     }
 
-    [Fact]
+    [Test]
     public void ThePayloadHasTheLayoutTheManifestDescribes()
     {
         _fixture.SkipIfDisabled();
 
         var directory = _fixture.Resolution!.Directory!;
 
-        Assert.True(File.Exists(Path.Combine(directory, RoslynServerManifest.ServerAssemblyName)));
-        Assert.True(File.Exists(Path.Combine(directory, "Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json")));
+        Assert.That(File.Exists(Path.Combine(directory, RoslynServerManifest.ServerAssemblyName)), Is.True);
+        Assert.That(File.Exists(Path.Combine(directory, "Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json")), Is.True);
 
         // C1: the build hosts are what evaluate project files, so extracting only the top level would
         // give a server that loads no projects and says nothing about why.
-        Assert.True(Directory.Exists(Path.Combine(directory, "BuildHost-netcore")));
-        Assert.True(Directory.Exists(Path.Combine(directory, "BuildHost-net472")));
+        Assert.That(Directory.Exists(Path.Combine(directory, "BuildHost-netcore")), Is.True);
+        Assert.That(Directory.Exists(Path.Combine(directory, "BuildHost-net472")), Is.True);
 
         var runtimeConfig = File.ReadAllText(
             Path.Combine(directory, "Microsoft.CodeAnalysis.LanguageServer.runtimeconfig.json"));
 
-        Assert.Contains("\"rollForward\": \"Major\"", runtimeConfig, StringComparison.Ordinal);
-        Assert.Contains("System.GC.Server", runtimeConfig, StringComparison.Ordinal);
+        Assert.That(runtimeConfig, Contains.Substring("\"rollForward\": \"Major\"").Using(StringComparison.Ordinal));
+        Assert.That(runtimeConfig, Contains.Substring("System.GC.Server").Using(StringComparison.Ordinal));
 
         _output.WriteLine($"payload directory    {directory}");
         _output.WriteLine($"files                {Directory.GetFiles(directory).Length} at the top level");
@@ -130,7 +136,7 @@ public class RoslynLaunchLiveTests : IClassFixture<RoslynLiveFixture>
 /// download again; with none set it downloads into a temp directory and deletes it afterwards, which
 /// is what CI wants and what makes the acquisition path itself part of what is under test.
 /// </remarks>
-public sealed class RoslynLiveFixture : IAsyncLifetime
+public sealed class RoslynLiveFixture : IAsyncDisposable
 {
     /// <summary>The variable that turns these tests on.</summary>
     internal const string EnableVariable = "CLAUDE_ROSLYN_LSP_LIVE_TESTS";
@@ -155,12 +161,12 @@ public sealed class RoslynLiveFixture : IAsyncLifetime
     {
         if (!Enabled)
         {
-            Assert.Skip($"Set {EnableVariable}=1 to run the live Roslyn tests (about 70 MB of download).");
+            Assert.Ignore($"Set {EnableVariable}=1 to run the live Roslyn tests (about 70 MB of download).");
         }
     }
 
-    /// <inheritdoc />
-    public async ValueTask InitializeAsync()
+    /// <summary>Acquires the pinned server; does nothing when the live tests are off.</summary>
+    public async Task InitializeAsync()
     {
         if (!Enabled)
         {

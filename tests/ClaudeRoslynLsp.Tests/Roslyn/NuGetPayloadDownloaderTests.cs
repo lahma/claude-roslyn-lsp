@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 
 using ClaudeRoslynLsp.Configuration;
@@ -7,7 +8,7 @@ using ClaudeRoslynLsp.Tests.Http;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Roslyn;
 
@@ -28,10 +29,10 @@ public class NuGetPayloadDownloaderTests
     private const string Version = "5.12.0-1.26426.8";
     private const string ServerAssembly = RoslynServerManifest.ServerAssemblyName;
 
-    /// <summary>The test's own cancellation token, which xunit uses to stop a hung run (xUnit1051).</summary>
-    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+    /// <summary>The test's own cancellation token, so that cancelling the test reaches a hung await.</summary>
+    private static CancellationToken Ct => TestContext.CurrentContext.CancellationToken;
 
-    [Fact]
+    [Test]
     public async Task AMatchingHashExtractsThePayloadAndWritesTheMarker()
     {
         using var temp = TempWorkspace.Create("download-ok");
@@ -50,24 +51,24 @@ public class NuGetPayloadDownloaderTests
 
         var directory = await downloader.EnsureAsync(Rid, Version, hash, progress: null, cancellationToken: Ct);
 
-        Assert.Equal(paths.ServerDirectory(Version, Rid), directory);
-        Assert.True(File.Exists(Path.Combine(directory, ServerAssembly)));
+        Assert.That(directory, Is.EqualTo(paths.ServerDirectory(Version, Rid)));
+        Assert.That(File.Exists(Path.Combine(directory, ServerAssembly)), Is.True);
 
         // The whole subtree, not only the top level: the build hosts are what evaluate project files.
-        Assert.True(File.Exists(Path.Combine(directory, "BuildHost-netcore", "BuildHost.dll")));
-        Assert.True(File.Exists(Path.Combine(directory, "cs", "Resources.dll")));
+        Assert.That(File.Exists(Path.Combine(directory, "BuildHost-netcore", "BuildHost.dll")), Is.True);
+        Assert.That(File.Exists(Path.Combine(directory, "cs", "Resources.dll")), Is.True);
 
         // And nothing from outside tools/net10.0/<rid>/.
-        Assert.False(File.Exists(Path.Combine(directory, "[Content_Types].xml")));
-        Assert.False(Directory.Exists(Path.Combine(directory, "linux-x64")));
+        Assert.That(File.Exists(Path.Combine(directory, "[Content_Types].xml")), Is.False);
+        Assert.That(Directory.Exists(Path.Combine(directory, "linux-x64")), Is.False);
 
-        Assert.Equal(hash, File.ReadAllText(paths.CompleteMarker(Version, Rid)));
+        Assert.That(File.ReadAllText(paths.CompleteMarker(Version, Rid)), Is.EqualTo(hash));
 
         // The staged download is not left behind.
-        Assert.Empty(Directory.GetFiles(paths.TempDirectory, "*.nupkg"));
+        Assert.That(Directory.GetFiles(paths.TempDirectory, "*.nupkg"), Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public async Task ASecondCallServesTheCacheWithoutFetchingAnything()
     {
         using var temp = TempWorkspace.Create("download-cached");
@@ -80,10 +81,10 @@ public class NuGetPayloadDownloaderTests
         await downloader.EnsureAsync(Rid, Version, hash, progress: null, cancellationToken: Ct);
         await downloader.EnsureAsync(Rid, Version, hash, progress: null, cancellationToken: Ct);
 
-        Assert.Single(handler.Requests);
+        Assert.That(handler.Requests, Has.Exactly(1).Items);
     }
 
-    [Fact]
+    [Test]
     public async Task AHashThatDoesNotMatchInstallsNothing()
     {
         using var temp = TempWorkspace.Create("download-bad-hash");
@@ -97,9 +98,9 @@ public class NuGetPayloadDownloaderTests
         var exception = await Assert.ThrowsAsync<RoslynAcquisitionException>(
             () => downloader.EnsureAsync(Rid, Version, expected, progress: null, cancellationToken: Ct));
 
-        Assert.Contains("does not match the pin", exception.Message, StringComparison.Ordinal);
-        Assert.False(Directory.Exists(paths.ServerDirectory(Version, Rid)));
-        Assert.Empty(Directory.GetFiles(paths.TempDirectory, "*.nupkg"));
+        Assert.That(exception!.Message, Contains.Substring("does not match the pin").Using(StringComparison.Ordinal));
+        Assert.That(Directory.Exists(paths.ServerDirectory(Version, Rid)), Is.False);
+        Assert.That(Directory.GetFiles(paths.TempDirectory, "*.nupkg"), Is.Empty);
     }
 
     /// <summary>
@@ -107,7 +108,7 @@ public class NuGetPayloadDownloaderTests
     /// CVE somewhere. The guard refuses the whole package rather than skipping the entry: a payload
     /// that contains one is not a payload to serve half of.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnEntryThatWouldEscapeTheCacheIsRefused()
     {
         using var temp = TempWorkspace.Create("download-traversal");
@@ -122,42 +123,40 @@ public class NuGetPayloadDownloaderTests
         var exception = await Assert.ThrowsAsync<RoslynAcquisitionException>(
             () => downloader.EnsureAsync(Rid, Version, Sha512(package), progress: null, cancellationToken: Ct));
 
-        Assert.Contains("outside the cache directory", exception.Message, StringComparison.Ordinal);
-        Assert.False(Directory.Exists(paths.ServerDirectory(Version, Rid)));
-        Assert.False(File.Exists(Path.Combine(temp.Root, "escaped.txt")));
-        Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(temp.Root)!, "escaped.txt")));
+        Assert.That(exception!.Message, Contains.Substring("outside the cache directory").Using(StringComparison.Ordinal));
+        Assert.That(Directory.Exists(paths.ServerDirectory(Version, Rid)), Is.False);
+        Assert.That(File.Exists(Path.Combine(temp.Root, "escaped.txt")), Is.False);
+        Assert.That(File.Exists(Path.Combine(Path.GetDirectoryName(temp.Root)!, "escaped.txt")), Is.False);
     }
 
-    [Theory]
-    [InlineData("../escaped.txt")]
-    [InlineData("a/../../escaped.txt")]
-    [InlineData("/etc/passwd")]
-    [InlineData(@"C:\Windows\System32\evil.dll")]
-    [InlineData(@"sub\escaped.txt")]
-    [InlineData("")]
+    [TestCase("../escaped.txt")]
+    [TestCase("a/../../escaped.txt")]
+    [TestCase("/etc/passwd")]
+    [TestCase(@"C:\Windows\System32\evil.dll")]
+    [TestCase(@"sub\escaped.txt")]
+    [TestCase("")]
     public void TheEntryGuardRefusesEveryEscapingShape(string relative)
     {
-        Assert.False(
-            NuGetPayloadDownloader.TryResolveEntryPath("entry", relative, Path.GetFullPath("/root"), out _));
+        Assert.That(
+            NuGetPayloadDownloader.TryResolveEntryPath("entry", relative, Path.GetFullPath("/root"), out _), Is.False);
     }
 
-    [Theory]
-    [InlineData("Microsoft.CodeAnalysis.LanguageServer.dll")]
-    [InlineData("BuildHost-netcore/BuildHost.dll")]
-    [InlineData("cs/Microsoft.CodeAnalysis.resources.dll")]
+    [TestCase("Microsoft.CodeAnalysis.LanguageServer.dll")]
+    [TestCase("BuildHost-netcore/BuildHost.dll")]
+    [TestCase("cs/Microsoft.CodeAnalysis.resources.dll")]
     public void TheEntryGuardAcceptsOrdinaryPayloadEntries(string relative)
     {
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "guard-root"));
 
-        Assert.True(NuGetPayloadDownloader.TryResolveEntryPath("entry", relative, root, out var destination));
-        Assert.StartsWith(root + Path.DirectorySeparatorChar, destination, StringComparison.Ordinal);
+        Assert.That(NuGetPayloadDownloader.TryResolveEntryPath("entry", relative, root, out var destination), Is.True);
+        Assert.That(destination, Does.StartWith(root + Path.DirectorySeparatorChar).Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// D29: two adapter processes start at the same instant on a first run, and only one of them may
     /// download. The loser waits on the lock file, then finds the cache warm and fetches nothing.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AConcurrentDownloadIsWaitedForAndThenFoundInTheCache()
     {
         using var temp = TempWorkspace.Create("download-lock");
@@ -172,7 +171,7 @@ public class NuGetPayloadDownloaderTests
 
         // Long enough for several poll intervals: the point is that it is waiting, not racing.
         await Task.Delay(TimeSpan.FromMilliseconds(750), Ct);
-        Assert.False(waiting.IsCompleted);
+        Assert.That(waiting.IsCompleted, Is.False);
 
         // What the other process would have left behind.
         var directory = paths.ServerDirectory(Version, Rid);
@@ -182,14 +181,14 @@ public class NuGetPayloadDownloaderTests
 
         await held.DisposeAsync();
 
-        Assert.Equal(directory, await waiting);
+        Assert.That(await waiting, Is.EqualTo(directory));
 
         // The stub has no queued response at all, so a request here would have thrown - but assert it
         // explicitly, because "did not download" is the property, not "did not crash".
-        Assert.Empty(handler.Requests);
+        Assert.That(handler.Requests, Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public void ACacheEntryWrittenUnderADifferentHashIsNotTrusted()
     {
         using var temp = TempWorkspace.Create("download-stale");
@@ -200,14 +199,14 @@ public class NuGetPayloadDownloaderTests
         File.WriteAllText(Path.Combine(directory, ServerAssembly), "server");
         File.WriteAllText(paths.CompleteMarker(Version, Rid), "an-older-hash");
 
-        Assert.False(downloader.IsComplete(Version, Rid, "the-current-hash"));
-        Assert.True(downloader.IsComplete(Version, Rid, "an-older-hash"));
+        Assert.That(downloader.IsComplete(Version, Rid, "the-current-hash"), Is.False);
+        Assert.That(downloader.IsComplete(Version, Rid, "an-older-hash"), Is.True);
 
         // A version override has no hash to check against, so the marker's presence is the answer.
-        Assert.True(downloader.IsComplete(Version, Rid, expectedSha512: null));
+        Assert.That(downloader.IsComplete(Version, Rid, expectedSha512: null), Is.True);
     }
 
-    [Fact]
+    [Test]
     public void ADirectoryWithoutTheMarkerIsNotAFinishedDownload()
     {
         using var temp = TempWorkspace.Create("download-partial");
@@ -217,22 +216,22 @@ public class NuGetPayloadDownloaderTests
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, ServerAssembly), "server");
 
-        Assert.False(downloader.IsComplete(Version, Rid, expectedSha512: null));
+        Assert.That(downloader.IsComplete(Version, Rid, expectedSha512: null), Is.False);
     }
 
-    [Fact]
+    [Test]
     public void TheClientIdentifiesItselfAndHonoursTheSystemProxy()
     {
         using var client = NuGetPayloadDownloader.CreateHttpClient();
 
-        Assert.Contains(
+        Assert.That(
             client.DefaultRequestHeaders.UserAgent,
-            product => product.Product?.Name == "claude-roslyn-lsp");
+            Has.Some.Matches<ProductInfoHeaderValue>(product => product!.Product?.Name == "claude-roslyn-lsp"));
 
-        Assert.True(client.Timeout > TimeSpan.FromMinutes(1));
+        Assert.That(client.Timeout > TimeSpan.FromMinutes(1), Is.True);
     }
 
-    [Fact]
+    [Test]
     public async Task AMissingPackageIsReportedAsAnAcquisitionFailure()
     {
         using var temp = TempWorkspace.Create("download-404");
@@ -243,10 +242,10 @@ public class NuGetPayloadDownloaderTests
         var exception = await Assert.ThrowsAsync<RoslynAcquisitionException>(
             () => downloader.EnsureAsync(Rid, "9.9.9-nope", expectedSha512: null, progress: null, cancellationToken: Ct));
 
-        Assert.Contains("nuget.org", exception.Message, StringComparison.Ordinal);
+        Assert.That(exception!.Message, Contains.Substring("nuget.org").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public async Task ProgressIsReportedAtLeastOnceForEveryDownload()
     {
         using var temp = TempWorkspace.Create("download-progress");
@@ -266,10 +265,10 @@ public class NuGetPayloadDownloaderTests
             await Task.Delay(20, Ct);
         }
 
-        Assert.NotEmpty(reports);
-        Assert.Equal(Rid, reports[^1].RuntimeIdentifier);
-        Assert.Equal(package.Length, reports[^1].BytesRead);
-        Assert.Contains("MB", reports[^1].Describe(), StringComparison.Ordinal);
+        Assert.That(reports, Is.Not.Empty);
+        Assert.That(reports[^1].RuntimeIdentifier, Is.EqualTo(Rid));
+        Assert.That(reports[^1].BytesRead, Is.EqualTo(package.Length));
+        Assert.That(reports[^1].Describe(), Contains.Substring("MB").Using(StringComparison.Ordinal));
     }
 
     private static (AdapterPaths Paths, StubHttpMessageHandler Handler, NuGetPayloadDownloader Downloader)

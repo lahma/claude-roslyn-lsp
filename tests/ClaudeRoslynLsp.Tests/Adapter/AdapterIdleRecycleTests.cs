@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 using ClaudeRoslynLsp.Adapter;
@@ -7,7 +8,7 @@ using ClaudeRoslynLsp.Protocol;
 using ClaudeRoslynLsp.Testing;
 using ClaudeRoslynLsp.Tests.Testing;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -35,13 +36,13 @@ public class AdapterIdleRecycleTests
     private const int RoslynProcessId = 4242;
     private const long Megabyte = 1024 * 1024;
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>
     /// The whole cycle: idle and grown, stopped by protocol and not relaunched; then one request, and
     /// the backend comes back with the client's unsaved buffer and answers it.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnIdleGrownBackendIsStoppedByProtocolAndTheNextRequestBringsItBack()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -62,22 +63,22 @@ public class AdapterIdleRecycleTests
 
         // Not before the window has passed...
         await AdvanceMinutesAsync(time, harness, 18);
-        Assert.DoesNotContain("shutdown", factory.Latest!.ReceivedMethods);
+        Assert.That(factory.Latest!.ReceivedMethods, Does.Not.Contain("shutdown"));
 
         // ...and soon after it has.
         await AdvanceUntilAsync(time, harness, () => harness.Session.Gate.State == ReadinessState.Dormant, 6);
 
         var first = factory.Latest!;
 
-        Assert.Contains("shutdown", first.ReceivedMethods);
-        Assert.Contains("exit", first.ReceivedMethods);
-        Assert.Equal(1, factory.ConnectCount);
-        Assert.Equal(ReadinessState.Dormant, harness.Session.Gate.State);
-        Assert.Equal(1, harness.Session.Recycler.Status.Recycles);
+        Assert.That(first.ReceivedMethods, Does.Contain("shutdown"));
+        Assert.That(first.ReceivedMethods, Does.Contain("exit"));
+        Assert.That(factory.ConnectCount, Is.EqualTo(1));
+        Assert.That(harness.Session.Gate.State, Is.EqualTo(ReadinessState.Dormant));
+        Assert.That(harness.Session.Recycler.Status.Recycles, Is.EqualTo(1));
 
         // Dormant stays dormant: nothing relaunches it but a request.
         await AdvanceMinutesAsync(time, harness, 30);
-        Assert.Equal(1, factory.ConnectCount);
+        Assert.That(factory.ConnectCount, Is.EqualTo(1));
 
         await harness.SendAsync(Definition(7, ProgramUri), Cancellation);
         await SessionHarness.WaitAsync(() => factory.ConnectCount == 2, Cancellation);
@@ -90,33 +91,34 @@ public class AdapterIdleRecycleTests
             Cancellation);
 
         // One didOpen at the latest text — the buffer the client had not saved — not the history.
-        var replay = Assert.Single(
+        Assert.That(
             second.ReceivedMessages,
-            x => x.Contains("\"method\":\"textDocument/didOpen\"", StringComparison.Ordinal));
+            Has.Exactly(1).Matches<string>(x => x!.Contains("\"method\":\"textDocument/didOpen\"", StringComparison.Ordinal)));
+        var replay = second.ReceivedMessages.Single(x => x.Contains("\"method\":\"textDocument/didOpen\"", StringComparison.Ordinal));
 
-        Assert.Contains("int Unsaved;", replay, StringComparison.Ordinal);
-        Assert.Contains("\"version\":2", replay, StringComparison.Ordinal);
+        Assert.That(replay, Contains.Substring("int Unsaved;").Using(StringComparison.Ordinal));
+        Assert.That(replay, Contains.Substring("\"version\":2").Using(StringComparison.Ordinal));
 
         // Held, not answered empty: the reloaded workspace has not reported itself loaded yet.
-        Assert.Null(harness.TryFindResponse(7));
+        Assert.That(harness.TryFindResponse(7), Is.Null);
 
         second.CompleteProjectInitialization();
 
         var response = await harness.AwaitResponseAsync(7, Cancellation);
 
-        Assert.False(response.TryGetProperty("error", out _));
-        Assert.True(response.GetProperty("result").GetArrayLength() > 0);
+        Assert.That(response.TryGetProperty("error", out _), Is.False);
+        Assert.That(response.GetProperty("result").GetArrayLength() > 0, Is.True);
 
         // A recycle is not a crash (D99), and the client was told why the answer was slow.
-        Assert.Equal(0, harness.Session.Supervisor.RestartsInWindow);
-        Assert.Contains(
+        Assert.That(harness.Session.Supervisor.RestartsInWindow, Is.EqualTo(0));
+        Assert.That(
             harness.Notifications("window/logMessage"),
-            x => x.GetProperty("params").GetProperty("message").GetString()!
-                .Contains("stopped while this session was idle", StringComparison.Ordinal));
+            Has.Some.Matches<JsonElement>(x => x.GetProperty("params").GetProperty("message").GetString()!
+                .Contains("stopped while this session was idle", StringComparison.Ordinal)));
     }
 
     /// <summary>Any client message inside the window starts it again (D95).</summary>
-    [Fact]
+    [Test]
     public async Task ActivityInsideTheWindowPreventsTheRecycle()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -138,7 +140,7 @@ public class AdapterIdleRecycleTests
 
         // Without the edit the recycle would have come at minute 21; with it, not at minute 35.
         await AdvanceMinutesAsync(time, harness, 19);
-        Assert.DoesNotContain("shutdown", factory.Latest!.ReceivedMethods);
+        Assert.That(factory.Latest!.ReceivedMethods, Does.Not.Contain("shutdown"));
 
         await AdvanceUntilAsync(time, harness, () => factory.Latest!.ReceivedMethods.Contains("shutdown"), 6);
     }
@@ -147,7 +149,7 @@ public class AdapterIdleRecycleTests
     /// D99: the recycle did not spend the crash budget, so a backend that keeps dying after the wake
     /// gets exactly the two relaunches any other session would.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ACrashAfterARecycleStillGetsTheWholeRestartBudget()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -170,15 +172,15 @@ public class AdapterIdleRecycleTests
 
         await SessionHarness.WaitAsync(() => harness.Session.Gate.State == ReadinessState.Failed, Cancellation);
 
-        Assert.Equal(4, factory.ConnectCount);
-        Assert.Equal(RoslynSupervisor.MaxRestarts, harness.Session.Supervisor.RestartsInWindow);
+        Assert.That(factory.ConnectCount, Is.EqualTo(4));
+        Assert.That(harness.Session.Supervisor.RestartsInWindow, Is.EqualTo(RoslynSupervisor.MaxRestarts));
     }
 
     /// <summary>
     /// D98: a new backend registers everything again, under ids of its own, so without the clear the
     /// table would hold one copy of every registration per backend the session has ever had.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task RecyclesDoNotMultiplyRegistrations()
     {
         var connections = 0;
@@ -194,7 +196,7 @@ public class AdapterIdleRecycleTests
         var registrations = harness.Session.Registrations.Count;
         var watched = harness.Session.Registrations.Watchers.Count;
 
-        Assert.True(registrations > 0, "The scripted startup registers nothing; the test would prove nothing.");
+        Assert.That(registrations > 0, Is.True, "The scripted startup registers nothing; the test would prove nothing.");
 
         for (var recycle = 1; recycle <= 3; recycle++)
         {
@@ -207,8 +209,8 @@ public class AdapterIdleRecycleTests
             await SessionHarness.WaitAsync(() => factory.ConnectCount == expected, Cancellation);
             await WaitForStartupAsync(factory.Latest!);
 
-            Assert.Equal(registrations, harness.Session.Registrations.Count);
-            Assert.Equal(watched, harness.Session.Registrations.Watchers.Count);
+            Assert.That(harness.Session.Registrations.Count, Is.EqualTo(registrations));
+            Assert.That(harness.Session.Registrations.Watchers.Count, Is.EqualTo(watched));
 
             await CompleteLoadAsync(harness, factory, time, memory);
             await harness.AwaitResponseAsync(100 + recycle, Cancellation);
@@ -219,7 +221,7 @@ public class AdapterIdleRecycleTests
     /// Never during a load: a request held for a workspace that has not finished loading is a request
     /// somebody is waiting on, however long it has been waiting.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task NoRecycleHappensWhileARequestIsHeldForTheLoad()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -239,16 +241,16 @@ public class AdapterIdleRecycleTests
 
         await AdvanceMinutesAsync(time, harness, 40);
 
-        Assert.DoesNotContain("shutdown", factory.Latest!.ReceivedMethods);
-        Assert.Equal(1, harness.Session.Gate.HeldCount);
-        Assert.Equal(0, harness.Session.Recycler.Status.Recycles);
+        Assert.That(factory.Latest!.ReceivedMethods, Does.Not.Contain("shutdown"));
+        Assert.That(harness.Session.Gate.HeldCount, Is.EqualTo(1));
+        Assert.That(harness.Session.Recycler.Status.Recycles, Is.EqualTo(0));
     }
 
     /// <summary>
     /// Never under a request that is in flight: stopping Roslyn under it would answer it with an error
     /// for no reason. Once it is answered, the recycle goes ahead.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task NoRecycleHappensWhileARequestIsInFlight()
     {
         using var reached = new ManualResetEventSlim(false);
@@ -267,7 +269,7 @@ public class AdapterIdleRecycleTests
         await SessionHarness.WaitAsync(() => reached.IsSet, Cancellation);
 
         await AdvanceMinutesAsync(time, harness, 40);
-        Assert.DoesNotContain("shutdown", factory.Latest!.ReceivedMethods);
+        Assert.That(factory.Latest!.ReceivedMethods, Does.Not.Contain("shutdown"));
 
         release.Set();
         await harness.AwaitResponseAsync(11, Cancellation);
@@ -277,7 +279,7 @@ public class AdapterIdleRecycleTests
     }
 
     /// <summary>A session whose policy is off keeps its backend however long it idles and however large it is.</summary>
-    [Fact]
+    [Test]
     public async Task AZeroWindowKeepsTheBackendForEver()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -292,8 +294,8 @@ public class AdapterIdleRecycleTests
 
         await AdvanceMinutesAsync(time, harness, 90);
 
-        Assert.DoesNotContain("shutdown", factory.Latest!.ReceivedMethods);
-        Assert.Equal(1, factory.ConnectCount);
+        Assert.That(factory.Latest!.ReceivedMethods, Does.Not.Contain("shutdown"));
+        Assert.That(factory.ConnectCount, Is.EqualTo(1));
     }
 
     /// <summary>
@@ -302,7 +304,7 @@ public class AdapterIdleRecycleTests
     /// is, so the next request wakes it rather than being held for ever (finding 2 of the 0.2.0
     /// review, D96).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AStopThatFailsPartWayStillLeavesTheSessionWakeable()
     {
         var inner = new RestartableFakeRoslynFactory();
@@ -314,7 +316,7 @@ public class AdapterIdleRecycleTests
 
         await RecycleAsync(harness, inner, time, memory);
 
-        Assert.Contains("exit", inner.Latest!.ReceivedMethods);
+        Assert.That(inner.Latest!.ReceivedMethods, Does.Contain("exit"));
         await SessionHarness.WaitAsync(
             () => harness.Session.Recycler.Status.Phase == BackendPhase.Dormant,
             Cancellation);
@@ -329,8 +331,8 @@ public class AdapterIdleRecycleTests
 
         var response = await harness.AwaitResponseAsync(7, Cancellation);
 
-        Assert.False(response.TryGetProperty("error", out _));
-        Assert.Equal(1, harness.Session.Recycler.Status.Recycles);
+        Assert.That(response.TryGetProperty("error", out _), Is.False);
+        Assert.That(harness.Session.Recycler.Status.Recycles, Is.EqualTo(1));
     }
 
     /// <summary>
@@ -338,7 +340,7 @@ public class AdapterIdleRecycleTests
     /// and goes back to sleep rather than failing a session that was working; the next request does
     /// try again, and is answered (finding 5, D96).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AWakeThatFailsRefusesWhatWaitedForItAndTheNextRequestTriesAgain()
     {
         var inner = new RestartableFakeRoslynFactory();
@@ -354,20 +356,19 @@ public class AdapterIdleRecycleTests
 
         var refused = (await harness.AwaitResponseAsync(7, Cancellation)).GetProperty("error");
 
-        Assert.Equal(JsonRpcErrors.InternalError, refused.GetProperty("code").GetInt32());
-        Assert.Contains(
-            "the next request tries again",
+        Assert.That(refused.GetProperty("code").GetInt32(), Is.EqualTo(JsonRpcErrors.InternalError));
+        Assert.That(
             refused.GetProperty("message").GetString()!,
-            StringComparison.Ordinal);
+            Contains.Substring("the next request tries again").Using(StringComparison.Ordinal));
 
         // Asleep again rather than failed: the reason is cleared once the held requests carry it.
-        Assert.Equal(ReadinessState.Dormant, harness.Session.Gate.State);
+        Assert.That(harness.Session.Gate.State, Is.EqualTo(ReadinessState.Dormant));
         await SessionHarness.WaitAsync(
             () => harness.Session.Gate.FailureReason is null
                   && harness.Session.Recycler.Status.Phase == BackendPhase.Dormant,
             Cancellation);
 
-        Assert.Equal(1, inner.ConnectCount);
+        Assert.That(inner.ConnectCount, Is.EqualTo(1));
 
         await harness.SendAsync(Definition(8, ProgramUri), Cancellation);
         await SessionHarness.WaitAsync(() => inner.ConnectCount == 2, Cancellation);
@@ -379,16 +380,16 @@ public class AdapterIdleRecycleTests
 
         var answered = await harness.AwaitResponseAsync(8, Cancellation);
 
-        Assert.False(answered.TryGetProperty("error", out _));
-        Assert.Equal(3, factory.Attempts);
-        Assert.Equal(ReadinessState.ProjectsLoaded, harness.Session.Gate.State);
+        Assert.That(answered.TryGetProperty("error", out _), Is.False);
+        Assert.That(factory.Attempts, Is.EqualTo(3));
+        Assert.That(harness.Session.Gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
     }
 
     /// <summary>
     /// A setup that is genuinely broken still says so: three failed wakes in a row fail the session
     /// the way a failed first launch does, and a failed session refuses rather than trying again.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ThreeWakesThatFailInARowFailTheSession()
     {
         var inner = new RestartableFakeRoslynFactory();
@@ -405,20 +406,20 @@ public class AdapterIdleRecycleTests
             await harness.SendAsync(Definition(id, ProgramUri), Cancellation);
 
             var refused = await harness.AwaitResponseAsync(id, Cancellation);
-            Assert.True(refused.TryGetProperty("error", out _));
+            Assert.That(refused.TryGetProperty("error", out _), Is.True);
         }
 
         await SessionHarness.WaitAsync(() => harness.Session.Gate.State == ReadinessState.Failed, Cancellation);
 
         var attempts = factory.Attempts;
-        Assert.Equal(1 + BackendRecycler.MaxConsecutiveWakeFailures, attempts);
+        Assert.That(attempts, Is.EqualTo(1 + BackendRecycler.MaxConsecutiveWakeFailures));
 
         await harness.SendAsync(Definition(20, ProgramUri), Cancellation);
 
         var after = (await harness.AwaitResponseAsync(20, Cancellation)).GetProperty("error");
 
-        Assert.Contains("doctor", after.GetProperty("message").GetString()!, StringComparison.Ordinal);
-        Assert.Equal(attempts, factory.Attempts);
+        Assert.That(after.GetProperty("message").GetString()!, Contains.Substring("doctor").Using(StringComparison.Ordinal));
+        Assert.That(factory.Attempts, Is.EqualTo(attempts));
     }
 
     /// <summary>
@@ -426,7 +427,7 @@ public class AdapterIdleRecycleTests
     /// once it has really loaded: a baseline sampled mid-load would be a threshold that recycles it
     /// every idle period (finding 6, D100).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AWorkspaceThatTimedOutIsMeasuredOnlyOnceItHasLoaded()
     {
         var factory = new RestartableFakeRoslynFactory();
@@ -450,7 +451,7 @@ public class AdapterIdleRecycleTests
             Cancellation);
 
         time.Advance(BackendRecycler.BaselineDelay * 2);
-        Assert.Null(harness.Session.Recycler.Status.BaselineBytes);
+        Assert.That(harness.Session.Recycler.Status.BaselineBytes, Is.Null);
 
         factory.Latest!.CompleteProjectInitialization();
         await SessionHarness.WaitAsync(
@@ -473,7 +474,7 @@ public class AdapterIdleRecycleTests
     /// compacted, because a forced collection in somebody else's process is not ours to cause
     /// (finding 7, D101).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AServerThatNamesAProcessThisSessionDidNotStartIsNeverCompacted()
     {
         var inner = new RestartableFakeRoslynFactory();
@@ -497,18 +498,18 @@ public class AdapterIdleRecycleTests
         await LoadLaunchedAsync(harness, inner, time);
         await AdvanceMinutesAsync(time, harness, 10);
 
-        Assert.Equal(999, harness.Session.Recycler.Status.ProcessId);
-        Assert.Equal(0, compactor.Calls);
+        Assert.That(harness.Session.Recycler.Status.ProcessId, Is.EqualTo(999));
+        Assert.That(compactor.Calls, Is.EqualTo(0));
 
         lock (sampled)
         {
-            Assert.Contains(999, sampled);
-            Assert.DoesNotContain(RoslynProcessId, sampled);
+            Assert.That(sampled, Does.Contain(999));
+            Assert.That(sampled, Does.Not.Contain(RoslynProcessId));
         }
     }
 
     /// <summary>The other half: when the server names the child this session started, it is compacted.</summary>
-    [Fact]
+    [Test]
     public async Task TheChildThisSessionStartedIsCompactedWhenIdle()
     {
         var inner = new RestartableFakeRoslynFactory();
@@ -522,7 +523,7 @@ public class AdapterIdleRecycleTests
         await LoadLaunchedAsync(harness, inner, time);
         await AdvanceUntilAsync(time, harness, () => compactor.Calls > 0, 10);
 
-        Assert.Equal(RoslynProcessId, harness.Session.Recycler.Status.ProcessId);
+        Assert.That(harness.Session.Recycler.Status.ProcessId, Is.EqualTo(RoslynProcessId));
     }
 
     /// <summary>Handshake and load, and the baseline a minute later, for a backend reached through a wrapper.</summary>
@@ -631,7 +632,7 @@ public class AdapterIdleRecycleTests
             await Task.Delay(20, Cancellation);
         }
 
-        Assert.True(condition(), $"The condition did not hold within {maxMinutes} more minute(s) of the session's clock.");
+        Assert.That(condition(), Is.True, $"The condition did not hold within {maxMinutes} more minute(s) of the session's clock.");
     }
 
     /// <summary>

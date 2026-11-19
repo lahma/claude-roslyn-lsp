@@ -4,7 +4,7 @@ using System.Text.Json;
 using ClaudeRoslynLsp.Mcp;
 using ClaudeRoslynLsp.Mcp.Models;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Tools;
 
@@ -27,14 +27,14 @@ public class ToolSchemaTests
     /// The schemas above are only the shipped ones if the options that produced them are the shipped
     /// ones — our context first, the SDK's resolver second, and the whole thing frozen.
     /// </summary>
-    [Fact]
+    [Test]
     public void ProductionSerializerOptionsPutOurContextFirstAndAreReadOnly()
     {
         var options = McpServerSetup.CreateToolSerializerOptions();
 
-        Assert.True(options.IsReadOnly);
-        Assert.Equal(2, options.TypeInfoResolverChain.Count);
-        Assert.IsType<RoslynToolJsonContext>(options.TypeInfoResolverChain[0]);
+        Assert.That(options.IsReadOnly, Is.True);
+        Assert.That(options.TypeInfoResolverChain.Count, Is.EqualTo(2));
+        Assert.That(options.TypeInfoResolverChain[0], Is.TypeOf<RoslynToolJsonContext>());
     }
 
     /// <summary>
@@ -42,80 +42,77 @@ public class ToolSchemaTests
     /// because that order is what a model reads top to bottom; the required list is what it must
     /// supply.
     /// </summary>
-    [Theory]
-    [InlineData("getWorkspaceStatus", "", "")]
-    [InlineData("resolveSymbol", "symbol,kind,maxResults", "symbol")]
-    [InlineData("getTypeMembers", "type,maxResults", "type")]
-    [InlineData("findReferences", "symbol,includeDeclaration,maxResults,offset", "symbol")]
-    [InlineData(
+    [TestCase("getWorkspaceStatus", "", "")]
+    [TestCase("resolveSymbol", "symbol,kind,maxResults", "symbol")]
+    [TestCase("getTypeMembers", "type,maxResults", "type")]
+    [TestCase("findReferences", "symbol,includeDeclaration,maxResults,offset", "symbol")]
+    [TestCase(
         "getDiagnostics",
         "scope,path,project,minSeverity,includeAnalyzers,ids,maxResults",
         "")]
-    [InlineData("getCodeActions", "path,line,col,endLine,endCol,kind", "path,line,col")]
-    [InlineData(
+    [TestCase("getCodeActions", "path,line,col,endLine,endCol,kind", "path,line,col")]
+    [TestCase(
         "applyCodeAction",
         "path,line,col,id,title,endLine,endCol,fixAllScope,preview",
         "path,line,col")]
-    [InlineData("renameSymbol", "symbol,newName,preview", "symbol,newName")]
-    [InlineData("fixDiagnostics", "diagnosticId,scope,path,project,preview", "diagnosticId")]
-    [InlineData("formatCode", "paths,project,organizeUsings,preview", "")]
+    [TestCase("renameSymbol", "symbol,newName,preview", "symbol,newName")]
+    [TestCase("fixDiagnostics", "diagnosticId,scope,path,project,preview", "diagnosticId")]
+    [TestCase("formatCode", "paths,project,organizeUsings,preview", "")]
     public void InputSchemaExposesExactlyTheModelSuppliedArguments(string name, string properties, string required)
     {
         var schema = ToolTestHost.Find(name).ProtocolTool.InputSchema;
 
-        Assert.Equal("object", schema.GetProperty("type").GetString());
+        Assert.That(schema.GetProperty("type").GetString(), Is.EqualTo("object"));
 
         var actualProperties = schema.TryGetProperty("properties", out var propertiesElement)
             ? propertiesElement.EnumerateObject().Select(property => property.Name).ToArray()
             : [];
 
-        Assert.Equal(Split(properties), actualProperties);
+        Assert.That(actualProperties, Is.EqualTo(Split(properties)));
 
         var actualRequired = schema.TryGetProperty("required", out var requiredElement)
             ? requiredElement.EnumerateArray().Select(item => item.GetString()).ToArray()
             : [];
 
-        Assert.Equal(Split(required), actualRequired);
+        Assert.That(actualRequired, Is.EqualTo(Split(required)));
     }
 
     /// <summary>
     /// The table above must cover every tool. Without this a tool added without a row would have no
     /// frozen schema at all, which is the one thing the table exists to prevent.
     /// </summary>
-    [Fact]
+    [Test]
     public void EveryToolHasARowInTheFrozenSchemaTable()
     {
-        // Read through CustomAttributeData rather than by instantiating the attribute: xunit's
-        // InlineDataAttribute.GetData signature is not a stable thing to depend on, and the tool name
-        // is simply the first constructor argument.
+        // The tool name is each row's first argument, which NUnit exposes as TestCaseAttribute.Arguments
+        // whichever of its constructors the row bound to.
         var covered = typeof(ToolSchemaTests)
             .GetMethod(nameof(InputSchemaExposesExactlyTheModelSuppliedArguments))!
-            .GetCustomAttributesData()
-            .Where(data => data.AttributeType == typeof(InlineDataAttribute))
-            .Select(data => (string) ((IReadOnlyList<CustomAttributeTypedArgument>) data.ConstructorArguments[0].Value!)[0].Value!)
+            .GetCustomAttributes<TestCaseAttribute>()
+            .Select(row => (string) row.Arguments[0]!)
             .ToArray();
 
-        Assert.Equal(
-            ToolTestHost.Tools.Select(tool => tool.ProtocolTool.Name).Order(StringComparer.Ordinal),
-            covered.Order(StringComparer.Ordinal));
+        Assert.That(
+            covered.Order(StringComparer.Ordinal),
+            Is.EqualTo(ToolTestHost.Tools.Select(tool => tool.ProtocolTool.Name).Order(StringComparer.Ordinal)));
     }
 
     /// <summary>
     /// The recycle is visible in the answer a model reads (D96): without these a call after a quiet
     /// spell is slow for no reason anybody can see.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheWorkspaceStatusCarriesTheIdlePolicysFields()
     {
         var properties = ToolTestHost.Find("getWorkspaceStatus").ProtocolTool.OutputSchema!.Value.GetProperty("properties");
 
         foreach (var name in new[] { "memoryMegabytes", "privateMegabytes", "recycles", "baselineMegabytes", "lastRecycleAt" })
         {
-            Assert.True(properties.TryGetProperty(name, out _), $"getWorkspaceStatus has no '{name}'.");
+            Assert.That(properties.TryGetProperty(name, out _), Is.True, $"getWorkspaceStatus has no '{name}'.");
         }
     }
 
-    [Fact]
+    [Test]
     public void NoInputSchemaMentionsAnInjectedParameter()
     {
         foreach (var tool in ToolTestHost.Tools)
@@ -127,12 +124,14 @@ public class ToolSchemaTests
 
             foreach (var property in properties.EnumerateObject())
             {
-                Assert.DoesNotContain(property.Name, NeverInSchema, StringComparer.OrdinalIgnoreCase);
+                Assert.That(
+                    NeverInSchema,
+                    Has.None.EqualTo(property.Name).Using(StringComparer.OrdinalIgnoreCase));
             }
         }
     }
 
-    [Fact]
+    [Test]
     public void EveryInputPropertyIsCamelCaseAndDescribed()
     {
         foreach (var tool in ToolTestHost.Tools)
@@ -146,12 +145,12 @@ public class ToolSchemaTests
 
             foreach (var property in properties.EnumerateObject())
             {
-                Assert.True(IsCamelCase(property.Name), $"{toolName}.{property.Name} is not camelCase.");
+                Assert.That(IsCamelCase(property.Name), Is.True, $"{toolName}.{property.Name} is not camelCase.");
 
                 var described = property.Value.TryGetProperty("description", out var description)
                     && !string.IsNullOrWhiteSpace(description.GetString());
 
-                Assert.True(described, $"{toolName}.{property.Name} has no schema description.");
+                Assert.That(described, Is.True, $"{toolName}.{property.Name} has no schema description.");
             }
         }
     }
@@ -162,15 +161,15 @@ public class ToolSchemaTests
     /// documented in the tool description, where a model reads it once instead of per property. So the
     /// assertion here is the naming policy alone.
     /// </summary>
-    [Fact]
+    [Test]
     public void EveryToolHasAnObjectOutputSchemaInCamelCase()
     {
         foreach (var tool in ToolTestHost.Tools)
         {
             var outputSchema = tool.ProtocolTool.OutputSchema;
 
-            Assert.NotNull(outputSchema);
-            Assert.Equal("object", outputSchema.Value.GetProperty("type").GetString());
+            Assert.That(outputSchema, Is.Not.Null);
+            Assert.That(outputSchema!.Value.GetProperty("type").GetString(), Is.EqualTo("object"));
 
             AssertCamelCaseProperties(outputSchema.Value, tool.ProtocolTool.Name);
         }
@@ -180,15 +179,15 @@ public class ToolSchemaTests
     /// Every result a caller has to branch on carries <c>status</c>, in the same place, so "is this a
     /// real answer" is one property lookup rather than ten shapes (D66).
     /// </summary>
-    [Fact]
+    [Test]
     public void EveryOutputSchemaCarriesAStatus()
     {
         foreach (var tool in ToolTestHost.Tools)
         {
             var properties = tool.ProtocolTool.OutputSchema!.Value.GetProperty("properties");
 
-            Assert.True(
-                properties.TryGetProperty("status", out _),
+            Assert.That(
+                properties.TryGetProperty("status", out _), Is.True,
                 $"{tool.ProtocolTool.Name}'s result has no status; a caller cannot tell 'loading' from an answer.");
         }
     }
@@ -197,20 +196,19 @@ public class ToolSchemaTests
     /// Every mutating tool answers with the same shape, so a caller reads <c>applied</c> and
     /// <c>files</c> once and not four times.
     /// </summary>
-    [Theory]
-    [InlineData("applyCodeAction")]
-    [InlineData("renameSymbol")]
-    [InlineData("fixDiagnostics")]
-    [InlineData("formatCode")]
+    [TestCase("applyCodeAction")]
+    [TestCase("renameSymbol")]
+    [TestCase("fixDiagnostics")]
+    [TestCase("formatCode")]
     public void EveryMutatingToolReturnsTheSameEditResultShape(string name)
     {
-        Assert.Equal(typeof(EditResult), ToolTestHost.FindMethod(name).ReturnType.GetGenericArguments()[0]);
+        Assert.That(ToolTestHost.FindMethod(name).ReturnType.GetGenericArguments()[0], Is.EqualTo(typeof(EditResult)));
 
         var properties = ToolTestHost.Find(name).ProtocolTool.OutputSchema!.Value.GetProperty("properties");
 
         foreach (var expected in new[] { "applied", "filesChanged", "edits", "files", "diff", "note" })
         {
-            Assert.True(properties.TryGetProperty(expected, out _), $"{name}'s result has no '{expected}'.");
+            Assert.That(properties.TryGetProperty(expected, out _), Is.True, $"{name}'s result has no '{expected}'.");
         }
     }
 
@@ -218,17 +216,16 @@ public class ToolSchemaTests
     /// The documentation of the 1-based convention has to reach the model, and the only channel it
     /// has is the schema description of the parameter it applies to.
     /// </summary>
-    [Theory]
-    [InlineData("getCodeActions", "line")]
-    [InlineData("getCodeActions", "col")]
-    [InlineData("getCodeActions", "endLine")]
-    [InlineData("getCodeActions", "endCol")]
-    [InlineData("applyCodeAction", "line")]
-    [InlineData("applyCodeAction", "col")]
-    [InlineData("resolveSymbol", "symbol")]
-    [InlineData("renameSymbol", "symbol")]
-    [InlineData("findReferences", "symbol")]
-    [InlineData("getTypeMembers", "type")]
+    [TestCase("getCodeActions", "line")]
+    [TestCase("getCodeActions", "col")]
+    [TestCase("getCodeActions", "endLine")]
+    [TestCase("getCodeActions", "endCol")]
+    [TestCase("applyCodeAction", "line")]
+    [TestCase("applyCodeAction", "col")]
+    [TestCase("resolveSymbol", "symbol")]
+    [TestCase("renameSymbol", "symbol")]
+    [TestCase("findReferences", "symbol")]
+    [TestCase("getTypeMembers", "type")]
     public void EveryPositionArgumentSaysItIsOneBased(string tool, string property)
     {
         var description = ToolTestHost.Find(tool)
@@ -238,7 +235,7 @@ public class ToolSchemaTests
             .GetProperty("description")
             .GetString();
 
-        Assert.Contains("1-based", description, StringComparison.Ordinal);
+        Assert.That(description, Contains.Substring("1-based").Using(StringComparison.Ordinal));
     }
 
     private static string[] Split(string value) => value.Length == 0 ? [] : value.Split(',');
@@ -254,8 +251,8 @@ public class ToolSchemaTests
         {
             foreach (var property in properties.EnumerateObject())
             {
-                Assert.True(
-                    IsCamelCase(property.Name),
+                Assert.That(
+                    IsCamelCase(property.Name), Is.True,
                     $"{toolName} output property '{property.Name}' is not camelCase.");
 
                 AssertCamelCaseProperties(property.Value, toolName);

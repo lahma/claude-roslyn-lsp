@@ -1,6 +1,6 @@
 using ClaudeRoslynLsp.Roslyn;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Roslyn;
 
@@ -20,116 +20,116 @@ public class RoslynServerManifestTests
     /// <summary>Base64 of 64 bytes is 88 characters ending in two pad characters.</summary>
     private const int Sha512Base64Length = 88;
 
-    [Fact]
+    [Test]
     public void EveryPublishedRuntimeIdentifierHasAHash()
     {
-        Assert.Equal(
-            RuntimeIdentifier.All.Order(StringComparer.Ordinal),
-            RoslynServerManifest.Sha512ByRuntimeIdentifier.Keys.Order(StringComparer.Ordinal));
+        Assert.That(
+            RoslynServerManifest.Sha512ByRuntimeIdentifier.Keys.Order(StringComparer.Ordinal),
+            Is.EqualTo(RuntimeIdentifier.All.Order(StringComparer.Ordinal)));
     }
 
-    [Fact]
+    [Test]
     public void EveryHashIsABase64Sha512()
     {
         foreach (var (rid, hash) in RoslynServerManifest.Sha512ByRuntimeIdentifier)
         {
-            Assert.True(
-                hash.Length == Sha512Base64Length,
+            Assert.That(
+                hash.Length == Sha512Base64Length, Is.True,
                 $"{rid}: expected {Sha512Base64Length} base64 characters, got {hash.Length} ('{hash}').");
 
-            Assert.EndsWith("==", hash, StringComparison.Ordinal);
-            Assert.True(Convert.TryFromBase64String(hash, new byte[64], out var written), $"{rid}: not base64.");
-            Assert.Equal(64, written);
+            Assert.That(hash, Does.EndWith("==").Using(StringComparison.Ordinal));
+            Assert.That(Convert.TryFromBase64String(hash, new byte[64], out var written), Is.True, $"{rid}: not base64.");
+            Assert.That(written, Is.EqualTo(64));
         }
     }
 
-    [Fact]
+    [Test]
     public void TheHashesAreAllDifferent()
     {
         // Eight identical hashes would mean the generator wrote one payload's number eight times,
         // which is exactly the mistake a table of long base64 strings hides best.
         var hashes = RoslynServerManifest.Sha512ByRuntimeIdentifier.Values.ToList();
 
-        Assert.Equal(hashes.Count, hashes.Distinct(StringComparer.Ordinal).Count());
+        Assert.That(hashes.Distinct(StringComparer.Ordinal).Count(), Is.EqualTo(hashes.Count));
     }
 
-    [Fact]
+    [Test]
     public void ThePinnedVersionIsANuGetPrereleaseVersion()
     {
         var dash = RoslynServerManifest.Version.IndexOf('-', StringComparison.Ordinal);
 
-        Assert.True(dash > 0, $"'{RoslynServerManifest.Version}' has no prerelease label; the server is prerelease-only.");
-        Assert.True(Version.TryParse(RoslynServerManifest.Version[..dash], out var numeric));
-        Assert.True(numeric!.Major > 0);
-        Assert.NotEmpty(RoslynServerManifest.Version[(dash + 1)..]);
+        Assert.That(dash > 0, Is.True, $"'{RoslynServerManifest.Version}' has no prerelease label; the server is prerelease-only.");
+        Assert.That(Version.TryParse(RoslynServerManifest.Version[..dash], out var numeric), Is.True);
+        Assert.That(numeric!.Major > 0, Is.True);
+        Assert.That(RoslynServerManifest.Version[(dash + 1)..], Is.Not.Empty);
     }
 
     /// <summary>
     /// The pinned version is user-visible — it is what a user actually runs — so a bump to it is a
     /// release note even when nothing in this repository moves.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheChangelogNamesThePinnedVersion()
     {
         var changelog = File.ReadAllText(RepositoryLayout.Path_("CHANGELOG.md"));
 
-        Assert.Contains(RoslynServerManifest.Version, changelog, StringComparison.Ordinal);
+        Assert.That(changelog, Contains.Substring(RoslynServerManifest.Version).Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void TheGeneratedBlockIsMarkedAsGenerated()
     {
         var manifest = File.ReadAllText(
             RepositoryLayout.Path_("src", "ClaudeRoslynLsp", "Roslyn", "RoslynServerManifest.cs"));
 
-        Assert.Contains("// <generated pin>", manifest, StringComparison.Ordinal);
-        Assert.Contains("// </generated pin>", manifest, StringComparison.Ordinal);
-        Assert.Contains("UpdateRoslynPin", manifest, StringComparison.Ordinal);
+        Assert.That(manifest, Contains.Substring("// <generated pin>").Using(StringComparison.Ordinal));
+        Assert.That(manifest, Contains.Substring("// </generated pin>").Using(StringComparison.Ordinal));
+        Assert.That(manifest, Contains.Substring("UpdateRoslynPin").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void ThePayloadUrlIsTheFlatContainerAddressInLowerCase()
     {
         var url = RoslynServerManifest.PackageUrl("win-x64", "5.12.0-PREVIEW.1");
 
-        Assert.Equal(
-            "https://api.nuget.org/v3-flatcontainer/roslyn-language-server.win-x64/5.12.0-preview.1/" +
-            "roslyn-language-server.win-x64.5.12.0-preview.1.nupkg",
-            url.AbsoluteUri);
+        Assert.That(
+            url.AbsoluteUri,
+            Is.EqualTo("https://api.nuget.org/v3-flatcontainer/roslyn-language-server.win-x64/5.12.0-preview.1/" +
+            "roslyn-language-server.win-x64.5.12.0-preview.1.nupkg"));
     }
 
-    [Fact]
+    [Test]
     public void OnlyThePinnedVersionHasAKnownHash()
     {
-        Assert.NotNull(RoslynServerManifest.Sha512For("win-x64", RoslynServerManifest.Version));
-        Assert.Null(RoslynServerManifest.Sha512For("win-x64", "5.5.0-2.26103.6"));
-        Assert.Null(RoslynServerManifest.Sha512For("win-x86", RoslynServerManifest.Version));
+        Assert.That(RoslynServerManifest.Sha512For("win-x64", RoslynServerManifest.Version), Is.Not.Null);
+        Assert.That(RoslynServerManifest.Sha512For("win-x64", "5.5.0-2.26103.6"), Is.Null);
+        Assert.That(RoslynServerManifest.Sha512For("win-x86", RoslynServerManifest.Version), Is.Null);
     }
 
     /// <summary>
     /// D26: a flag the pinned build has is not a flag an older build has, and Roslyn exits on an
     /// unknown option rather than ignoring it.
     /// </summary>
-    [Fact]
+    [Test]
     public void FeatureFlagsAreThePinsOnlyForThePin()
     {
         var pinned = RoslynServerManifest.FeaturesFor(RoslynServerManifest.Version);
 
-        Assert.True(pinned.SupportsStdio);
-        Assert.True(pinned.SupportsClientProcessId);
-        Assert.True(pinned.SupportsDaemon);
+        Assert.That(pinned.SupportsStdio, Is.True);
+        Assert.That(pinned.SupportsClientProcessId, Is.True);
+        Assert.That(pinned.SupportsDaemon, Is.True);
 
         var older = RoslynServerManifest.FeaturesFor("5.5.0-2.26103.6");
 
-        Assert.True(older.SupportsStdio);
-        Assert.False(older.SupportsClientProcessId);
-        Assert.False(older.SupportsDaemon);
+        Assert.That(older.SupportsStdio, Is.True);
+        Assert.That(older.SupportsClientProcessId, Is.False);
+        Assert.That(older.SupportsDaemon, Is.False);
     }
 
-    [Fact]
+    [Test]
     public void ThePayloadPrefixIsTheServerDirectoryInsideTheNupkg()
     {
-        Assert.Equal("tools/net10.0/linux-musl-arm64/", RoslynServerManifest.PayloadPrefix("linux-musl-arm64"));
-        Assert.Equal("roslyn-language-server.osx-arm64", RoslynServerManifest.PackageId("osx-arm64"));
+        Assert.That(RoslynServerManifest.PayloadPrefix("linux-musl-arm64"), Is.EqualTo("tools/net10.0/linux-musl-arm64/"));
+        Assert.That(RoslynServerManifest.PackageId("osx-arm64"), Is.EqualTo("roslyn-language-server.osx-arm64"));
     }
 }

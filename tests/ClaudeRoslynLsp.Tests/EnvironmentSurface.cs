@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests;
 
@@ -75,8 +75,8 @@ internal static class EnvironmentSurface
         // wrong reason. The count is deliberately a floor rather than an equality — this set is
         // supposed to grow with the product, and a test that had to be edited to add a knob would
         // be edited by deleting the assertion.
-        Assert.True(
-            canonical.Count >= 10,
+        Assert.That(
+            canonical.Count >= 10, Is.True,
             $"Only {canonical.Count} environment variables were recovered from {OptionsSource}. The reader "
             + "calls must have changed shape; fix the pattern rather than the documents it checks.");
 

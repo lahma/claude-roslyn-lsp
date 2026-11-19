@@ -7,7 +7,7 @@ using ClaudeRoslynLsp.Tests.Mcp;
 
 using ModelContextProtocol;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Tools;
 
@@ -23,9 +23,9 @@ namespace ClaudeRoslynLsp.Tests.Tools;
 public class ToolBehaviourTests
 {
     /// <summary>The test's own cancellation, so a hung tool call is cancelled rather than waited on.</summary>
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
-    [Fact]
+    [Test]
     public async Task RenameWritesEveryFileAndSaysSoInTheSameWordsEveryTime()
     {
         using var workspace = TempWorkspace.Create("tool-rename");
@@ -47,27 +47,27 @@ public class ToolBehaviourTests
 
         var result = await EditTools.RenameSymbolAsync(context, "Compute", "Calculate", cancellationToken: Cancellation);
 
-        Assert.Equal(ToolStatus.Ok, result.Status);
-        Assert.True(result.Applied);
-        Assert.Equal(2, result.FilesChanged);
-        Assert.Equal(2, result.Edits);
-        Assert.Equal(EditResult.AppliedNote, result.Note);
+        Assert.That(result.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(result.Applied, Is.True);
+        Assert.That(result.FilesChanged, Is.EqualTo(2));
+        Assert.That(result.Edits, Is.EqualTo(2));
+        Assert.That(result.Note, Is.EqualTo(EditResult.AppliedNote));
 
-        Assert.Equal("int Calculate() => 1;\n", File.ReadAllText(first));
-        Assert.Equal("new Calculator().Calculate();\n", File.ReadAllText(second));
+        Assert.That(File.ReadAllText(first), Is.EqualTo("int Calculate() => 1;\n"));
+        Assert.That(File.ReadAllText(second), Is.EqualTo("new Calculator().Calculate();\n"));
 
-        Assert.Equal(
-            ["App/Program.cs", "Core/Calculator.cs"],
-            result.Files!.Select(file => file.Path).Order(StringComparer.Ordinal));
+        Assert.That(
+            result.Files!.Select(file => file.Path).Order(StringComparer.Ordinal),
+            Is.EqualTo(["App/Program.cs", "Core/Calculator.cs"]));
 
-        Assert.Contains("Calculate", result.Diff, StringComparison.Ordinal);
+        Assert.That(result.Diff, Contains.Substring("Calculate").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// The rule that keeps every later answer from being confidently stale: Roslyn is told what was
     /// written, immediately.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAppliedEditTellsRoslynWhatChanged()
     {
         using var workspace = TempWorkspace.Create("tool-notify");
@@ -79,16 +79,17 @@ public class ToolBehaviourTests
 
         await EditTools.RenameSymbolAsync(context, "A", "B", cancellationToken: Cancellation);
 
-        var change = Assert.Single(engine.NotifiedChanges);
-        Assert.Equal(FileChangeType.Changed, change.Type);
-        Assert.Equal(WorkspacePathGuard.ToUri(file), change.Uri);
+        Assert.That(engine.NotifiedChanges, Has.Exactly(1).Items);
+        var change = engine.NotifiedChanges.Single();
+        Assert.That(change.Type, Is.EqualTo(FileChangeType.Changed));
+        Assert.That(change.Uri, Is.EqualTo(WorkspacePathGuard.ToUri(file)));
     }
 
     /// <summary>
     /// A preview writes nothing, and the apply that follows reuses the edit it was shown rather than
     /// resolving a second one against a file that may have moved on (D62).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task PreviewWritesNothingAndTheApplyThatFollowsReusesIt()
     {
         using var workspace = TempWorkspace.Create("tool-preview");
@@ -100,23 +101,23 @@ public class ToolBehaviourTests
 
         var preview = await EditTools.RenameSymbolAsync(context, "A", "B", preview: true, cancellationToken: Cancellation);
 
-        Assert.False(preview.Applied);
-        Assert.Equal(EditResult.PreviewNote, preview.Note);
-        Assert.Equal(1, preview.FilesChanged);
-        Assert.Contains("+class B;", preview.Diff, StringComparison.Ordinal);
-        Assert.Equal("class A;\n", File.ReadAllText(file));
-        Assert.Empty(engine.NotifiedChanges);
+        Assert.That(preview.Applied, Is.False);
+        Assert.That(preview.Note, Is.EqualTo(EditResult.PreviewNote));
+        Assert.That(preview.FilesChanged, Is.EqualTo(1));
+        Assert.That(preview.Diff, Contains.Substring("+class B;").Using(StringComparison.Ordinal));
+        Assert.That(File.ReadAllText(file), Is.EqualTo("class A;\n"));
+        Assert.That(engine.NotifiedChanges, Is.Empty);
 
         var applied = await EditTools.RenameSymbolAsync(context, "A", "B", cancellationToken: Cancellation);
 
-        Assert.True(applied.Applied);
-        Assert.Equal("class B;\n", File.ReadAllText(file));
+        Assert.That(applied.Applied, Is.True);
+        Assert.That(File.ReadAllText(file), Is.EqualTo("class B;\n"));
 
         // One rename request for two calls: the second one came out of the cache.
-        Assert.Single(engine.Calls, call => call == nameof(FakeRoslynEngine.RenameAsync));
+        Assert.That(engine.Calls, Has.Exactly(1).Matches<string>(call => call == nameof(FakeRoslynEngine.RenameAsync)));
     }
 
-    [Fact]
+    [Test]
     public async Task ANotRenamableSymbolIsRefusedWithAReason()
     {
         using var workspace = TempWorkspace.Create("tool-notrenamable");
@@ -129,15 +130,15 @@ public class ToolBehaviourTests
         var exception = await Assert.ThrowsAsync<McpException>(
             () => EditTools.RenameSymbolAsync(context, "A", "B", cancellationToken: Cancellation));
 
-        Assert.Contains("cannot rename", exception.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain(nameof(FakeRoslynEngine.RenameAsync), engine.Calls);
+        Assert.That(exception!.Message, Contains.Substring("cannot rename").Using(StringComparison.Ordinal));
+        Assert.That(engine.Calls, Does.Not.Contain(nameof(FakeRoslynEngine.RenameAsync)));
     }
 
     /// <summary>
     /// The fix-all path: the plain action's title and data with a case-sensitive scope, which is what
     /// C20 and S4b showed the server accepting.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ApplyCodeActionResolvesAFixAllWithTheRequestedScope()
     {
         using var workspace = TempWorkspace.Create("tool-fixall");
@@ -158,14 +159,14 @@ public class ToolBehaviourTests
             title: "Remove unnecessary usings",
             fixAllScope: "solution", cancellationToken: Cancellation);
 
-        Assert.True(result.Applied);
-        Assert.Equal(FixAllScope.Solution, engine.RequestedFixAllScope);
-        Assert.Equal("Remove unnecessary usings", engine.RequestedFixAllTitle);
-        Assert.Equal("class C;\n", File.ReadAllText(file));
+        Assert.That(result.Applied, Is.True);
+        Assert.That(engine.RequestedFixAllScope, Is.EqualTo(FixAllScope.Solution));
+        Assert.That(engine.RequestedFixAllTitle, Is.EqualTo("Remove unnecessary usings"));
+        Assert.That(File.ReadAllText(file), Is.EqualTo("class C;\n"));
     }
 
     /// <summary>Without a scope it is a plain resolve, and the fix-all method is never called.</summary>
-    [Fact]
+    [Test]
     public async Task ApplyCodeActionWithoutAScopeResolvesTheActionItself()
     {
         using var workspace = TempWorkspace.Create("tool-apply");
@@ -179,19 +180,20 @@ public class ToolBehaviourTests
             new WorkspaceEdit { DocumentChanges = [Change(file, 0, 0, 3, 0, string.Empty)] };
 
         var listed = await CodeActionTools.GetCodeActionsAsync(context, "Core/Calculator.cs", 2, 1, cancellationToken: Cancellation);
-        var id = Assert.Single(listed.Actions!).Id;
+        Assert.That(listed.Actions!, Has.Exactly(1).Items);
+        var id = listed.Actions!.Single().Id;
 
         var result = await CodeActionTools.ApplyCodeActionAsync(context, "Core/Calculator.cs", 2, 1, id, cancellationToken: Cancellation);
 
-        Assert.True(result.Applied);
-        Assert.Null(engine.RequestedFixAllScope);
-        Assert.Equal("class C;\n", File.ReadAllText(file));
+        Assert.That(result.Applied, Is.True);
+        Assert.That(engine.RequestedFixAllScope, Is.Null);
+        Assert.That(File.ReadAllText(file), Is.EqualTo("class C;\n"));
     }
 
     /// <summary>
     /// The error a model can act on: what it asked for is not there, and here is what is.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ApplyCodeActionListsTheCurrentOptionsWhenNothingMatches()
     {
         using var workspace = TempWorkspace.Create("tool-nomatch");
@@ -203,14 +205,14 @@ public class ToolBehaviourTests
         var exception = await Assert.ThrowsAsync<McpException>(
             () => CodeActionTools.ApplyCodeActionAsync(context, "Core/Calculator.cs", 1, 1, title: "Nope", cancellationToken: Cancellation));
 
-        Assert.Contains("Make static", exception.Message, StringComparison.Ordinal);
+        Assert.That(exception!.Message, Contains.Substring("Make static").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// C13: a file that is not open answers with nothing, so a file-scoped pull opens it with the
     /// bytes on disk — and closes it again, because it was not open before.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task FileScopedDiagnosticsOpenTheDocumentAndPutItBack()
     {
         using var workspace = TempWorkspace.Create("tool-file-diagnostics");
@@ -225,23 +227,24 @@ public class ToolBehaviourTests
 
         var result = await DiagnosticTools.GetDiagnosticsAsync(context, "file", "a.cs", cancellationToken: Cancellation);
 
-        Assert.Equal(ToolStatus.Ok, result.Status);
-        Assert.Equal("CS0029", Assert.Single(result.Diagnostics!).Id);
-        Assert.Equal(10, result.Diagnostics![0].Line);
-        Assert.Equal(17, result.Diagnostics[0].Column);
+        Assert.That(result.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(result.Diagnostics!, Has.Exactly(1).Items);
+        Assert.That(result.Diagnostics!.Single().Id, Is.EqualTo("CS0029"));
+        Assert.That(result.Diagnostics![0].Line, Is.EqualTo(10));
+        Assert.That(result.Diagnostics[0].Column, Is.EqualTo(17));
 
-        Assert.Contains(nameof(FakeRoslynEngine.OpenDocumentAsync), engine.Calls);
-        Assert.Contains(nameof(FakeRoslynEngine.CloseDocumentAsync), engine.Calls);
-        Assert.Empty(engine.OpenDocuments);
+        Assert.That(engine.Calls, Does.Contain(nameof(FakeRoslynEngine.OpenDocumentAsync)));
+        Assert.That(engine.Calls, Does.Contain(nameof(FakeRoslynEngine.CloseDocumentAsync)));
+        Assert.That(engine.OpenDocuments, Is.Empty);
 
-        Assert.Contains("not a build", result.Note, StringComparison.Ordinal);
+        Assert.That(result.Note, Contains.Substring("not a build").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// A document the LSP half has open has unsaved changes in Roslyn's mirror, and closing it would
     /// silently revert Roslyn's view to the bytes on disk.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAlreadyOpenDocumentIsLeftOpen()
     {
         using var workspace = TempWorkspace.Create("tool-open-document");
@@ -252,16 +255,16 @@ public class ToolBehaviourTests
 
         await DiagnosticTools.GetDiagnosticsAsync(context, "file", "a.cs", cancellationToken: Cancellation);
 
-        Assert.DoesNotContain(nameof(FakeRoslynEngine.OpenDocumentAsync), engine.Calls);
-        Assert.DoesNotContain(nameof(FakeRoslynEngine.CloseDocumentAsync), engine.Calls);
-        Assert.Single(engine.OpenDocuments);
+        Assert.That(engine.Calls, Does.Not.Contain(nameof(FakeRoslynEngine.OpenDocumentAsync)));
+        Assert.That(engine.Calls, Does.Not.Contain(nameof(FakeRoslynEngine.CloseDocumentAsync)));
+        Assert.That(engine.OpenDocuments, Has.Exactly(1).Items);
     }
 
     /// <summary>
     /// Analyzer diagnostics are opt-in, and the severity floor is a warning, so the default answer is
     /// "what stops this compiling" rather than "everything an IDE would underline".
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnalyzerDiagnosticsAndSubWarningSeveritiesAreFilteredOutByDefault()
     {
         using var workspace = TempWorkspace.Create("tool-filter");
@@ -282,26 +285,27 @@ public class ToolBehaviourTests
         };
 
         var byDefault = await DiagnosticTools.GetDiagnosticsAsync(context, "file", "a.cs", cancellationToken: Cancellation);
-        Assert.Equal(["CS0029", "CS0168"], byDefault.Diagnostics!.Select(item => item.Id));
+        Assert.That(byDefault.Diagnostics!.Select(item => item.Id), Is.EqualTo(["CS0029", "CS0168"]));
 
         var withAnalyzers = await DiagnosticTools.GetDiagnosticsAsync(
             context, "file", "a.cs", minSeverity: "hint", includeAnalyzers: true, cancellationToken: Cancellation);
 
         // Sorted by severity first, then by file and position: the two informational ones are on
         // lines 4 and 5 of the same file, so CS8019 comes before CA1822.
-        Assert.Equal(
-            ["CS0029", "CS0168", "CS8019", "CA1822", "IDE0005"],
-            withAnalyzers.Diagnostics!.Select(item => item.Id));
+        Assert.That(
+            withAnalyzers.Diagnostics!.Select(item => item.Id),
+            Is.EqualTo(["CS0029", "CS0168", "CS8019", "CA1822", "IDE0005"]));
 
         // An explicit id list is the caller being specific, and overrides the analyzer switch.
         var byId = await DiagnosticTools.GetDiagnosticsAsync(
             context, "file", "a.cs", minSeverity: "hint", ids: ["IDE0005"], cancellationToken: Cancellation);
 
-        Assert.Equal("IDE0005", Assert.Single(byId.Diagnostics!).Id);
+        Assert.That(byId.Diagnostics!, Has.Exactly(1).Items);
+        Assert.That(byId.Diagnostics!.Single().Id, Is.EqualTo("IDE0005"));
     }
 
     /// <summary>C16: the VS-private tags never reach a model, and the LSP ones do.</summary>
-    [Fact]
+    [Test]
     public async Task OnlySpecificationTagsAreForwarded()
     {
         using var workspace = TempWorkspace.Create("tool-tags");
@@ -322,14 +326,15 @@ public class ToolBehaviourTests
 
         var result = await DiagnosticTools.GetDiagnosticsAsync(context, "file", "a.cs", cancellationToken: Cancellation);
 
-        Assert.Equal(["unnecessary"], Assert.Single(result.Diagnostics!).Tags);
+        Assert.That(result.Diagnostics!, Has.Exactly(1).Items);
+        Assert.That(result.Diagnostics!.Single().Tags, Is.EqualTo(["unnecessary"]));
     }
 
     /// <summary>
     /// C14 and C15 together: the scope is raised for the call, and the answer's generated files,
     /// project files and per-target-framework duplicates are removed.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task SolutionScopeRaisesTheCompilerScopeAndCleansUpWhatComesBack()
     {
         using var workspace = TempWorkspace.Create("tool-solution-diagnostics");
@@ -354,17 +359,18 @@ public class ToolBehaviourTests
 
         var result = await DiagnosticTools.GetDiagnosticsAsync(context, "solution", cancellationToken: Cancellation);
 
-        Assert.Equal(CompilerDiagnosticsScope.FullSolution, engine.CompilerScope);
-        Assert.Equal("Core/Caller.cs", Assert.Single(result.Diagnostics!).Path);
-        Assert.Equal(1, result.TotalCount);
-        Assert.Contains("scope: \"file\"", result.Note, StringComparison.Ordinal);
+        Assert.That(engine.CompilerScope, Is.EqualTo(CompilerDiagnosticsScope.FullSolution));
+        Assert.That(result.Diagnostics!, Has.Exactly(1).Items);
+        Assert.That(result.Diagnostics!.Single().Path, Is.EqualTo("Core/Caller.cs"));
+        Assert.That(result.TotalCount, Is.EqualTo(1));
+        Assert.That(result.Note, Contains.Substring("scope: \"file\"").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// C24: a multi-targeted project answers once per target framework, and a reference list that
     /// reported each hit twice would make a model believe there is twice as much to change.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ReferencesAreDeDuplicatedAcrossTargetFrameworksAndCarryTheirSourceLine()
     {
         using var workspace = TempWorkspace.Create("tool-references");
@@ -380,19 +386,19 @@ public class ToolBehaviourTests
 
         var result = await SymbolTools.FindReferencesAsync(context, "Compute", cancellationToken: Cancellation);
 
-        Assert.Equal(2, result.TotalCount);
+        Assert.That(result.TotalCount, Is.EqualTo(2));
         var references = result.References!;
-        Assert.Equal(["App/Program.cs", "Core/Calculator.cs"], references.Select(item => item.Path));
-        Assert.Equal("new C().Compute();", references[0].LineText);
-        Assert.Equal("int Compute() => 1;", references[1].LineText);
-        Assert.Equal(2, result.ByFile!.Count);
+        Assert.That(references.Select(item => item.Path), Is.EqualTo(["App/Program.cs", "Core/Calculator.cs"]));
+        Assert.That(references[0].LineText, Is.EqualTo("new C().Compute();"));
+        Assert.That(references[1].LineText, Is.EqualTo("int Compute() => 1;"));
+        Assert.That(result.ByFile!.Count, Is.EqualTo(2));
     }
 
     /// <summary>
     /// A name that matches several symbols is reported as a list rather than resolved to whichever
     /// one came first — picking one would rename the wrong member with total confidence.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAmbiguousNameIsRefusedWithItsCandidates()
     {
         using var workspace = TempWorkspace.Create("tool-ambiguous");
@@ -406,16 +412,16 @@ public class ToolBehaviourTests
         var exception = await Assert.ThrowsAsync<McpException>(
             () => EditTools.RenameSymbolAsync(context, "Run", "Execute", cancellationToken: Cancellation));
 
-        Assert.Contains("Core/A.cs", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("Core/B.cs", exception.Message, StringComparison.Ordinal);
+        Assert.That(exception!.Message, Contains.Substring("Core/A.cs").Using(StringComparison.Ordinal));
+        Assert.That(exception.Message, Contains.Substring("Core/B.cs").Using(StringComparison.Ordinal));
 
         // resolveSymbol itself reports them instead of failing: listing the candidates is its job.
         var resolved = await SymbolTools.ResolveSymbolAsync(context, "Run", cancellationToken: Cancellation);
-        Assert.Equal(2, resolved.TotalCount);
+        Assert.That(resolved.TotalCount, Is.EqualTo(2));
     }
 
     /// <summary>A longer name narrows it down, which is the whole point of segment-suffix matching.</summary>
-    [Fact]
+    [Test]
     public async Task AQualifiedNamePicksOneOfTheCandidates()
     {
         using var workspace = TempWorkspace.Create("tool-qualified");
@@ -428,16 +434,17 @@ public class ToolBehaviourTests
 
         var resolved = await SymbolTools.ResolveSymbolAsync(context, "B.Run", cancellationToken: Cancellation);
 
-        Assert.Equal("Core/B.cs", Assert.Single(resolved.Matches!).Path);
-        Assert.Equal("B.Run", resolved.Matches![0].FullName);
-        Assert.Equal("method", resolved.Matches[0].Kind);
+        Assert.That(resolved.Matches!, Has.Exactly(1).Items);
+        Assert.That(resolved.Matches!.Single().Path, Is.EqualTo("Core/B.cs"));
+        Assert.That(resolved.Matches![0].FullName, Is.EqualTo("B.Run"));
+        Assert.That(resolved.Matches[0].Kind, Is.EqualTo("method"));
     }
 
     /// <summary>
     /// The gate (D66). Nothing is asked of Roslyn, the answer says what is happening, and the call
     /// returns rather than hanging for two minutes.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task EveryToolAnswersWithALoadingStatusRatherThanHanging()
     {
         using var workspace = TempWorkspace.Create("tool-loading");
@@ -446,32 +453,52 @@ public class ToolBehaviourTests
         var (context, engine) = ToolTestHost.CreateContext(workspace);
         engine.State = new WorkspaceState(WorkspaceLoadStatus.Loading, ProjectsLoaded: 1, ProjectsTotal: 4);
 
-        Assert.Equal(ToolStatus.Loading, (await WorkspaceTools.GetWorkspaceStatusAsync(context, cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await SymbolTools.ResolveSymbolAsync(context, "A", cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await SymbolTools.GetTypeMembersAsync(context, "A", cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await SymbolTools.FindReferencesAsync(context, "A", cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await DiagnosticTools.GetDiagnosticsAsync(context, "file", "a.cs", cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await CodeActionTools.GetCodeActionsAsync(context, "a.cs", 1, 1, cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await CodeActionTools.ApplyCodeActionAsync(context, "a.cs", 1, 1, "x", cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await CodeActionTools.FixDiagnosticsAsync(context, "IDE0005", cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await EditTools.RenameSymbolAsync(context, "A", "B", cancellationToken: Cancellation)).Status);
-        Assert.Equal(ToolStatus.Loading, (await EditTools.FormatCodeAsync(context, ["a.cs"], cancellationToken: Cancellation)).Status);
+        Assert.That(
+            (await WorkspaceTools.GetWorkspaceStatusAsync(context, cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await SymbolTools.ResolveSymbolAsync(context, "A", cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await SymbolTools.GetTypeMembersAsync(context, "A", cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await SymbolTools.FindReferencesAsync(context, "A", cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await DiagnosticTools.GetDiagnosticsAsync(context, "file", "a.cs", cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await CodeActionTools.GetCodeActionsAsync(context, "a.cs", 1, 1, cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await CodeActionTools.ApplyCodeActionAsync(context, "a.cs", 1, 1, "x", cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await CodeActionTools.FixDiagnosticsAsync(context, "IDE0005", cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await EditTools.RenameSymbolAsync(context, "A", "B", cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
+        Assert.That(
+            (await EditTools.FormatCodeAsync(context, ["a.cs"], cancellationToken: Cancellation)).Status,
+            Is.EqualTo(ToolStatus.Loading));
 
         // The gate is the only thing that was called: nothing was asked of a workspace that cannot
         // answer, and nothing was written.
-        Assert.All(engine.Calls, call => Assert.Equal(nameof(FakeRoslynEngine.EnsureReadyAsync), call));
+        Assert.That(engine.Calls, Has.All.EqualTo(nameof(FakeRoslynEngine.EnsureReadyAsync)));
 
         var status = await WorkspaceTools.GetWorkspaceStatusAsync(context, cancellationToken: Cancellation);
-        Assert.Equal(1, status.ProjectsLoaded);
-        Assert.Equal(4, status.ProjectsTotal);
-        Assert.Contains("still loading", status.Note, StringComparison.Ordinal);
+        Assert.That(status.ProjectsLoaded, Is.EqualTo(1));
+        Assert.That(status.ProjectsTotal, Is.EqualTo(4));
+        Assert.That(status.Note, Contains.Substring("still loading").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// The not-wired default (D69): the handshake and <c>tools/list</c> work, and every call says
     /// exactly what is missing rather than failing generically.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task TheNotWiredEngineFailsWithOneClearSentence()
     {
         using var workspace = TempWorkspace.Create("tool-not-wired");
@@ -485,24 +512,24 @@ public class ToolBehaviourTests
             new EditCache());
 
         var status = await WorkspaceTools.GetWorkspaceStatusAsync(context, cancellationToken: Cancellation);
-        Assert.Equal(ToolStatus.Failed, status.Status);
-        Assert.Contains("not wired", status.Note, StringComparison.Ordinal);
+        Assert.That(status.Status, Is.EqualTo(ToolStatus.Failed));
+        Assert.That(status.Note, Contains.Substring("not wired").Using(StringComparison.Ordinal));
 
         var resolved = await SymbolTools.ResolveSymbolAsync(context, "A", cancellationToken: Cancellation);
-        Assert.Equal(ToolStatus.Failed, resolved.Status);
-        Assert.Contains("doctor", resolved.Note, StringComparison.Ordinal);
+        Assert.That(resolved.Status, Is.EqualTo(ToolStatus.Failed));
+        Assert.That(resolved.Note, Contains.Substring("doctor").Using(StringComparison.Ordinal));
 
         var exception = await Assert.ThrowsAsync<McpException>(
             () => new NotWiredRoslynEngine().WorkspaceSymbolAsync("A", CancellationToken.None));
 
-        Assert.Equal(NotWiredRoslynEngine.Message, exception.Message);
+        Assert.That(exception!.Message, Is.EqualTo(NotWiredRoslynEngine.Message));
     }
 
     /// <summary>
     /// Formatting is a configuration pull, not a request parameter: the setting is pushed before the
     /// request, because Roslyn reads it when it formats and never takes it as an argument.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task FormatCodeSetsTheOrganizeImportsSettingAndWritesTheResult()
     {
         using var workspace = TempWorkspace.Create("tool-format");
@@ -525,16 +552,16 @@ public class ToolBehaviourTests
 
         var result = await EditTools.FormatCodeAsync(context, ["a.cs"], organizeUsings: true, cancellationToken: Cancellation);
 
-        Assert.True(result.Applied);
-        Assert.True(engine.OrganizeImportsOnFormat);
-        Assert.Equal("class A;\n", File.ReadAllText(file));
+        Assert.That(result.Applied, Is.True);
+        Assert.That(engine.OrganizeImportsOnFormat, Is.True);
+        Assert.That(File.ReadAllText(file), Is.EqualTo("class A;\n"));
     }
 
     /// <summary>
     /// Formatting a file that is already formatted must report "nothing to do" rather than claiming
     /// an empty change, because a caller reads <c>applied</c> to decide whether to re-read the file.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task FormattingAnAlreadyFormattedFileChangesNothing()
     {
         using var workspace = TempWorkspace.Create("tool-format-clean");
@@ -544,15 +571,15 @@ public class ToolBehaviourTests
 
         var result = await EditTools.FormatCodeAsync(context, ["a.cs"], cancellationToken: Cancellation);
 
-        Assert.False(result.Applied);
-        Assert.Equal(EditResult.NothingToDoNote, result.Note);
+        Assert.That(result.Applied, Is.False);
+        Assert.That(result.Note, Is.EqualTo(EditResult.NothingToDoNote));
     }
 
     /// <summary>
     /// <c>fixDiagnostics</c> finds a site of the diagnostic itself, so a caller does not have to pull
     /// diagnostics and pick one before asking for the fix.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task FixDiagnosticsFindsASiteAndAppliesTheFixAllAtTheRequestedScope()
     {
         using var workspace = TempWorkspace.Create("tool-fixdiagnostics");
@@ -571,12 +598,12 @@ public class ToolBehaviourTests
 
         var result = await CodeActionTools.FixDiagnosticsAsync(context, "IDE0005", "file", "Core/Calculator.cs", cancellationToken: Cancellation);
 
-        Assert.True(result.Applied);
-        Assert.Equal(FixAllScope.Document, engine.RequestedFixAllScope);
-        Assert.Equal("class C;\n", File.ReadAllText(file));
+        Assert.That(result.Applied, Is.True);
+        Assert.That(engine.RequestedFixAllScope, Is.EqualTo(FixAllScope.Document));
+        Assert.That(File.ReadAllText(file), Is.EqualTo("class C;\n"));
     }
 
-    [Fact]
+    [Test]
     public async Task FixDiagnosticsSaysSoWhenTheDiagnosticIsNotThere()
     {
         using var workspace = TempWorkspace.Create("tool-fixdiagnostics-none");
@@ -587,11 +614,11 @@ public class ToolBehaviourTests
         var exception = await Assert.ThrowsAsync<McpException>(
             () => CodeActionTools.FixDiagnosticsAsync(context, "IDE0005", "file", "a.cs", cancellationToken: Cancellation));
 
-        Assert.Contains("IDE0005", exception.Message, StringComparison.Ordinal);
+        Assert.That(exception!.Message, Contains.Substring("IDE0005").Using(StringComparison.Ordinal));
     }
 
     /// <summary>The workspace status carries what a report about a slow machine actually needs.</summary>
-    [Fact]
+    [Test]
     public async Task WorkspaceStatusReportsTheSolutionTheVersionAndTheMemory()
     {
         using var workspace = TempWorkspace.Create("tool-status");
@@ -616,24 +643,25 @@ public class ToolBehaviourTests
 
         var result = await WorkspaceTools.GetWorkspaceStatusAsync(context, cancellationToken: Cancellation);
 
-        Assert.Equal(ToolStatus.Ok, result.Status);
-        Assert.Equal("Fixture.slnx", result.Solution);
-        Assert.Equal("Core/Core.csproj", Assert.Single(result.Projects!).Path);
-        Assert.Equal(["net10.0", "netstandard2.0"], result.Projects![0].TargetFrameworks);
-        Assert.Equal("5.12.0-1.26426.8", result.RoslynVersion);
-        Assert.Equal(4242, result.ProcessId);
-        Assert.Equal(253, result.MemoryMegabytes);
-        Assert.Equal(611, result.PrivateMegabytes);
-        Assert.Equal(2, result.Recycles);
-        Assert.Equal(400, result.BaselineMegabytes);
-        Assert.Equal("2026-10-19T12:30:00.0000000+00:00", result.LastRecycleAt);
+        Assert.That(result.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(result.Solution, Is.EqualTo("Fixture.slnx"));
+        Assert.That(result.Projects!, Has.Exactly(1).Items);
+        Assert.That(result.Projects!.Single().Path, Is.EqualTo("Core/Core.csproj"));
+        Assert.That(result.Projects![0].TargetFrameworks, Is.EqualTo(["net10.0", "netstandard2.0"]));
+        Assert.That(result.RoslynVersion, Is.EqualTo("5.12.0-1.26426.8"));
+        Assert.That(result.ProcessId, Is.EqualTo(4242));
+        Assert.That(result.MemoryMegabytes, Is.EqualTo(253));
+        Assert.That(result.PrivateMegabytes, Is.EqualTo(611));
+        Assert.That(result.Recycles, Is.EqualTo(2));
+        Assert.That(result.BaselineMegabytes, Is.EqualTo(400));
+        Assert.That(result.LastRecycleAt, Is.EqualTo("2026-10-19T12:30:00.0000000+00:00"));
     }
 
     /// <summary>
     /// The path guard from the tool side: a model asking about a file outside the workspace gets a
     /// refusal that names the root, not a stack trace.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task APathOutsideTheWorkspaceIsRefused()
     {
         using var workspace = TempWorkspace.Create("tool-escape");
@@ -642,7 +670,7 @@ public class ToolBehaviourTests
         var exception = await Assert.ThrowsAsync<McpException>(
             () => DiagnosticTools.GetDiagnosticsAsync(context, "file", "../../elsewhere.cs", cancellationToken: Cancellation));
 
-        Assert.Contains("outside the workspace root", exception.Message, StringComparison.Ordinal);
+        Assert.That(exception!.Message, Contains.Substring("outside the workspace root").Using(StringComparison.Ordinal));
     }
 
     private static void Declare(

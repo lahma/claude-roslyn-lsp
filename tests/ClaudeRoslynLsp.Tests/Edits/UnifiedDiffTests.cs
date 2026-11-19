@@ -1,7 +1,7 @@
 using ClaudeRoslynLsp.Edits;
 using ClaudeRoslynLsp.Mcp.Engine;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Edits;
 
@@ -11,7 +11,7 @@ namespace ClaudeRoslynLsp.Tests.Edits;
 /// </summary>
 public class UnifiedDiffTests
 {
-    [Fact]
+    [Test]
     public void AOneLineChangeRendersAsOneHunkWithContext()
     {
         using var workspace = TempWorkspace.Create("diff-one");
@@ -19,19 +19,19 @@ public class UnifiedDiffTests
 
         var diff = UnifiedDiff.Render(plan);
 
-        Assert.Contains("--- a/a.cs", diff, StringComparison.Ordinal);
-        Assert.Contains("+++ b/a.cs", diff, StringComparison.Ordinal);
-        Assert.Contains("-two", diff, StringComparison.Ordinal);
-        Assert.Contains("+TWO", diff, StringComparison.Ordinal);
-        Assert.Contains(" one", diff, StringComparison.Ordinal);
-        Assert.Contains("@@ ", diff, StringComparison.Ordinal);
+        Assert.That(diff, Contains.Substring("--- a/a.cs").Using(StringComparison.Ordinal));
+        Assert.That(diff, Contains.Substring("+++ b/a.cs").Using(StringComparison.Ordinal));
+        Assert.That(diff, Contains.Substring("-two").Using(StringComparison.Ordinal));
+        Assert.That(diff, Contains.Substring("+TWO").Using(StringComparison.Ordinal));
+        Assert.That(diff, Contains.Substring(" one").Using(StringComparison.Ordinal));
+        Assert.That(diff, Contains.Substring("@@ ").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// Unchanged lines far from the change must not be printed, or a one-word rename in a large file
     /// costs the whole file.
     /// </summary>
-    [Fact]
+    [Test]
     public void UnchangedLinesOutsideTheContextWindowAreNotPrinted()
     {
         using var workspace = TempWorkspace.Create("diff-context");
@@ -41,13 +41,13 @@ public class UnifiedDiffTests
 
         var diff = UnifiedDiff.Render(plan);
 
-        Assert.Contains("+CHANGED", diff, StringComparison.Ordinal);
-        Assert.DoesNotContain("line1\n", diff, StringComparison.Ordinal);
-        Assert.True(diff.Split('\n').Length < 15, diff);
+        Assert.That(diff, Contains.Substring("+CHANGED").Using(StringComparison.Ordinal));
+        Assert.That(diff, !Contains.Substring("line1\n").Using(StringComparison.Ordinal));
+        Assert.That(diff.Split('\n').Length < 15, Is.True, diff);
     }
 
     /// <summary>The budget is enforced and the shortfall is named, not swallowed.</summary>
-    [Fact]
+    [Test]
     public void ThePerFileBudgetTruncatesAndSaysHowManyHunksAreLeft()
     {
         using var workspace = TempWorkspace.Create("diff-budget");
@@ -77,12 +77,12 @@ public class UnifiedDiffTests
 
         var diff = UnifiedDiff.Render(plan, maxDiffLines: 30);
 
-        Assert.Contains("more hunks", diff, StringComparison.Ordinal);
-        Assert.True(diff.Split('\n').Length <= 34, diff);
+        Assert.That(diff, Contains.Substring("more hunks").Using(StringComparison.Ordinal));
+        Assert.That(diff.Split('\n').Length <= 34, Is.True, diff);
     }
 
     /// <summary>A created file diffs against nothing, which is what <c>/dev/null</c> means.</summary>
-    [Fact]
+    [Test]
     public void ACreatedFileDiffsAgainstDevNull()
     {
         using var workspace = TempWorkspace.Create("diff-create");
@@ -115,14 +115,14 @@ public class UnifiedDiffTests
 
         var diff = UnifiedDiff.Render(plan);
 
-        Assert.Contains("--- /dev/null", diff, StringComparison.Ordinal);
-        Assert.Contains("+++ b/New.cs", diff, StringComparison.Ordinal);
-        Assert.Contains("+class New;", diff, StringComparison.Ordinal);
+        Assert.That(diff, Contains.Substring("--- /dev/null").Using(StringComparison.Ordinal));
+        Assert.That(diff, Contains.Substring("+++ b/New.cs").Using(StringComparison.Ordinal));
+        Assert.That(diff, Contains.Substring("+class New;").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void AnEmptyPlanRendersNothing() =>
-        Assert.Empty(UnifiedDiff.Render(new WorkspaceEditPlan([])));
+        Assert.That(UnifiedDiff.Render(new WorkspaceEditPlan([])), Is.Empty);
 
     private static WorkspaceEditPlan Plan(TempWorkspace workspace, string original, int oneBasedLine, string newText)
     {

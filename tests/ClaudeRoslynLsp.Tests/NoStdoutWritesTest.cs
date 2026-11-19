@@ -1,6 +1,6 @@
 using System.Text;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests;
 
@@ -58,14 +58,14 @@ public class NoStdoutWritesTest
         "Console.SetError",
     ];
 
-    [Fact]
+    [Test]
     public void OnlyTheCliWritesToTheConsole()
     {
         var root = FindRepositoryRoot();
         var sourceFiles = EnumerateProductionSources(root).ToList();
 
         // Self-check: a broken root lookup must fail loudly rather than scan nothing.
-        Assert.True(sourceFiles.Count > 8, $"Expected to scan the whole product; found {sourceFiles.Count} files.");
+        Assert.That(sourceFiles.Count > 8, Is.True, $"Expected to scan the whole product; found {sourceFiles.Count} files.");
 
         var offenders = new List<string>();
         var cliUsages = 0;
@@ -88,14 +88,14 @@ public class NoStdoutWritesTest
             offenders.Add(relativePath);
         }
 
-        Assert.True(
-            offenders.Count == 0,
+        Assert.That(
+            offenders.Count == 0, Is.True,
             "stdout is the protocol channel in both server modes; only " + AllowedDirectory + " may use the console. Offending files: "
             + string.Join(", ", offenders));
 
         // Self-check: the CLI does write to the console, so a detector that matches nothing is
         // broken rather than reassuring.
-        Assert.True(cliUsages > 0, "The scan found no console usage even in " + AllowedDirectory + ".");
+        Assert.That(cliUsages > 0, Is.True, "The scan found no console usage even in " + AllowedDirectory + ".");
     }
 
     private static DirectoryInfo FindRepositoryRoot()

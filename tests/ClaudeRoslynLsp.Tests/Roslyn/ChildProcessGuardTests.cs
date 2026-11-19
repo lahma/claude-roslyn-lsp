@@ -4,7 +4,7 @@ using ClaudeRoslynLsp.Roslyn;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Roslyn;
 
@@ -21,15 +21,15 @@ namespace ClaudeRoslynLsp.Tests.Roslyn;
 /// </remarks>
 public class ChildProcessGuardTests
 {
-    [Fact]
+    [Test]
     public void TheGuardIsOnlyActiveOnWindows()
     {
         using var guard = ChildProcessGuard.Create(NullLogger.Instance);
 
-        Assert.Equal(OperatingSystem.IsWindows(), guard.IsActive);
+        Assert.That(guard.IsActive, Is.EqualTo(OperatingSystem.IsWindows()));
     }
 
-    [Fact]
+    [Test]
     public void DisposingTwiceIsHarmless()
     {
         var guard = ChildProcessGuard.Create(NullLogger.Instance);
@@ -38,12 +38,12 @@ public class ChildProcessGuardTests
         guard.Dispose();
     }
 
-    [Fact]
+    [Test]
     public void AChildOutsideTheGuardOutlivesIt()
     {
         if (!OperatingSystem.IsWindows())
         {
-            Assert.Skip("The job object exists only on Windows; elsewhere Roslyn's own processId watchdog covers this.");
+            Assert.Ignore("The job object exists only on Windows; elsewhere Roslyn's own processId watchdog covers this.");
         }
 
         using var process = StartLongLivedChild();
@@ -57,7 +57,7 @@ public class ChildProcessGuardTests
 
             // The control case for the test below: nothing about creating and closing a job object
             // kills a process that was never in it.
-            Assert.False(process.WaitForExit(TimeSpan.FromSeconds(2)));
+            Assert.That(process.WaitForExit(TimeSpan.FromSeconds(2)), Is.False);
         }
         finally
         {
@@ -65,12 +65,12 @@ public class ChildProcessGuardTests
         }
     }
 
-    [Fact]
+    [Test]
     public void AChildInTheGuardDiesWhenTheGuardIsDisposed()
     {
         if (!OperatingSystem.IsWindows())
         {
-            Assert.Skip("The job object exists only on Windows; elsewhere Roslyn's own processId watchdog covers this.");
+            Assert.Ignore("The job object exists only on Windows; elsewhere Roslyn's own processId watchdog covers this.");
         }
 
         using var process = StartLongLivedChild();
@@ -78,13 +78,13 @@ public class ChildProcessGuardTests
         try
         {
             var guard = ChildProcessGuard.Create(NullLogger.Instance);
-            Assert.True(guard.IsActive);
+            Assert.That(guard.IsActive, Is.True);
 
             guard.Add(process, NullLogger.Instance);
             guard.Dispose();
 
-            Assert.True(
-                process.WaitForExit(TimeSpan.FromSeconds(10)),
+            Assert.That(
+                process.WaitForExit(TimeSpan.FromSeconds(10)), Is.True,
                 "The child survived the job object being closed, so KILL_ON_JOB_CLOSE did not take effect.");
         }
         finally
@@ -97,7 +97,7 @@ public class ChildProcessGuardTests
     /// A process that has already exited is nothing to guard, and saying so must not throw: the real
     /// launcher hits this whenever Roslyn fails to start.
     /// </summary>
-    [Fact]
+    [Test]
     public void AddingAnExitedProcessIsHarmless()
     {
         using var guard = ChildProcessGuard.Create(NullLogger.Instance);
@@ -126,7 +126,7 @@ public class ChildProcessGuardTests
         startInfo.RedirectStandardError = true;
 
         var process = Process.Start(startInfo);
-        Assert.NotNull(process);
+        Assert.That(process, Is.Not.Null);
 
         return process!;
     }

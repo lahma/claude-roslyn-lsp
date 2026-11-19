@@ -1,6 +1,6 @@
 using ClaudeRoslynLsp.Cli;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests;
 
@@ -16,16 +16,16 @@ namespace ClaudeRoslynLsp.Tests;
 /// </remarks>
 public class SmokeTests
 {
-    [Fact]
+    [Test]
     public async Task HelpSucceedsAndDescribesEveryVerb()
     {
         var exitCode = await CliDispatcher.RunAsync(["--help"]);
 
-        Assert.Equal(CliDispatcher.ExitSuccess, exitCode);
-        Assert.Contains("lsp", CliDispatcher.UsageText, StringComparison.Ordinal);
-        Assert.Contains("mcp", CliDispatcher.UsageText, StringComparison.Ordinal);
-        Assert.Contains("doctor", CliDispatcher.UsageText, StringComparison.Ordinal);
-        Assert.Contains("--version", CliDispatcher.UsageText, StringComparison.Ordinal);
+        Assert.That(exitCode, Is.EqualTo(CliDispatcher.ExitSuccess));
+        Assert.That(CliDispatcher.UsageText, Contains.Substring("lsp").Using(StringComparison.Ordinal));
+        Assert.That(CliDispatcher.UsageText, Contains.Substring("mcp").Using(StringComparison.Ordinal));
+        Assert.That(CliDispatcher.UsageText, Contains.Substring("doctor").Using(StringComparison.Ordinal));
+        Assert.That(CliDispatcher.UsageText, Contains.Substring("--version").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -33,48 +33,47 @@ public class SmokeTests
     /// to type, so it stays out of the usage text. Asserted rather than assumed: a "helpful" edit
     /// that documents it would invite somebody to run it.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheHiddenVerbIsNotAdvertised()
     {
-        Assert.DoesNotContain("fake-roslyn", CliDispatcher.UsageText, StringComparison.Ordinal);
+        Assert.That(CliDispatcher.UsageText, !Contains.Substring("fake-roslyn").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public async Task VersionSucceeds()
     {
-        Assert.Equal(CliDispatcher.ExitSuccess, await CliDispatcher.RunAsync(["--version"]));
-        Assert.Equal(CliDispatcher.ExitSuccess, await CliDispatcher.RunAsync(["-v"]));
+        Assert.That(await CliDispatcher.RunAsync(["--version"]), Is.EqualTo(CliDispatcher.ExitSuccess));
+        Assert.That(await CliDispatcher.RunAsync(["-v"]), Is.EqualTo(CliDispatcher.ExitSuccess));
     }
 
-    [Fact]
+    [Test]
     public async Task NoArgumentsIsAUsageError()
     {
-        Assert.Equal(CliDispatcher.ExitUsage, await CliDispatcher.RunAsync([]));
+        Assert.That(await CliDispatcher.RunAsync([]), Is.EqualTo(CliDispatcher.ExitUsage));
     }
 
-    [Fact]
+    [Test]
     public async Task UnknownArgumentExitsWithUsageCode()
     {
-        Assert.Equal(CliDispatcher.ExitUsage, await CliDispatcher.RunAsync(["not-a-command"]));
+        Assert.That(await CliDispatcher.RunAsync(["not-a-command"]), Is.EqualTo(CliDispatcher.ExitUsage));
     }
 
     /// <summary>
     /// Both acquisition verbs are dispatched, and an option neither of them knows is a usage error
     /// rather than a silently ignored word.
     /// </summary>
-    [Theory]
-    [InlineData("doctor")]
-    [InlineData("install")]
+    [TestCase("doctor")]
+    [TestCase("install")]
     public async Task TheAcquisitionVerbsRejectAnUnknownOption(string verb)
     {
-        Assert.Equal(CliDispatcher.ExitUsage, await CliDispatcher.RunAsync([verb, "--wat"]));
+        Assert.That(await CliDispatcher.RunAsync([verb, "--wat"]), Is.EqualTo(CliDispatcher.ExitUsage));
     }
 
-    [Fact]
+    [Test]
     public void TheUsageTextDocumentsTheInstallVerb()
     {
-        Assert.Contains("install", CliDispatcher.UsageText, StringComparison.Ordinal);
-        Assert.Contains("--json", CliDispatcher.UsageText, StringComparison.Ordinal);
+        Assert.That(CliDispatcher.UsageText, Contains.Substring("install").Using(StringComparison.Ordinal));
+        Assert.That(CliDispatcher.UsageText, Contains.Substring("--json").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -82,9 +81,9 @@ public class SmokeTests
     /// caller has to fix rather than a request to serve. Accepting an unknown argument silently would
     /// connect a client to a server that then ignored what it was launched with.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnUnknownArgumentAfterTheLspVerbIsAUsageError()
     {
-        Assert.Equal(CliDispatcher.ExitUsage, await CliDispatcher.RunAsync(["lsp", "--not-a-flag"]));
+        Assert.That(await CliDispatcher.RunAsync(["lsp", "--not-a-flag"]), Is.EqualTo(CliDispatcher.ExitUsage));
     }
 }

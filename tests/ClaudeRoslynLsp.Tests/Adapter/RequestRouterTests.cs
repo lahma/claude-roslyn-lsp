@@ -1,6 +1,6 @@
 using ClaudeRoslynLsp.Adapter;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -15,28 +15,27 @@ public class RequestRouterTests
     /// Forwarding <c>initialize</c> would make the client's startup wait on Roslyn's, and Claude
     /// Code holds an unanswered <c>initialize</c> open indefinitely.
     /// </summary>
-    [Theory]
-    [InlineData("initialize", true)]
-    [InlineData("shutdown", true)]
-    [InlineData("initialized", false)]
-    [InlineData("exit", false)]
+    [TestCase("initialize", true)]
+    [TestCase("shutdown", true)]
+    [TestCase("initialized", false)]
+    [TestCase("exit", false)]
     public void TheHandshakeAndTheLifecycleAreAnsweredHere(string method, bool isRequest)
     {
-        Assert.Equal(ClientRoute.AnswerLocally, RequestRouter.Route(method, isRequest));
+        Assert.That(RequestRouter.Route(method, isRequest), Is.EqualTo(ClientRoute.AnswerLocally));
     }
 
     /// <summary>
     /// Every method the gate exists for routes to it. The enumeration and the routing rule agree
     /// here, which is what keeps the list from drifting into documentation nobody checks.
     /// </summary>
-    [Fact]
+    [Test]
     public void EveryGatedMethodIsActuallyGated()
     {
-        Assert.NotEmpty(RequestRouter.GatedMethods);
+        Assert.That(RequestRouter.GatedMethods, Is.Not.Empty);
 
         foreach (var method in RequestRouter.GatedMethods)
         {
-            Assert.Equal(ClientRoute.Gated, RequestRouter.Route(method, isRequest: true));
+            Assert.That(RequestRouter.Route(method, isRequest: true), Is.EqualTo(ClientRoute.Gated));
         }
     }
 
@@ -46,57 +45,54 @@ public class RequestRouterTests
     /// better served by a late answer than by -32601 from a process whose job is to carry the
     /// question elsewhere.
     /// </summary>
-    [Theory]
-    [InlineData("textDocument/_vs_onAutoInsert")]
-    [InlineData("textDocument/inlineValue")]
-    [InlineData("something/nobodyHasHeardOf")]
+    [TestCase("textDocument/_vs_onAutoInsert")]
+    [TestCase("textDocument/inlineValue")]
+    [TestCase("something/nobodyHasHeardOf")]
     public void AnUnknownRequestIsHeldRatherThanRefused(string method)
     {
-        Assert.Equal(ClientRoute.Gated, RequestRouter.Route(method, isRequest: true));
+        Assert.That(RequestRouter.Route(method, isRequest: true), Is.EqualTo(ClientRoute.Gated));
     }
 
     /// <summary>
     /// The default for an unknown <em>notification</em> is to forward it. A notification cannot be
     /// answered, so holding one would only be a way to lose it.
     /// </summary>
-    [Fact]
+    [Test]
     public void AnUnknownNotificationIsForwarded()
     {
-        Assert.Equal(ClientRoute.Forward, RequestRouter.Route("$/somethingNew", isRequest: false));
+        Assert.That(RequestRouter.Route("$/somethingNew", isRequest: false), Is.EqualTo(ClientRoute.Forward));
     }
 
-    [Theory]
-    [InlineData("textDocument/didOpen")]
-    [InlineData("textDocument/didChange")]
-    [InlineData("textDocument/didSave")]
-    [InlineData("textDocument/didClose")]
+    [TestCase("textDocument/didOpen")]
+    [TestCase("textDocument/didChange")]
+    [TestCase("textDocument/didSave")]
+    [TestCase("textDocument/didClose")]
     public void TheDocumentLifecycleGoesThroughTheMirror(string method)
     {
-        Assert.Equal(ClientRoute.Document, RequestRouter.Route(method, isRequest: false));
+        Assert.That(RequestRouter.Route(method, isRequest: false), Is.EqualTo(ClientRoute.Document));
     }
 
-    [Fact]
+    [Test]
     public void CancellationHasItsOwnRoute()
     {
-        Assert.Equal(ClientRoute.Cancel, RequestRouter.Route("$/cancelRequest", isRequest: false));
+        Assert.That(RequestRouter.Route("$/cancelRequest", isRequest: false), Is.EqualTo(ClientRoute.Cancel));
     }
 
     /// <summary>
     /// Roslyn does not implement <c>$/setTrace</c>, so forwarding it would put a -32601 in somebody's
     /// log every time a client turned tracing on.
     /// </summary>
-    [Fact]
+    [Test]
     public void TraceControlIsConsumedHere()
     {
-        Assert.Equal(ClientRoute.Drop, RequestRouter.Route("$/setTrace", isRequest: false));
+        Assert.That(RequestRouter.Route("$/setTrace", isRequest: false), Is.EqualTo(ClientRoute.Drop));
     }
 
-    [Theory]
-    [InlineData("workspace/didChangeConfiguration")]
-    [InlineData("workspace/didChangeWatchedFiles")]
-    [InlineData("workspace/didChangeWorkspaceFolders")]
+    [TestCase("workspace/didChangeConfiguration")]
+    [TestCase("workspace/didChangeWatchedFiles")]
+    [TestCase("workspace/didChangeWorkspaceFolders")]
     public void WorkspaceNotificationsCrossAsSoonAsRoslynCanTakeThem(string method)
     {
-        Assert.Equal(ClientRoute.Forward, RequestRouter.Route(method, isRequest: false));
+        Assert.That(RequestRouter.Route(method, isRequest: false), Is.EqualTo(ClientRoute.Forward));
     }
 }

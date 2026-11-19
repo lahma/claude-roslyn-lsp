@@ -7,7 +7,7 @@ using ClaudeRoslynLsp.Tests.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Mcp;
 
@@ -25,14 +25,14 @@ public class OwnedRoslynEngineRecycleTests
     private const int RoslynProcessId = 4242;
     private const long Megabyte = 1024 * 1024;
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>
     /// Idle and grown, the backend is stopped; the next tool call — any tool's, since they all start
     /// with <see cref="OwnedRoslynEngine.EnsureReadyAsync"/> — relaunches it and reports why it is
     /// loading, and the recycle shows up in the status.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task TheNextToolCallRelaunchesARecycledBackendAndTheStatusSaysSo()
     {
         await using var harness = await EngineHarness.StartAsync();
@@ -42,10 +42,10 @@ public class OwnedRoslynEngineRecycleTests
 
         var first = harness.Factory.Latest!;
 
-        Assert.Contains("shutdown", first.ReceivedMethods);
-        Assert.Contains("exit", first.ReceivedMethods);
-        Assert.Equal(1, harness.Factory.ConnectCount);
-        Assert.Equal(ReadinessState.Dormant, harness.Engine.Gate.State);
+        Assert.That(first.ReceivedMethods, Does.Contain("shutdown"));
+        Assert.That(first.ReceivedMethods, Does.Contain("exit"));
+        Assert.That(harness.Factory.ConnectCount, Is.EqualTo(1));
+        Assert.That(harness.Engine.Gate.State, Is.EqualTo(ReadinessState.Dormant));
 
         // A tool call. Its wait is on the engine's clock, so the five seconds pass when the test
         // says, and what comes back is the loading answer every tool gives.
@@ -56,10 +56,10 @@ public class OwnedRoslynEngineRecycleTests
 
         var state = await loading.WaitAsync(TimeSpan.FromSeconds(30), Cancellation);
 
-        Assert.Equal(WorkspaceLoadStatus.Loading, state.Status);
-        Assert.Contains("stopped while this session was idle", state.Message!, StringComparison.Ordinal);
-        Assert.Equal(1, state.Recycles);
-        Assert.NotNull(state.LastRecycleAt);
+        Assert.That(state.Status, Is.EqualTo(WorkspaceLoadStatus.Loading));
+        Assert.That(state.Message!, Contains.Substring("stopped while this session was idle").Using(StringComparison.Ordinal));
+        Assert.That(state.Recycles, Is.EqualTo(1));
+        Assert.That(state.LastRecycleAt, Is.Not.Null);
 
         var second = harness.Factory.Latest!;
 
@@ -70,10 +70,10 @@ public class OwnedRoslynEngineRecycleTests
             .EnsureReadyAsync(TimeSpan.FromMinutes(5), Cancellation)
             .WaitAsync(TimeSpan.FromSeconds(30), Cancellation);
 
-        Assert.Equal(WorkspaceLoadStatus.Ready, ready.Status);
-        Assert.Null(ready.Message);
-        Assert.Equal(RoslynProcessId, ready.ProcessId);
-        Assert.Equal(1, ready.Recycles);
+        Assert.That(ready.Status, Is.EqualTo(WorkspaceLoadStatus.Ready));
+        Assert.That(ready.Message, Is.Null);
+        Assert.That(ready.ProcessId, Is.EqualTo(RoslynProcessId));
+        Assert.That(ready.Recycles, Is.EqualTo(1));
 
         // The new generation's baseline, a minute after its load (D100).
         await SessionHarness.WaitAsync(
@@ -84,24 +84,24 @@ public class OwnedRoslynEngineRecycleTests
         harness.Time.Advance(BackendRecycler.BaselineDelay);
 
         var settled = await harness.Engine.EnsureReadyAsync(TimeSpan.FromMinutes(5), Cancellation);
-        Assert.Equal(380 * Megabyte, settled.BaselineBytes);
+        Assert.That(settled.BaselineBytes, Is.EqualTo(380 * Megabyte));
     }
 
     /// <summary>
     /// After a wake the cached workspace report belongs to a process that has gone: a pull the new one
     /// holds means "nothing since I last told you", and it has told this engine nothing (C58, D98).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AWakeForgetsTheWorkspaceReportOfTheRecycledBackend()
     {
         await using var harness = await EngineHarness.StartAsync(WithWorkspaceReport());
 
         await harness.Engine.WorkspaceDiagnosticAsync([], Cancellation);
-        Assert.True(harness.Engine.HasCachedWorkspaceReport);
+        Assert.That(harness.Engine.HasCachedWorkspaceReport, Is.True);
 
         harness.Memory = 1500 * Megabyte;
         await harness.AdvanceUntilDormantAsync();
-        Assert.Equal(ReadinessState.Dormant, harness.Engine.Gate.State);
+        Assert.That(harness.Engine.Gate.State, Is.EqualTo(ReadinessState.Dormant));
 
         _ = harness.Engine.EnsureReadyAsync(TimeSpan.FromMinutes(5), Cancellation);
         await SessionHarness.WaitAsync(() => harness.Factory.ConnectCount == 2, Cancellation);
@@ -109,11 +109,11 @@ public class OwnedRoslynEngineRecycleTests
             () => harness.Factory.Latest!.ReceivedMethods.Contains("solution/open"),
             Cancellation);
 
-        Assert.False(harness.Engine.HasCachedWorkspaceReport);
+        Assert.That(harness.Engine.HasCachedWorkspaceReport, Is.False);
     }
 
     /// <summary>A tool call inside the window keeps the backend; one call is enough.</summary>
-    [Fact]
+    [Test]
     public async Task AToolCallInsideTheWindowKeepsTheBackend()
     {
         await using var harness = await EngineHarness.StartAsync();
@@ -124,15 +124,15 @@ public class OwnedRoslynEngineRecycleTests
         await harness.Engine.EnsureReadyAsync(TimeSpan.FromMinutes(1), Cancellation);
         await harness.AdvanceMinutesAsync(15);
 
-        Assert.DoesNotContain("shutdown", harness.Factory.Latest!.ReceivedMethods);
-        Assert.Equal(ReadinessState.ProjectsLoaded, harness.Engine.Gate.State);
+        Assert.That(harness.Factory.Latest!.ReceivedMethods, Does.Not.Contain("shutdown"));
+        Assert.That(harness.Engine.Gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
     }
 
     /// <summary>
     /// A recycle that throws after closing the gate and replacing <c>_opened</c> still leaves the
     /// engine dormant and wakeable: the next tool call relaunches it and is answered (finding 2).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AStopThatFailsPartWayStillLeavesTheEngineWakeable()
     {
         await using var harness = await EngineHarness.StartAsync(
@@ -154,14 +154,14 @@ public class OwnedRoslynEngineRecycleTests
         harness.Factory.Latest!.CompleteProjectInitialization();
 
         var state = await ready.WaitAsync(TimeSpan.FromSeconds(30), Cancellation);
-        Assert.Equal(WorkspaceLoadStatus.Ready, state.Status);
+        Assert.That(state.Status, Is.EqualTo(WorkspaceLoadStatus.Ready));
     }
 
     /// <summary>
     /// A wake that fails answers the call that asked for it with a loading status that says why and
     /// that the next call tries again — and the next call does (finding 5, D96).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AWakeThatFailsAnswersLoadingAndTheNextCallTriesAgain()
     {
         TweakedRoslynFactory? tweaked = null;
@@ -179,10 +179,10 @@ public class OwnedRoslynEngineRecycleTests
             .EnsureReadyAsync(TimeSpan.FromMinutes(5), Cancellation)
             .WaitAsync(TimeSpan.FromSeconds(30), Cancellation);
 
-        Assert.Equal(WorkspaceLoadStatus.Loading, failed.Status);
-        Assert.Contains("relaunching it failed", failed.Message!, StringComparison.Ordinal);
-        Assert.Equal(ReadinessState.Dormant, harness.Engine.Gate.State);
-        Assert.Equal(1, harness.Factory.ConnectCount);
+        Assert.That(failed.Status, Is.EqualTo(WorkspaceLoadStatus.Loading));
+        Assert.That(failed.Message!, Contains.Substring("relaunching it failed").Using(StringComparison.Ordinal));
+        Assert.That(harness.Engine.Gate.State, Is.EqualTo(ReadinessState.Dormant));
+        Assert.That(harness.Factory.ConnectCount, Is.EqualTo(1));
 
         await SessionHarness.WaitAsync(
             () => harness.Engine.Recycler.Status.Phase == BackendPhase.Dormant,
@@ -199,9 +199,9 @@ public class OwnedRoslynEngineRecycleTests
 
         var state = await retried.WaitAsync(TimeSpan.FromSeconds(30), Cancellation);
 
-        Assert.Equal(WorkspaceLoadStatus.Ready, state.Status);
-        Assert.Null(state.Message);
-        Assert.Equal(3, tweaked!.Attempts);
+        Assert.That(state.Status, Is.EqualTo(WorkspaceLoadStatus.Ready));
+        Assert.That(state.Message, Is.Null);
+        Assert.That(tweaked!.Attempts, Is.EqualTo(3));
     }
 
     /// <summary>The standard startup with a <c>workspace/diagnostic</c> responder, so a report can be cached.</summary>
@@ -278,14 +278,14 @@ public class OwnedRoslynEngineRecycleTests
             harness.Factory.Latest!.CompleteProjectInitialization();
 
             var ready = await harness.Engine.EnsureReadyAsync(TimeSpan.FromMinutes(5), Cancellation);
-            Assert.Equal(WorkspaceLoadStatus.Ready, ready.Status);
+            Assert.That(ready.Status, Is.EqualTo(WorkspaceLoadStatus.Ready));
 
             await SessionHarness.WaitAsync(
                 () => harness.Engine.Recycler.Status.Phase == BackendPhase.Running,
                 Cancellation);
 
             harness.Time.Advance(BackendRecycler.BaselineDelay);
-            Assert.Equal(400 * Megabyte, harness.Engine.Recycler.Status.BaselineBytes);
+            Assert.That(harness.Engine.Recycler.Status.BaselineBytes, Is.EqualTo(400 * Megabyte));
 
             return harness;
         }
@@ -307,7 +307,7 @@ public class OwnedRoslynEngineRecycleTests
         internal async Task AdvanceUntilDormantAsync()
         {
             await AdvanceMinutesAsync(18);
-            Assert.Equal(ReadinessState.ProjectsLoaded, Engine.Gate.State);
+            Assert.That(Engine.Gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
 
             for (var minute = 0; minute < 8; minute++)
             {
@@ -322,7 +322,7 @@ public class OwnedRoslynEngineRecycleTests
                 await Task.Delay(20, Cancellation);
             }
 
-            Assert.Equal(ReadinessState.Dormant, Engine.Gate.State);
+            Assert.That(Engine.Gate.State, Is.EqualTo(ReadinessState.Dormant));
         }
 
         public async ValueTask DisposeAsync()

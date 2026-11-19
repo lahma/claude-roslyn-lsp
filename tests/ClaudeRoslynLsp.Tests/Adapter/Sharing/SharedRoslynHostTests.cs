@@ -328,6 +328,41 @@ public class SharedRoslynHostTests
             Has.Some.Matches<string>(message => message!.Contains("fullSolution", StringComparison.Ordinal)));
     }
 
+    /// <summary>
+    /// D112: an attached MCP engine plans an edit against the file on disk, and Roslyn computed it
+    /// against whatever a client holds — which only the host's mirror knows. Answered here, with the
+    /// text another client opened, under a differently spelled URI for the same file, and with null
+    /// for a document nobody has open.
+    /// </summary>
+    [Test]
+    public async Task DocumentTextAnswersWhatAnotherClientHoldsAndNullForAClosedDocument()
+    {
+        const string Uri = "file:///w/Fixture/Fixture.Core/Held.cs";
+
+        await using var harness = await HostHarness.StartAsync();
+        await using var editor = harness.Attach();
+        await using var engine = harness.Attach();
+
+        await editor.HandshakeAsync(1);
+        await engine.HandshakeAsync(1);
+
+        await editor.SendAsync(DidOpen(Uri, "class Held; // unsaved"));
+        await WaitUntilAsync(() => harness.Session.Documents.Find(Uri) is not null);
+
+        await engine.SendAsync(Request(70, SharedRoslynHost.DocumentTextMethod, TextDocument(Uri.Replace("Held.cs", "./Held.cs", StringComparison.Ordinal))));
+        await engine.SendAsync(Request(71, SharedRoslynHost.DocumentTextMethod, TextDocument("file:///w/Fixture/Fixture.Core/Closed.cs")));
+
+        var held = await engine.AwaitResponseAsync(70);
+        var closed = await engine.AwaitResponseAsync(71);
+
+        Assert.That(held.GetProperty("result").GetString(), Is.EqualTo("class Held; // unsaved"));
+        Assert.That(closed.GetProperty("result").ValueKind, Is.EqualTo(JsonValueKind.Null));
+        Assert.That(
+            harness.Backend.ReceivedMethods,
+            Has.None.Matches<string>(method => method == SharedRoslynHost.DocumentTextMethod),
+            "Roslyn has no such method; the host answers it itself");
+    }
+
     [Test]
     public async Task ASetOptionWithoutASectionIsRefusedRatherThanApplied()
     {

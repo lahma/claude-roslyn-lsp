@@ -230,6 +230,8 @@ public class SharedEngineLiveTests
         Assert.That(diagnostics.Diagnostics ?? [], Has.Some.Matches<DiagnosticEntry>(entry => entry!.Id == "CS0029"));
         _output.WriteLine($"mcp solution diagnostics        {diagnostics.Diagnostics!.Count} entries, CS0029 present");
 
+        await StaleClientTextIsRefusedAsync(context, host);
+
         var peak = WorkingSetOf(roslynProcessId);
 
         // ------------------------------------------------------------------ the backend dies
@@ -349,6 +351,38 @@ public class SharedEngineLiveTests
 
         await attached.DisposeAsync();
         await hostFactory.StopHostingAsync();
+    }
+
+    /// <summary>
+    /// D112, end to end over the pipe: the LSP client hosts and holds a document whose text is not the
+    /// file on disk, and the attached MCP engine — which can only learn that from the host
+    /// (`claude-roslyn-lsp/documentText`) — refuses to write a formatting edit Roslyn computed against
+    /// the client's text, and leaves the file as it was.
+    /// </summary>
+    private async Task StaleClientTextIsRefusedAsync(RoslynToolContext context, LspHost host)
+    {
+        const string Relative = "Hello.Core/Pending.cs";
+        const string OnDisk = "namespace Hello.Core\n{\n    public class Pending\n    {\n    }\n}\n";
+        const string Unsaved = "namespace Hello.Core\n{\n    public class Pending\n    {\n        public int  Count;\n    }\n}\n";
+
+        var path = Path.Combine(WorkspaceRoot, Relative.Replace('/', Path.DirectorySeparatorChar));
+        await File.WriteAllTextAsync(path, OnDisk, Cancellation);
+
+        var uri = new Uri(path).AbsoluteUri;
+        await host.NotifyAsync(
+            "textDocument/didOpen",
+            "{\"textDocument\":{\"uri\":\"" + uri + "\",\"languageId\":\"csharp\",\"version\":1,\"text\":"
+            + JsonSerializer.Serialize(Unsaved, TestJson.String) + "}}");
+        await WaitUntilAsync(() => host.Session.Documents.Find(uri) is not null, TimeSpan.FromSeconds(30));
+
+        var failure = await Assert.ThrowsAsync<ModelContextProtocol.McpException>(async () =>
+            await EditTools.FormatCodeAsync(context, paths: [Relative], preview: true, cancellationToken: Cancellation));
+
+        Assert.That(failure!.Message, Contains.Substring("differs from the file on disk").Using(StringComparison.Ordinal));
+        Assert.That(await File.ReadAllTextAsync(path, Cancellation), Is.EqualTo(OnDisk));
+
+        await host.NotifyAsync("textDocument/didClose", "{\"textDocument\":{\"uri\":\"" + uri + "\"}}");
+        _output.WriteLine("mcp formatCode on stale client text   refused through the host, file untouched");
     }
 
     /// <summary>

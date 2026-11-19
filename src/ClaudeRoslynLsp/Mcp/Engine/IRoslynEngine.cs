@@ -233,6 +233,21 @@ internal interface IRoslynEngine
     bool IsDocumentOpen(string uri);
 
     /// <summary>
+    /// The text Roslyn holds for a document a client has open, or null when nobody has it open and
+    /// Roslyn reads the file from disk.
+    /// </summary>
+    /// <remarks>
+    /// D112: Roslyn computes an edit against this text, and the edit is written into the file on
+    /// disk, so the two have to agree before anything is planned. An engine attached to another
+    /// process's Roslyn asks that host (`claude-roslyn-lsp/documentText`), because the LSP client's
+    /// documents are in the host's mirror and not in this one; an answer it cannot get is null, which
+    /// is the behaviour every version before this one had.
+    /// </remarks>
+    /// <param name="uri">The document.</param>
+    /// <param name="cancellationToken">The client's cancellation.</param>
+    Task<string?> OpenTextAsync(string uri, CancellationToken cancellationToken);
+
+    /// <summary>
     /// <c>textDocument/documentSymbol</c>, hierarchical: how <c>getTypeMembers</c> lists a type's
     /// members without reading the file, and how a <c>path:line:col</c> address is turned back into
     /// a name.

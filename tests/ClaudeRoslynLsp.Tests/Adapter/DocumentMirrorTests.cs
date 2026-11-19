@@ -127,6 +127,21 @@ public class DocumentMirrorTests
         Assert.That(mirror.Count, Is.EqualTo(0));
     }
 
+    /// <summary>
+    /// D112's lookup: the URI this server derives from a path and the one a client sent can spell the
+    /// same file differently, and a check that matched only the exact string would answer "not open".
+    /// </summary>
+    [Test]
+    public void FindFileMatchesTheSameFileUnderAnotherSpellingOfItsUri()
+    {
+        var mirror = new DocumentMirror(NullLogger.Instance);
+        mirror.Open(DidOpen("file:///w/Fixture/Fixture.Core/../Fixture.Core/Calculator.cs", "csharp", 1, "class C { }"));
+
+        Assert.That(mirror.FindFile(Uri)?.Text, Is.EqualTo("class C { }"));
+        Assert.That(mirror.FindFile("file:///w/Fixture/Fixture.Core/Other.cs"), Is.Null);
+        Assert.That(mirror.FindFile("not a uri"), Is.Null);
+    }
+
     // ------------------------------------------------------------------ the byte order mark (C67, D111)
 
     /// <summary>

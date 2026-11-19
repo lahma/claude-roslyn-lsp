@@ -67,7 +67,12 @@ internal sealed class WorkspaceEditApplier
     /// anything.
     /// </summary>
     /// <param name="edit">The resolved edit.</param>
-    internal WorkspaceEditPlan Plan(WorkspaceEdit? edit)
+    /// <param name="layouts">
+    /// Whole-file layout rules to apply after the edits, by absolute path (D113: <c>formatCode</c>'s
+    /// <c>end_of_line</c> and <c>insert_final_newline</c>); null for none. A file that changes only
+    /// by its layout counts as one edit, so the plan reports it.
+    /// </param>
+    internal WorkspaceEditPlan Plan(WorkspaceEdit? edit, IReadOnlyDictionary<string, TextLayout>? layouts = null)
     {
         if (edit?.DocumentChanges is not { Length: > 0 } changes)
         {
@@ -100,6 +105,28 @@ internal sealed class WorkspaceEditApplier
                 default:
                     throw new WorkspaceEditRefusedException(
                         $"the edit contains a '{change.Kind}' resource operation, which this server does not know how to apply");
+            }
+        }
+
+        foreach (var file in files)
+        {
+            if (file.Deleted || file.NewText is not { } text || layouts?.GetValueOrDefault(file.Path) is not { IsSet: true } layout)
+            {
+                continue;
+            }
+
+            var laidOut = layout.Apply(text, file.Format.NewLine);
+
+            if (layout.EndOfLine is { } newLine)
+            {
+                // Written in the convention asked for, and any later edit normalised to it too (C22).
+                file.Format = file.Format with { NewLine = newLine };
+            }
+
+            if (!string.Equals(laidOut, text, StringComparison.Ordinal))
+            {
+                file.NewText = laidOut;
+                file.EditCount++;
             }
         }
 

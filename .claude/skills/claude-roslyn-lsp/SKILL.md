@@ -95,8 +95,8 @@ One diagnostic id repeated across forty files is one call, not forty edits.
   `applyCodeAction` takes the scope to apply it across.
 - `formatCode` for whitespace, honouring the repository's own `.editorconfig`; set `organizeUsings`
   when using directives are the point. It never shells out to `dotnet format`, so it costs a second
-  rather than a restore and a build. It keeps each file's line endings and final newline, so a
-  repository whose CI runs `dotnet format --verify-no-changes` still needs that run for those two.
+  rather than a restore and a build, and it applies `end_of_line` and `insert_final_newline` the way
+  `dotnet format` does.
 - Fix by id, in one pass, rather than by hand per file: the hand pass is where the fortieth file
   quietly gets a different treatment from the first.
 

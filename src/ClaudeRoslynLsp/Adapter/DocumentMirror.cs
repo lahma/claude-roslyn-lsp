@@ -173,6 +173,42 @@ internal sealed partial class DocumentMirror
         }
     }
 
+    /// <summary>
+    /// The open document a URI names, also when the client spelled the URI differently from the
+    /// caller — `file:///d%3A/w/a.cs` and `file:///D:/w/a.cs` are one file, compared the way the
+    /// file system compares paths (case-insensitively on Windows and macOS).
+    /// </summary>
+    /// <remarks>
+    /// D112's question is asked with the URI this server derives from a path, and the mirror is keyed
+    /// by the URI a client sent. An exact lookup alone would make a check that exists to stop a wrong
+    /// write silently answer "not open" for every client that encodes a drive letter differently.
+    /// </remarks>
+    /// <param name="uri">The document URI.</param>
+    internal MirroredDocument? FindFile(string uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+
+        if (Find(uri) is { } exact)
+        {
+            return exact;
+        }
+
+        if (LocalPathOf(uri) is not { } wanted)
+        {
+            return null;
+        }
+
+        foreach (var document in Snapshot())
+        {
+            if (LocalPathOf(document.Uri) is { } path && string.Equals(path, wanted, PathComparison))
+            {
+                return document;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>The open documents, in the order they were opened.</summary>
     internal IReadOnlyList<MirroredDocument> Snapshot()
     {
@@ -281,6 +317,28 @@ internal sealed partial class DocumentMirror
 
             default:
                 return body;
+        }
+    }
+
+    /// <summary>How the file system compares paths: NTFS and APFS fold case, ext4 does not.</summary>
+    private static StringComparison PathComparison =>
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    /// <summary>The full local path a <c>file:</c> URI names, or null for anything else.</summary>
+    private static string? LocalPathOf(string uri)
+    {
+        if (!System.Uri.TryCreate(uri, UriKind.Absolute, out var parsed) || !parsed.IsFile)
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(parsed.LocalPath);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
         }
     }
 

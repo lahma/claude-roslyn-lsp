@@ -129,17 +129,21 @@ internal sealed class RoslynToolContext
     /// <param name="edit">The resolved edit.</param>
     /// <param name="preview">Whether to write anything.</param>
     /// <param name="cancellationToken">The client's cancellation.</param>
+    /// <param name="layouts">Whole-file layout rules by absolute path, for <c>formatCode</c> (D113).</param>
     internal async Task<EditResult> ApplyEditAsync(
         string tool,
         string cacheKey,
         WorkspaceEdit? edit,
         bool preview,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, TextLayout>? layouts = null)
     {
         ArgumentNullException.ThrowIfNull(tool);
         ArgumentNullException.ThrowIfNull(cacheKey);
 
-        var plan = Applier.Plan(edit);
+        var plan = Applier.Plan(edit, layouts);
+
+        await RefuseEditsComputedAgainstOtherTextAsync(plan, cancellationToken).ConfigureAwait(false);
 
         if (plan.IsEmpty)
         {
@@ -188,6 +192,57 @@ internal sealed class RoslynToolContext
             files,
             diff,
             EditResult.AppliedNote);
+    }
+
+    /// <summary>
+    /// Refuses a plan whose edits Roslyn computed against text that is not the file on disk (D112).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Roslyn answers about the text it holds, and for a document an LSP client has open that is the
+    /// client's text, not the file's. The applier writes the edits into the file as it is on disk
+    /// (D61), so when the two differ — unsaved changes in an editor sharing the engine, a file a
+    /// shell command rewrote that the client never re-sent (open documents are excluded from the
+    /// watcher, D56) — every edit lands at an offset Roslyn never meant, and the result is written
+    /// and reported as a success. Issue #3 was one instance; D111 removed that cause, and this is the
+    /// guard for all of them.
+    /// </para>
+    /// <para>
+    /// Line endings are compared away: LSP positions are a line and a character, so a client that
+    /// holds the same lines with other terminators cannot move an edit, and the applier writes new
+    /// text in the file's own convention anyway. Only files that received text edits are asked
+    /// about; a file the edit creates has no text on either side.
+    /// </para>
+    /// </remarks>
+    /// <param name="plan">The planned edit.</param>
+    /// <param name="cancellationToken">The client's cancellation.</param>
+    private async Task RefuseEditsComputedAgainstOtherTextAsync(WorkspaceEditPlan plan, CancellationToken cancellationToken)
+    {
+        foreach (var file in plan.Files)
+        {
+            if (file.EditCount == 0 || file.Created || file.MovedFromRelativePath is not null
+                || file.OriginalText is not { } onDisk)
+            {
+                continue;
+            }
+
+            var held = await Engine
+                .OpenTextAsync(WorkspacePathGuard.ToUri(file.Path), cancellationToken)
+                .ConfigureAwait(false);
+
+            if (held is not null
+                && !string.Equals(
+                    TextFileCodec.NormalizeNewLines(held, "\n"),
+                    TextFileCodec.NormalizeNewLines(onDisk, "\n"),
+                    StringComparison.Ordinal))
+            {
+                throw new WorkspaceEditRefusedException(
+                    $"'{file.RelativePath}' is open in the language client with text that differs from the file "
+                    + "on disk, and Roslyn computed the edit against the client's text, so it would land in the "
+                    + "wrong place. Save the file in the client, or let the client send its current text (an "
+                    + "edit through the client does), and call again");
+            }
+        }
     }
 
     private static List<FileChange> FileChangesOf(IReadOnlyList<PlannedFile> files)

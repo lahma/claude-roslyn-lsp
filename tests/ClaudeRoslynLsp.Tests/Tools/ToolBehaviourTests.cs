@@ -576,6 +576,117 @@ public class ToolBehaviourTests
     }
 
     /// <summary>
+    /// D112: Roslyn computed these edits against the text a client holds, which is not the file on
+    /// disk, so writing them would put them in the wrong place. Refused, preview included, and the
+    /// file is left exactly as it was.
+    /// </summary>
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task AnEditComputedAgainstAClientBufferThatDiffersFromDiskIsRefused(bool preview)
+    {
+        using var workspace = TempWorkspace.Create("tool-format-stale");
+        var file = workspace.File_("a.cs", "class  A ;\n");
+
+        var (context, engine) = ToolTestHost.CreateContext(workspace);
+        var uri = WorkspacePathGuard.ToUri(file);
+
+        engine.ClientTexts[uri] = "// unsaved\nclass  A ;\n";
+        engine.FormattingEdits[uri] = [FormatEdit(0, 0, 0, 10, "class A;")];
+
+        var failure = await Assert.ThrowsAsync<McpException>(async () =>
+            await EditTools.FormatCodeAsync(context, ["a.cs"], preview: preview, cancellationToken: Cancellation));
+
+        Assert.That(failure!.Message, Contains.Substring("'a.cs' is open in the language client with text that differs")
+            .Using(StringComparison.Ordinal));
+        Assert.That(failure.Message, Contains.Substring("Nothing was changed on disk.").Using(StringComparison.Ordinal));
+        Assert.That(File.ReadAllText(file), Is.EqualTo("class  A ;\n"));
+    }
+
+    /// <summary>
+    /// LSP positions are a line and a character, so a client holding the same lines with other
+    /// terminators cannot move an edit, and refusing it would refuse every CRLF file an LF client opened.
+    /// </summary>
+    [Test]
+    public async Task AClientBufferThatDiffersOnlyInLineEndingsDoesNotStopTheEdit()
+    {
+        using var workspace = TempWorkspace.Create("tool-format-crlf-client");
+        var file = workspace.File_("a.cs", "class  A ;\n");
+
+        var (context, engine) = ToolTestHost.CreateContext(workspace);
+        var uri = WorkspacePathGuard.ToUri(file);
+
+        engine.ClientTexts[uri] = "class  A ;\r\n";
+        engine.FormattingEdits[uri] = [FormatEdit(0, 0, 0, 10, "class A;")];
+
+        var result = await EditTools.FormatCodeAsync(context, ["a.cs"], cancellationToken: Cancellation);
+
+        Assert.That(result.Applied, Is.True);
+        Assert.That(File.ReadAllText(file), Is.EqualTo("class A;\n"));
+    }
+
+    /// <summary>
+    /// Issue #4's reproduction, D113: an LF file with a final newline under <c>end_of_line = crlf</c>
+    /// and <c>insert_final_newline = false</c> comes out as <c>dotnet format</c> would leave it —
+    /// Roslyn's own edit applied, every line ending CRLF, no final newline — and a second run changes
+    /// nothing.
+    /// </summary>
+    [Test]
+    public async Task FormatCodeAppliesEndOfLineAndInsertFinalNewlineAfterRoslynsEdits()
+    {
+        using var workspace = TempWorkspace.Create("tool-format-layout");
+        workspace.File_(".editorconfig", "root = true\n\n[*.cs]\nend_of_line = crlf\ninsert_final_newline = false\n");
+        var file = workspace.File_("src/Lib/Other.cs", "namespace Lib\n{\n    public class Other\n    {\n      public int  Value { get; set; }\n    }\n}\n");
+
+        var (context, engine) = ToolTestHost.CreateContext(workspace);
+        engine.FormattingEdits[WorkspacePathGuard.ToUri(file)] = [FormatEdit(4, 0, 4, 6, "        ")];
+
+        var result = await EditTools.FormatCodeAsync(context, ["src/Lib/Other.cs"], cancellationToken: Cancellation);
+
+        Assert.That(result.Applied, Is.True);
+        Assert.That(
+            File.ReadAllText(file),
+            Is.EqualTo("namespace Lib\r\n{\r\n    public class Other\r\n    {\r\n        public int  Value { get; set; }\r\n    }\r\n}"));
+
+        engine.FormattingEdits.Clear();
+        var again = await EditTools.FormatCodeAsync(context, ["src/Lib/Other.cs"], cancellationToken: Cancellation);
+
+        Assert.That(again.Applied, Is.False);
+        Assert.That(again.Note, Is.EqualTo(EditResult.NothingToDoNote));
+    }
+
+    /// <summary>A file Roslyn has nothing to say about is still laid out, and the byte order mark stays.</summary>
+    [Test]
+    public async Task AFileRoslynLeavesAloneIsStillLaidOutAndKeepsItsByteOrderMark()
+    {
+        using var workspace = TempWorkspace.Create("tool-format-layout-only");
+        workspace.File_(".editorconfig", "root = true\n[*]\ninsert_final_newline = true\n");
+        var file = workspace.Path_("a.cs");
+        File.WriteAllBytes(file, [0xEF, 0xBB, 0xBF, .. "class A;"u8.ToArray()]);
+
+        var (context, _) = ToolTestHost.CreateContext(workspace);
+
+        var preview = await EditTools.FormatCodeAsync(context, ["a.cs"], preview: true, cancellationToken: Cancellation);
+
+        Assert.That(preview.FilesChanged, Is.EqualTo(1));
+        Assert.That(preview.Edits, Is.EqualTo(1));
+
+        await EditTools.FormatCodeAsync(context, ["a.cs"], cancellationToken: Cancellation);
+
+        Assert.That(File.ReadAllBytes(file), Is.EqualTo((byte[])[0xEF, 0xBB, 0xBF, .. "class A;\n"u8.ToArray()]));
+    }
+
+    private static LspTextEdit FormatEdit(int startLine, int startCharacter, int endLine, int endCharacter, string newText) =>
+        new()
+        {
+            Range = new LspRange
+            {
+                Start = new LspPosition { Line = startLine, Character = startCharacter },
+                End = new LspPosition { Line = endLine, Character = endCharacter },
+            },
+            NewText = newText,
+        };
+
+    /// <summary>
     /// <c>fixDiagnostics</c> finds a site of the diagnostic itself, so a caller does not have to pull
     /// diagnostics and pick one before asking for the fix.
     /// </summary>

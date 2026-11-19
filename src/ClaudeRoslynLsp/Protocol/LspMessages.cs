@@ -379,6 +379,45 @@ internal sealed record DidChangeParams
     public IReadOnlyList<TextDocumentContentChange>? ContentChanges { get; init; }
 }
 
+/// <summary>
+/// A full-text <c>textDocument/didChange</c> this adapter writes itself — only ever to forward a
+/// client's change with its byte order mark removed (C67).
+/// </summary>
+internal sealed record DidChangeNotification
+{
+    /// <summary>The JSON-RPC version.</summary>
+    [JsonPropertyName("jsonrpc")]
+    public string JsonRpcVersion { get; init; } = JsonRpc.Version;
+
+    /// <summary>Always <c>textDocument/didChange</c>.</summary>
+    [JsonPropertyName("method")]
+    public string Method { get; init; } = "textDocument/didChange";
+
+    /// <summary>The document and its new text.</summary>
+    [JsonPropertyName("params")]
+    public required FullTextDidChangeParams Params { get; init; }
+}
+
+/// <summary>The parameters of a full-text <c>textDocument/didChange</c>.</summary>
+internal sealed record FullTextDidChangeParams
+{
+    /// <summary>Which document, and at which version.</summary>
+    [JsonPropertyName("textDocument")]
+    public required VersionedTextDocumentIdentifier TextDocument { get; init; }
+
+    /// <summary>The changes, each one the whole document.</summary>
+    [JsonPropertyName("contentChanges")]
+    public required IReadOnlyList<FullTextContentChange> ContentChanges { get; init; }
+}
+
+/// <summary>A content change that replaces the whole document: no <c>range</c> at all.</summary>
+internal sealed record FullTextContentChange
+{
+    /// <summary>The whole document.</summary>
+    [JsonPropertyName("text")]
+    public required string Text { get; init; }
+}
+
 /// <summary>A document identifier carrying its version.</summary>
 internal sealed record VersionedTextDocumentIdentifier
 {

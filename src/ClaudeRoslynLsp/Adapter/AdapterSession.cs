@@ -552,6 +552,10 @@ internal sealed partial class AdapterSession : IAdapterChannel, ISharedEngineHos
     /// </remarks>
     private void HandleDocumentNotification(byte[] body, string method)
     {
+        // Before anything reads the text: the mirror, Roslyn, and through a shared host every other
+        // client all have to see one document, and the client's mark is not part of it (C67).
+        body = DocumentMirror.WithoutByteOrderMark(body, method);
+
         string? uri = null;
 
         switch (method)

@@ -1,7 +1,7 @@
 # roslyn-language-server 5.12.0-1.26426.8: observed protocol facts
 
 Every entry below was observed on the wire against the pinned server (Windows 11, .NET SDK 10.0.401,
-2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C66 and cited
+2026-09-10) with a two-project fixture, not read from source. They are numbered C1..C67 and cited
 from AGENTS.md, the code and the tests. Re-verify the ones marked (re-measure) on a real solution.
 
 C48-C54 were observed by WP4 against `tests/fixtures/HelloSolution` (three projects, one
@@ -475,3 +475,14 @@ rather than what the collector has not yet given back.
   `claude --settings '{"enabledPlugins":{"csharp-lsp@claude-plugins-official":false}}'`.
 - **C42** The plugin manifest is JSON: a Windows `command` path must use forward slashes or
   escaped backslashes; with `D:\Work\...` unescaped the manifest failed to load silently.
+
+## Claude Code 2.1.310 client (issue #3, 2026-11-19)
+
+- **C67** Claude Code sends a UTF-8 file's byte order mark as the document's first character: the
+  `text` of its `didOpen` (and of the full-text `didChange` after an edit) begins with U+FEFF. Roslyn
+  keeps it as text: a `textDocument/formatting` of an already formatted file then answers one edit
+  deleting `0:0-0:1`, and every column on the first line counts the mark. A closed file Roslyn reads
+  from disk has no such character, and neither does the text `TextFileCodec` decodes (D61), so the
+  same edit applied to the file removed its first real character. Reported in issue #3 against
+  Roslyn 5.12.0-1.26426.8 on WSL2, reproduced by the reporter on two solutions, with the same file
+  without a mark unaffected; the adapter strips the mark at the client boundary (D111).

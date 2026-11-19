@@ -41,6 +41,9 @@ internal sealed record MirroredDocument(string Uri, string LanguageId, int Versi
 /// </remarks>
 internal sealed partial class DocumentMirror
 {
+    /// <summary>U+FEFF, a byte order mark once decoded as a character.</summary>
+    private const char ByteOrderMark = '﻿';
+
     private readonly Lock _lock = new();
     private readonly Dictionary<string, MirroredDocument> _documents = new(StringComparer.Ordinal);
     private readonly HashSet<string> _warnedAboutRanges = new(StringComparer.Ordinal);
@@ -217,6 +220,68 @@ internal sealed partial class DocumentMirror
                 },
             },
             LspJsonContext.Default.DidOpenNotification);
+    }
+
+    /// <summary>
+    /// A client's <c>didOpen</c> or full-text <c>didChange</c> with the byte order mark removed from
+    /// the front of its text, or <paramref name="body"/> itself when the text has none.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// C67. A client that reads a file as UTF-8 without decoding its byte order mark — Claude Code
+    /// does — sends the mark as the document's first character, U+FEFF. Roslyn takes it for text:
+    /// every position on the first line moves by one, and the formatter proposes deleting it. The
+    /// MCP half then applied that deletion to the file as <c>TextFileCodec</c> decodes it, which has
+    /// no mark, and removed the first real character instead (issue #3). Everything else in this
+    /// product, Roslyn reading a closed file included, treats the mark as encoding rather than text,
+    /// so the client's text is made to agree at the one place it enters.
+    /// </para>
+    /// <para>
+    /// Rebuilt rather than patched, because the mark arrives either as three raw bytes or as a
+    /// <c>﻿</c> escape; only a notification that carried one is reserialised, and every other
+    /// one still crosses as the client's bytes (D47). A ranged <c>didChange</c> is out of contract
+    /// (D13) and is left alone.
+    /// </para>
+    /// </remarks>
+    /// <param name="body">The raw notification.</param>
+    /// <param name="method">Its method.</param>
+    internal static byte[] WithoutByteOrderMark(byte[] body, string method)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+
+        switch (method)
+        {
+            case "textDocument/didOpen" when ParamsOf(body, LspJsonContext.Default.DidOpenParams)?.TextDocument is
+                { Text: [ByteOrderMark, ..] } item:
+                return BuildDidOpen(new MirroredDocument(item.Uri, item.LanguageId, item.Version, item.Text[1..]));
+
+            case "textDocument/didChange" when ParamsOf(body, LspJsonContext.Default.DidChangeParams) is
+                {
+                    TextDocument: { Uri: not null } document,
+                    ContentChanges: { Count: > 0 } changes,
+                }
+                && changes.All(change => change.Range.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+                && changes.Any(change => change.Text is [ByteOrderMark, ..]):
+                return JsonSerializer.SerializeToUtf8Bytes(
+                    new DidChangeNotification
+                    {
+                        Params = new FullTextDidChangeParams
+                        {
+                            TextDocument = document,
+                            ContentChanges =
+                            [
+                                .. changes.Select(change => new FullTextContentChange
+                                {
+                                    Text = change.Text is [ByteOrderMark, ..] text ? text[1..] : change.Text ?? string.Empty,
+                                }),
+                            ],
+                        },
+                    },
+                    LspJsonContext.Default.DidChangeNotification);
+
+            default:
+                return body;
+        }
     }
 
     /// <summary>

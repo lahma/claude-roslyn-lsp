@@ -23,7 +23,7 @@
   </PropertyGroup>
 
   <!-- D22: the NuGet channel is what the Claude Code plugin launches - both of its entries run
-       `dnx claude-roslyn-lsp@{version}`, one ending in `lsp` and one in `mcp`. Since 0.3.0 it delivers
+       `dnx claude-roslyn-lsp@{version}`, one ending in `lsp` and one in `mcp`. Since 1.0.0 it delivers
        the same Native AOT binary as the GitHub Releases, as RID-specific tool packages: `dotnet pack`
        builds the pointer package, which names one package per RID below, `dotnet pack -r <rid>` builds
        each of those on a runner of that OS (Native AOT cannot cross-compile across operating systems),

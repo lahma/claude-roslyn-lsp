@@ -1,3 +1,32 @@
+# 1.0.0
+
+- 1.0.0: the ten MCP tools, their arguments, the environment variables, the verbs and the plugin are
+  the stable surface from here on. Everything below is what changed since 0.2.0.
+- `dnx claude-roslyn-lsp` now runs the Native AOT binary. The NuGet package is a pointer to one
+  RID-specific package per release platform (`win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`,
+  `osx-arm64`), each built and handshake-tested on its own architecture, plus a framework-dependent
+  `any` package for every other platform. The Claude Code plugin starts both of its servers through
+  `dnx`, so a session no longer waits for two framework-dependent starts.
+- Fixed (#3): `formatCode` deleted the first character of a file that starts with a UTF-8 byte order
+  mark once Claude Code had opened it over LSP, and reported `ok`. Claude Code sends the mark as the
+  document's first character; the adapter now removes it where a client's text enters, so Roslyn,
+  the document mirror and a shared host all see the text the file holds. Positions on a first line
+  no longer count the mark either.
+- Fixed (#4): with a `.sln` solution, `getWorkspaceStatus` listed no projects and the `project`
+  argument of `formatCode` and `getDiagnostics` matched nothing; a project that matches nothing is
+  now reported as not found, with the projects there are. `formatCode` says that it keeps each
+  file's line endings and final newline (`end_of_line` and `insert_final_newline` are not applied).
+- A tool call whose argument names are not the advertised ones is refused before the tool runs,
+  naming the spelling it most likely meant. A mis-cased `Preview` used to be dropped, so a call meant
+  as a preview wrote to disk.
+- Listed in the official MCP Registry as `io.github.lahma/claude-roslyn-lsp`, once nuget.org serves
+  every package of a release.
+- The Linux binaries need glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9), and the release
+  build fails rather than ship one that needs more.
+- Build and test toolchain: Fallout 10.5.0, ModelContextProtocol 2.4.0, Microsoft.Extensions 10.0.15,
+  and the test suite on NUnit 5 and Microsoft.Testing.Platform. Still .NET 10; Roslyn stays pinned at
+  5.12.0-1.26426.8.
+
 # 0.2.0
 
 - An idle session gives its Roslyn's memory back. Measured on a 44-project solution, most of what a

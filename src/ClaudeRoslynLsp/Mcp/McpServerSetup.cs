@@ -180,13 +180,21 @@ internal static class McpServerSetup
     ];
 
     /// <summary>
-    /// Registers the tool classes.
+    /// Registers the tool classes, and the filter every call to them passes first.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Never <c>WithToolsFromAssembly()</c> — it is not AOT-safe (IL2026) and would be a build error
     /// under the analyzers this project turns on explicitly. One <c>WithTools&lt;T&gt;</c> per class,
     /// each given <paramref name="jsonOptions"/>, so every generated schema comes from the same
     /// resolver chain.
+    /// </para>
+    /// <para>
+    /// D109: a call whose argument names are not the advertised ones is answered before the tool
+    /// runs, rather than bound partially — which for <c>preview</c> would mean writing to disk — or
+    /// failed with the SDK's unexplained error. Registered here, with the tools, so the in-memory
+    /// test host and the stdio server cannot differ on it.
+    /// </para>
     /// </remarks>
     /// <param name="builder">The MCP server builder.</param>
     /// <param name="jsonOptions">The tool-facing serializer options from <see cref="CreateToolSerializerOptions"/>.</param>
@@ -200,6 +208,7 @@ internal static class McpServerSetup
         builder.WithTools<DiagnosticTools>(jsonOptions);
         builder.WithTools<CodeActionTools>(jsonOptions);
         builder.WithTools<EditTools>(jsonOptions);
+        builder.WithRequestFilters(filters => filters.AddCallToolFilter(ToolArgumentNames.Filter));
     }
 
     /// <summary>

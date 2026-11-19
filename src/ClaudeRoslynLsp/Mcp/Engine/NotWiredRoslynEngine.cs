@@ -117,6 +117,9 @@ internal sealed class NotWiredRoslynEngine : IRoslynEngine
     public bool IsDocumentOpen(string uri) => false;
 
     /// <inheritdoc />
+    public Task<string?> OpenTextAsync(string uri, CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<DocumentSymbolNode>> DocumentSymbolAsync(string uri, CancellationToken cancellationToken) =>
         throw NotWired();
 

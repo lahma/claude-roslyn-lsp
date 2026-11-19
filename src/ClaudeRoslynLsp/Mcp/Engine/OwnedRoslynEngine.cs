@@ -968,6 +968,59 @@ internal sealed partial class OwnedRoslynEngine
     public bool IsDocumentOpen(string uri) => _mirror.Find(uri) is not null;
 
     /// <inheritdoc />
+    public async Task<string?> OpenTextAsync(string uri, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+
+        bool attached;
+
+        lock (_stateLock)
+        {
+            attached = _attached;
+        }
+
+        if (!attached)
+        {
+            // The mirror holds every client's documents when this engine hosts (D91), its own otherwise.
+            return _mirror.FindFile(uri)?.Text;
+        }
+
+        try
+        {
+            var result = await RequestAsync(
+                    SharedRoslynHost.DocumentTextMethod,
+                    BuildDocumentTextRequest(uri),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return result.ValueKind == JsonValueKind.String ? result.GetString() : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Log.DocumentTextFailed(_logger, uri, exception.Message);
+            return null;
+        }
+    }
+
+    /// <summary>Renders the shared host's <c>documentText</c> parameters: a bare <c>textDocument</c>.</summary>
+    /// <param name="uri">The document.</param>
+    private static byte[] BuildDocumentTextRequest(string uri)
+    {
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>(uri.Length + 32);
+
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartObject("textDocument"u8);
+            writer.WriteString("uri"u8, uri);
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }
+
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<DocumentSymbolNode>> DocumentSymbolAsync(
         string uri,
         CancellationToken cancellationToken)
@@ -2520,6 +2573,13 @@ internal sealed partial class OwnedRoslynEngine
             Message = "Roslyn reports process {Announced} as holding the workspace but this engine launched " +
                       "process {Launched}; the launched one is measured and neither is compacted (D101).")]
         internal static partial void ProcessMismatch(ILogger logger, int announced, int launched);
+
+        [LoggerMessage(
+            EventId = 5122,
+            Level = LogLevel.Warning,
+            Message = "The shared host would not say what text Roslyn holds for {Uri} ({Reason}); the edit is " +
+                      "planned against the file on disk unchecked (D112).")]
+        internal static partial void DocumentTextFailed(ILogger logger, string uri, string reason);
     }
 }
 

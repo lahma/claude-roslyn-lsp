@@ -119,7 +119,7 @@ five platforms below, and a framework-dependent build everywhere else.
 Two channels, one binary. **Claude Code gets the plugin**, which carries both servers and the
 workflow skill and runs them through `dnx` — no download step, and the SDK is required for C# work
 anyway. **Every other client gets the Native AOT binary** from GitHub Releases: a file-based client
-wants an absolute path. Since 1.0.0 `dnx` runs the same Native AOT binary too, so both channels start
+wants an absolute path. Since 0.9.0 `dnx` runs the same Native AOT binary too, so both channels start
 in a few hundred milliseconds.
 
 ### Claude Code: the plugin
@@ -204,7 +204,7 @@ is named `claude-roslyn-lsp-{version}-{rid}` and contains the executable, `LICEN
 | macOS Apple silicon | `osx-arm64` | `claude-roslyn-lsp-{version}-osx-arm64.tar.gz` |
 
 ```bash
-tar -xzf claude-roslyn-lsp-1.0.0-linux-x64.tar.gz
+tar -xzf claude-roslyn-lsp-0.9.0-linux-x64.tar.gz
 chmod +x claude-roslyn-lsp
 ./claude-roslyn-lsp install
 ```
@@ -229,14 +229,14 @@ framework-dependent `claude-roslyn-lsp.any` anywhere else (Alpine, Intel macOS),
 step:
 
 ```bash
-dnx claude-roslyn-lsp@1.0.0 --yes doctor
+dnx claude-roslyn-lsp@0.9.0 --yes doctor
 ```
 
 `--yes` accepts the download prompt and is consumed by `dnx` itself; everything after it reaches the
 adapter. Pin the version rather than floating: a language server is something an agent runs on your
 behalf, and a pinned version is one you decided to run.
 
-**Never `dnx claude-roslyn-lsp@1.0.0 --version`.** `dnx` takes `--version` for itself, along with
+**Never `dnx claude-roslyn-lsp@0.9.0 --version`.** `dnx` takes `--version` for itself, along with
 `-v`, `--verbosity`, `--prerelease`, `--source`, `--interactive`, `-h` and about eight others, and
 prints its own usage to stdout on a parse error. Use `doctor`, which reports the version along with
 everything else.
@@ -473,7 +473,7 @@ project exists to replace.
 | `applyCodeAction` | Applies one of them, optionally across the document, the project or the whole solution. | **destructive**, not idempotent |
 | `renameSymbol` | A solution-wide semantic rename: overrides, interface implementations, other projects. Not a search and replace, and not a file rename. | write, **not** destructive, idempotent |
 | `fixDiagnostics` | Roslyn's own fix-all for one diagnostic id (`IDE0005`, `CA1822`, …) across a file, a project or the solution. | **destructive**, idempotent |
-| `formatCode` | Formats with Roslyn, honouring `.editorconfig`, optionally organising usings. Never shells out to `dotnet format`. Keeps each file's line endings and final newline: `end_of_line` and `insert_final_newline` are not applied. | write, **not** destructive, idempotent |
+| `formatCode` | Formats with Roslyn, honouring `.editorconfig`, optionally organising usings. Never shells out to `dotnet format`, and applies `end_of_line` and `insert_final_newline` as it does. | write, **not** destructive, idempotent |
 
 Every tool declares `openWorldHint: false` — nothing here leaves the machine, let alone the
 workspace — and returns structured content. `applyCodeAction` and `fixDiagnostics` are marked

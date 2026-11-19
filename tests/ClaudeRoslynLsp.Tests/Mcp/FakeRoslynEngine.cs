@@ -250,6 +250,16 @@ internal sealed class FakeRoslynEngine : IRoslynEngine
     /// <inheritdoc />
     public bool IsDocumentOpen(string uri) => OpenDocuments.Contains(uri);
 
+    /// <summary>
+    /// What a client holding a document open has sent for it, by URI — the text Roslyn would compute
+    /// an edit against (D112). Empty unless a test arranges a client's buffer.
+    /// </summary>
+    internal Dictionary<string, string> ClientTexts { get; } = new(StringComparer.Ordinal);
+
+    /// <inheritdoc />
+    public Task<string?> OpenTextAsync(string uri, CancellationToken cancellationToken) =>
+        Task.FromResult(ClientTexts.TryGetValue(uri, out var text) ? text : null);
+
     /// <inheritdoc />
     public Task<IReadOnlyList<DocumentSymbolNode>> DocumentSymbolAsync(string uri, CancellationToken cancellationToken)
     {

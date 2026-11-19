@@ -123,11 +123,11 @@ internal sealed class EditTools
     [Description(
         "Formats C# files with Roslyn, honouring the repository's .editorconfig, and optionally sorts and removes "
         + "their using directives. Use this instead of running `dotnet format` in Bash: it is the same formatter without "
-        + "the MSBuild round trip, it needs no restore, and it reports exactly which files changed. It changes "
-        + "indentation, spacing, wrapping and usings, but keeps each file's own line endings and final newline: "
-        + "end_of_line and insert_final_newline are not applied, so `dotnet format --verify-no-changes` can still "
-        + "report ENDOFLINE or FINALNEWLINE afterwards. Name the files with paths, or a project to format all of its C# "
-        + "files. Formatting the same code twice changes nothing the second time. Pass preview: true first to see the diff.")]
+        + "the MSBuild round trip, it needs no restore, and it reports exactly which files changed. Beside indentation, "
+        + "spacing, wrapping and usings it applies the .editorconfig end_of_line and insert_final_newline rules, as "
+        + "`dotnet format` does; a file's encoding and byte order mark are kept. Name the files with paths, or a project "
+        + "to format all of its C# files. Formatting the same code twice changes nothing the second time. Pass "
+        + "preview: true first to see the diff.")]
     public static async Task<EditResult> FormatCodeAsync(
         RoslynToolContext context,
         [Description("The files to format, workspace-relative with forward slashes.")]
@@ -153,6 +153,19 @@ internal sealed class EditTools
 
             var files = ResolveFiles(context, state, paths, project);
 
+            // D113: Roslyn's formatter never converts a file's line endings or its final newline, so
+            // the two .editorconfig rules dotnet format applies itself are applied here, after it.
+            // Read again on every call, the cached apply included, because they come from files on disk.
+            var layouts = new Dictionary<string, TextLayout>(context.Guard.PathComparer);
+
+            foreach (var file in files)
+            {
+                if (EditorConfig.LayoutFor(file) is { IsSet: true } layout)
+                {
+                    layouts[file] = layout;
+                }
+            }
+
             var key = EditCache.KeyFor(
                 "formatCode",
                 string.Join('|', files.Select(context.Guard.ToRelative)),
@@ -161,7 +174,7 @@ internal sealed class EditTools
             if (!preview && context.Cache.TryTake(key) is { } cached)
             {
                 return await context
-                    .ApplyEditAsync("formatCode", key, cached, preview: false, cancellationToken)
+                    .ApplyEditAsync("formatCode", key, cached, preview: false, cancellationToken, layouts)
                     .ConfigureAwait(false);
             }
 
@@ -184,11 +197,13 @@ internal sealed class EditTools
                     .FormattingAsync(session.Uri, LspFormattingOptions.Default, cancellationToken)
                     .ConfigureAwait(false);
 
-                if (edits.Count == 0)
+                if (edits.Count == 0 && !layouts.ContainsKey(file))
                 {
                     continue;
                 }
 
+                // A file with layout rules is planned even when Roslyn changed nothing in it, because
+                // its line endings or final newline may still be wrong.
                 changes.Add(new DocumentChange
                 {
                     TextDocument = new OptionalVersionedTextDocumentIdentifier { Uri = session.Uri },
@@ -198,7 +213,7 @@ internal sealed class EditTools
 
             var edit = new WorkspaceEdit { DocumentChanges = [.. changes] };
 
-            return await context.ApplyEditAsync("formatCode", key, edit, preview, cancellationToken)
+            return await context.ApplyEditAsync("formatCode", key, edit, preview, cancellationToken, layouts)
                 .ConfigureAwait(false);
         }).ConfigureAwait(false);
     }

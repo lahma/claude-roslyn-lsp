@@ -100,6 +100,14 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
     /// </remarks>
     internal const string ActivityMethod = "claude-roslyn-lsp/activity";
 
+    /// <summary>
+    /// The custom request an attached MCP engine asks what text Roslyn holds for a document with
+    /// (D112): the host's mirror has every client's open documents, the attached engine's has only its
+    /// own. Answered here, never forwarded — Roslyn has no such method — with the text, or null when
+    /// nobody has the document open.
+    /// </summary>
+    internal const string DocumentTextMethod = "claude-roslyn-lsp/documentText";
+
     /// <summary>Notifications every attached client is given verbatim.</summary>
     /// <remarks>
     /// Four from Roslyn, and one this host originates itself (D105): the readiness and diagnostics
@@ -455,6 +463,14 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
                 // Counted above, and nothing else: Roslyn has no use for it.
                 return;
 
+            case DocumentTextMethod:
+                if (isRequest)
+                {
+                    client.Post(JsonRpcErrors.RawResult(idToken, DocumentText(UriOf(body))));
+                }
+
+                return;
+
             case "textDocument/didOpen":
             case "textDocument/didChange":
             case "textDocument/didClose":
@@ -701,6 +717,25 @@ internal sealed partial class SharedRoslynHost : IAsyncDisposable
         _owner.Gate.TryHold(JsonRpcId.Absent, method, outcome => reopened.TrySetResult(outcome == GateOutcome.Pass));
 
         return reopened.Task.WaitAsync(cancellationToken);
+    }
+
+    /// <summary>The text the host's mirror holds for a document, as a JSON string, or <c>null</c>.</summary>
+    /// <param name="uri">The document, or null when the request named none.</param>
+    private byte[] DocumentText(string? uri)
+    {
+        if (uri is null || _owner.Documents.FindFile(uri)?.Text is not { } text)
+        {
+            return "null"u8.ToArray();
+        }
+
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>(text.Length + 16);
+
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStringValue(text);
+        }
+
+        return buffer.WrittenSpan.ToArray();
     }
 
     /// <summary>Applies one attached client's configuration override in the host (rule 4, D90).</summary>

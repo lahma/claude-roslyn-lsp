@@ -1,7 +1,5 @@
-# 1.0.0
+# 0.9.0
 
-- 1.0.0: the ten MCP tools, their arguments, the environment variables, the verbs and the plugin are
-  the stable surface from here on. Everything below is what changed since 0.2.0.
 - `dnx claude-roslyn-lsp` now runs the Native AOT binary. The NuGet package is a pointer to one
   RID-specific package per release platform (`win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`,
   `osx-arm64`), each built and handshake-tested on its own architecture, plus a framework-dependent
@@ -12,10 +10,14 @@
   document's first character; the adapter now removes it where a client's text enters, so Roslyn,
   the document mirror and a shared host all see the text the file holds. Positions on a first line
   no longer count the mark either.
-- Fixed (#4): with a `.sln` solution, `getWorkspaceStatus` listed no projects and the `project`
-  argument of `formatCode` and `getDiagnostics` matched nothing; a project that matches nothing is
-  now reported as not found, with the projects there are. `formatCode` says that it keeps each
-  file's line endings and final newline (`end_of_line` and `insert_final_newline` are not applied).
+- A mutating tool now refuses, preview included, an edit Roslyn computed against text that is not
+  the file on disk — an editor's unsaved changes, or a file a shell command rewrote that the client
+  never re-sent — and names the file, where it used to write the edit in the wrong place.
+- Fixed (#4): `formatCode` applies the `.editorconfig` `end_of_line` and `insert_final_newline`
+  rules after Roslyn's own formatting, as `dotnet format` does, so a repository checked with
+  `dotnet format --verify-no-changes` stays clean. With a `.sln` solution, `getWorkspaceStatus`
+  listed no projects and the `project` argument of `formatCode` and `getDiagnostics` matched
+  nothing; a project that matches nothing is now reported as not found, with the projects there are.
 - A tool call whose argument names are not the advertised ones is refused before the tool runs,
   naming the spelling it most likely meant. A mis-cased `Preview` used to be dropped, so a call meant
   as a preview wrote to disk.

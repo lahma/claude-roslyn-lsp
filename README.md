@@ -222,7 +222,7 @@ is named `claude-roslyn-lsp-{version}-{rid}` and contains the executable, `LICEN
 | macOS Apple silicon | `osx-arm64` | `claude-roslyn-lsp-{version}-osx-arm64.tar.gz` |
 
 ```bash
-tar -xzf claude-roslyn-lsp-0.9.0-linux-x64.tar.gz
+tar -xzf claude-roslyn-lsp-1.0.0-linux-x64.tar.gz
 chmod +x claude-roslyn-lsp
 ./claude-roslyn-lsp install
 ```
@@ -247,14 +247,14 @@ framework-dependent `claude-roslyn-lsp.any` anywhere else (Alpine, Intel macOS),
 step:
 
 ```bash
-dnx claude-roslyn-lsp@0.9.0 --yes doctor
+dnx claude-roslyn-lsp@1.0.0 --yes doctor
 ```
 
 `--yes` accepts the download prompt and is consumed by `dnx` itself; everything after it reaches the
 adapter. Pin the version rather than floating: a language server is something an agent runs on your
 behalf, and a pinned version is one you decided to run.
 
-**Never `dnx claude-roslyn-lsp@0.9.0 --version`.** `dnx` takes `--version` for itself, along with
+**Never `dnx claude-roslyn-lsp@1.0.0 --version`.** `dnx` takes `--version` for itself, along with
 `-v`, `--verbosity`, `--prerelease`, `--source`, `--interactive`, `-h` and about eight others, and
 prints its own usage to stdout on a parse error. Use `doctor`, which reports the version along with
 everything else.

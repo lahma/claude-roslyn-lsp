@@ -1,3 +1,19 @@
+# 1.0.0
+
+- 1.0.0: the ten MCP tools, their arguments, the environment variables, the verbs and the plugin are
+  the stable surface from here on.
+- The Claude Code plugin is now called `roslyn-adapter`: install it as
+  `roslyn-adapter@claude-roslyn-lsp`. Claude Code reserves plugin names beginning `claude-` for its
+  own, and its validator refused the old name. The marketplace, the binary, the NuGet package and the
+  MCP Registry entry keep the name `claude-roslyn-lsp`.
+- Upgrading from 0.9.0 or earlier is a one-time reinstall, because `/plugin update` cannot follow a
+  rename: `claude plugin marketplace update claude-roslyn-lsp`, then
+  `claude plugin install roslyn-adapter@claude-roslyn-lsp` and
+  `claude plugin uninstall claude-roslyn-lsp@claude-roslyn-lsp`. Plugin options are kept per plugin,
+  so set them again; permission rules that name `mcp__plugin_claude-roslyn-lsp_roslyn__*` tools
+  become `mcp__plugin_roslyn-adapter_roslyn__*`; and the first session downloads Roslyn once more,
+  into the new plugin's data directory.
+
 # 0.9.0
 
 - `dnx claude-roslyn-lsp` now runs the Native AOT binary. The NuGet package is a pointer to one

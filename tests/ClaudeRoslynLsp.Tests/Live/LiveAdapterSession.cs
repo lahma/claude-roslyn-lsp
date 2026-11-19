@@ -6,7 +6,7 @@ using ClaudeRoslynLsp.Protocol;
 using ClaudeRoslynLsp.Roslyn;
 using ClaudeRoslynLsp.Testing;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Live;
 
@@ -41,7 +41,7 @@ internal sealed class LiveAdapterSession : IAsyncDisposable
     private readonly CancellationTokenSource _stopping = new();
 
     private readonly AdapterLiveFixture _fixture;
-    private readonly ITestOutputHelper _output;
+    private readonly TextWriter _output;
     private readonly DuplexEnd _testEnd;
     private readonly LspFrameWriter _writer;
     private readonly LaunchedRoslynFactory _factory;
@@ -51,7 +51,7 @@ internal sealed class LiveAdapterSession : IAsyncDisposable
     private int _version = 1;
     private bool _stopped;
 
-    private LiveAdapterSession(AdapterLiveFixture fixture, ITestOutputHelper output)
+    private LiveAdapterSession(AdapterLiveFixture fixture, TextWriter output)
     {
         _fixture = fixture;
         _output = output;
@@ -99,7 +99,7 @@ internal sealed class LiveAdapterSession : IAsyncDisposable
     /// <param name="cancellationToken">Cancels the handshake.</param>
     internal static async Task<LiveAdapterSession> StartAsync(
         AdapterLiveFixture fixture,
-        ITestOutputHelper output,
+        TextWriter output,
         CancellationToken cancellationToken)
     {
         var session = new LiveAdapterSession(fixture, output);

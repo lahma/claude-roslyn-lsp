@@ -16,7 +16,7 @@ using ClaudeRoslynLsp.Testing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Live;
 
@@ -30,7 +30,7 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// Opt-in through <c>CLAUDE_ROSLYN_LSP_LIVE_TESTS=1</c>, and one test method in phases for D59's
 /// reason, more sharply here than anywhere else: the phases <em>are</em> a lifecycle. Killing the
 /// host's Roslyn, and then stopping the host itself, destroy exactly the preconditions the earlier
-/// phases needed, and xunit does not order tests within a class.
+/// phases needed, and NUnit promises no order for tests within a class.
 /// </para>
 /// <para>
 /// The load-bearing assertion is a negative one: the attaching half's own launcher never started a
@@ -42,24 +42,22 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// </para>
 /// <para>
 /// Its own copy of the fixture and its own adapter home, because the session directory is part of
-/// what is under test and the two other live collections edit the same files differently while
-/// running in parallel.
+/// what is under test and the two other live fixtures edit the same files differently.
 /// </para>
 /// </remarks>
-public class SharedEngineLiveTests : IAsyncLifetime
+[Category("Live")]
+public class SharedEngineLiveTests
 {
     private static readonly string[] SkippedDirectories = ["bin", "obj", ".vs"];
 
-    private readonly ITestOutputHelper _output;
+    private readonly TextWriter _output = TestContext.Out;
 
     private TempWorkspace? _home;
     private TempWorkspace? _workspace;
     private ClaudeRoslynLspOptions _options = new();
     private AdapterPaths? _paths;
 
-    public SharedEngineLiveTests(ITestOutputHelper output) => _output = output;
-
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>Whether the live tests were asked for.</summary>
     private bool Enabled { get; } =
@@ -72,8 +70,9 @@ public class SharedEngineLiveTests : IAsyncLifetime
     /// <summary>The workspace root as a <c>file:</c> URI, which is what the client's handshake carries.</summary>
     private string RootUri => new Uri(WorkspaceRoot + Path.DirectorySeparatorChar).AbsoluteUri;
 
-    /// <inheritdoc />
-    public async ValueTask InitializeAsync()
+    /// <summary>Copies the fixture and acquires Roslyn; does nothing when the live tests are off.</summary>
+    [SetUp]
+    public async Task SetUpAsync()
     {
         if (!Enabled)
         {
@@ -121,27 +120,24 @@ public class SharedEngineLiveTests : IAsyncLifetime
 
         var resolution = await locator.ResolveAsync(allowDownload: true, cancellationToken: Cancellation);
 
-        Assert.True(resolution.IsResolved, resolution.Failure);
+        Assert.That(resolution.IsResolved, Is.True, resolution.Failure);
     }
 
-    /// <inheritdoc />
-    public ValueTask DisposeAsync()
+    /// <summary>Deletes the copy and the temporary home.</summary>
+    [TearDown]
+    public void TearDown()
     {
         _workspace?.Dispose();
         _home?.Dispose();
-
-        GC.SuppressFinalize(this);
-
-        return ValueTask.CompletedTask;
     }
 
     /// <summary>The whole lifecycle, in the one order that lets every phase have its preconditions.</summary>
-    [Fact]
+    [Test]
     public async Task OneRoslynServesBothVerbsAndSurvivesLosingEitherHalf()
     {
         if (!Enabled)
         {
-            Assert.Skip(
+            Assert.Ignore(
                 $"Set {AdapterLiveFixture.EnableVariable}=1 to run the shared-engine live test "
                 + "(it starts a real Roslyn).");
         }
@@ -173,9 +169,9 @@ public class SharedEngineLiveTests : IAsyncLifetime
 
         var published = registry.TryRead(SessionRegistry.KeyFor(SolutionPath));
 
-        Assert.NotNull(published);
-        Assert.Equal(Environment.ProcessId, published.ProcessId);
-        Assert.NotNull(hostFactory.Host);
+        Assert.That(published, Is.Not.Null);
+        Assert.That(published!.ProcessId, Is.EqualTo(Environment.ProcessId));
+        Assert.That(hostFactory.Host, Is.Not.Null);
 
         // ------------------------------------------------------------------ the attaching engine
         var attachLauncher = new LaunchedRoslynFactory(_options, _paths!, Logger("mcp-attached"));
@@ -193,16 +189,16 @@ public class SharedEngineLiveTests : IAsyncLifetime
 
         _output.WriteLine($"mcp attached and ready          {attaching.Elapsed.TotalSeconds:F1} s");
 
-        Assert.Equal(WorkspaceLoadStatus.Ready, state.Status);
-        Assert.Equal(OwnedRoslynEngine.AttachedEngine, state.Engine);
-        Assert.Equal(Environment.ProcessId, state.HostProcessId);
-        Assert.True(attachFactory.IsAttached);
+        Assert.That(state.Status, Is.EqualTo(WorkspaceLoadStatus.Ready));
+        Assert.That(state.Engine, Is.EqualTo(OwnedRoslynEngine.AttachedEngine));
+        Assert.That(state.HostProcessId, Is.EqualTo(Environment.ProcessId));
+        Assert.That(attachFactory.IsAttached, Is.True);
 
         // The claim, stated so it cannot pass by accident: the attaching half never launched
         // anything, and the process it reports is the one the host launched.
-        Assert.Null(attachLauncher.ProcessId);
-        Assert.NotNull(state.ProcessId);
-        Assert.True(IsAlive(state.ProcessId.Value), "the shared Roslyn process is not running");
+        Assert.That(attachLauncher.ProcessId, Is.Null);
+        Assert.That(state.ProcessId, Is.Not.Null);
+        Assert.That(IsAlive(state.ProcessId!.Value), Is.True, "the shared Roslyn process is not running");
 
         var roslynProcessId = state.ProcessId.Value;
         _output.WriteLine($"shared Roslyn                   pid {roslynProcessId}");
@@ -212,14 +208,14 @@ public class SharedEngineLiveTests : IAsyncLifetime
             "textDocument/definition",
             Position("Hello.Core/Caller.cs", "calculator.Compute()", offset: 12));
 
-        Assert.NotEmpty(definition.GetProperty("result").EnumerateArray());
+        Assert.That(definition.GetProperty("result").EnumerateArray(), Is.Not.Empty);
         _output.WriteLine($"lsp definition through the host {definition.GetProperty("result").GetArrayLength()} location(s)");
 
         var context = ToolContext(engine);
         var resolved = await SymbolTools.ResolveSymbolAsync(context, "IShape", cancellationToken: Cancellation);
 
-        Assert.Equal(ToolStatus.Ok, resolved.Status);
-        Assert.NotEmpty(resolved.Matches!);
+        Assert.That(resolved.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(resolved.Matches!, Is.Not.Empty);
         _output.WriteLine($"mcp resolveSymbol over the pipe {resolved.Matches!.Count} match(es)");
 
         // A solution-wide pull needs a fullSolution compiler scope (C14), which an attached engine
@@ -230,8 +226,8 @@ public class SharedEngineLiveTests : IAsyncLifetime
             scope: "solution",
             cancellationToken: Cancellation);
 
-        Assert.Equal(ToolStatus.Ok, diagnostics.Status);
-        Assert.Contains(diagnostics.Diagnostics ?? [], entry => entry.Id == "CS0029");
+        Assert.That(diagnostics.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(diagnostics.Diagnostics ?? [], Has.Some.Matches<DiagnosticEntry>(entry => entry!.Id == "CS0029"));
         _output.WriteLine($"mcp solution diagnostics        {diagnostics.Diagnostics!.Count} entries, CS0029 present");
 
         var peak = WorkingSetOf(roslynProcessId);
@@ -245,18 +241,18 @@ public class SharedEngineLiveTests : IAsyncLifetime
             Position("Hello.Core/Caller.cs", "calculator.Compute()", offset: 12),
             TimeSpan.FromSeconds(_options.ReadyTimeoutSeconds));
 
-        Assert.NotEmpty(afterKill.GetProperty("result").EnumerateArray());
+        Assert.That(afterKill.GetProperty("result").EnumerateArray(), Is.Not.Empty);
         _output.WriteLine($"lsp answered after a kill -9    {killed.Elapsed.TotalSeconds:F1} s");
 
         var recovered = await SymbolTools.ResolveSymbolAsync(context, "IShape", cancellationToken: Cancellation);
 
-        Assert.Equal(ToolStatus.Ok, recovered.Status);
-        Assert.NotEmpty(recovered.Matches!);
+        Assert.That(recovered.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(recovered.Matches!, Is.Not.Empty);
         _output.WriteLine($"mcp answered after a kill -9    {killed.Elapsed.TotalSeconds:F1} s, still attached");
 
         // The attached half never noticed the relaunch as anything but a pause: it is still using the
         // host's engine rather than having started one.
-        Assert.Null(attachLauncher.ProcessId);
+        Assert.That(attachLauncher.ProcessId, Is.Null);
 
         // ------------------------------------------------------------------ the host goes away
         var takeover = Stopwatch.StartNew();
@@ -275,8 +271,8 @@ public class SharedEngineLiveTests : IAsyncLifetime
                 break;
             }
 
-            Assert.True(
-                takeover.Elapsed < TimeSpan.FromSeconds(_options.ReadyTimeoutSeconds),
+            Assert.That(
+                takeover.Elapsed < TimeSpan.FromSeconds(_options.ReadyTimeoutSeconds), Is.True,
                 $"the attached engine did not take ownership within {_options.ReadyTimeoutSeconds} s "
                 + $"(status {owned.Status}, engine {owned.Engine})");
 
@@ -285,13 +281,13 @@ public class SharedEngineLiveTests : IAsyncLifetime
 
         _output.WriteLine($"mcp became the owner            {takeover.Elapsed.TotalSeconds:F1} s");
 
-        Assert.NotNull(attachLauncher.ProcessId);
-        Assert.NotNull(attachFactory.Host);
+        Assert.That(attachLauncher.ProcessId, Is.Not.Null);
+        Assert.That(attachFactory.Host, Is.Not.Null);
 
         var afterTakeover = await SymbolTools.ResolveSymbolAsync(context, "IShape", cancellationToken: Cancellation);
 
-        Assert.Equal(ToolStatus.Ok, afterTakeover.Status);
-        Assert.NotEmpty(afterTakeover.Matches!);
+        Assert.That(afterTakeover.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(afterTakeover.Matches!, Is.Not.Empty);
 
         await attachFactory.StopHostingAsync();
 
@@ -321,9 +317,9 @@ public class SharedEngineLiveTests : IAsyncLifetime
             TimeSpan.FromSeconds(_options.ReadyTimeoutSeconds),
             Cancellation);
 
-        Assert.Equal(WorkspaceLoadStatus.Ready, hosted.Status);
-        Assert.Equal(OwnedRoslynEngine.Engine, hosted.Engine);
-        Assert.NotNull(hostFactory.Host);
+        Assert.That(hosted.Status, Is.EqualTo(WorkspaceLoadStatus.Ready));
+        Assert.That(hosted.Engine, Is.EqualTo(OwnedRoslynEngine.Engine));
+        Assert.That(hostFactory.Host, Is.Not.Null);
 
         _output.WriteLine($"mcp host loaded                 {started.Elapsed.TotalSeconds:F1} s");
 
@@ -340,14 +336,14 @@ public class SharedEngineLiveTests : IAsyncLifetime
 
         _output.WriteLine($"lsp attached and ready          {attaching.Elapsed.TotalSeconds:F1} s");
 
-        Assert.True(attachFactory.IsAttached);
-        Assert.Null(attachLauncher.ProcessId);
+        Assert.That(attachFactory.IsAttached, Is.True);
+        Assert.That(attachLauncher.ProcessId, Is.Null);
 
         var definition = await attached.RequestAsync(
             "textDocument/definition",
             Position("Hello.Core/Caller.cs", "calculator.Compute()", offset: 12));
 
-        Assert.NotEmpty(definition.GetProperty("result").EnumerateArray());
+        Assert.That(definition.GetProperty("result").EnumerateArray(), Is.Not.Empty);
 
         await attached.DisposeAsync();
         await hostFactory.StopHostingAsync();

@@ -4,7 +4,7 @@ using System.Text.Json;
 using ClaudeRoslynLsp.Adapter;
 using ClaudeRoslynLsp.Protocol;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -20,7 +20,7 @@ public class IdMapTests
     /// Roslyn (also id 1) would be the same outstanding request — and one would be answered with the
     /// other's result, which is a wrong answer rather than an error.
     /// </summary>
-    [Fact]
+    [Test]
     public void EveryOutboundIdIsUniqueAcrossBothKindsOfRequest()
     {
         var map = new IdMap();
@@ -31,63 +31,63 @@ public class IdMapTests
             var forwarded = map.Forward(JsonRpcId.FromNumber(1), "1"u8, "textDocument/definition");
             var own = map.Register("initialize", new TaskCompletionSource<JsonElement>());
 
-            Assert.True(issued.Add(forwarded), $"Outbound id {forwarded} was issued twice.");
-            Assert.True(issued.Add(own), $"Outbound id {own} was issued twice.");
+            Assert.That(issued.Add(forwarded), Is.True, $"Outbound id {forwarded} was issued twice.");
+            Assert.That(issued.Add(own), Is.True, $"Outbound id {own} was issued twice.");
         }
 
-        Assert.Equal(1000, issued.Count);
+        Assert.That(issued.Count, Is.EqualTo(1000));
     }
 
-    [Fact]
+    [Test]
     public void CompletingAForwardedRequestReturnsThePeersOwnIdToken()
     {
         var map = new IdMap();
         var outbound = map.Forward(JsonRpcId.FromText("init-1"), "\"init-1\""u8, "textDocument/hover");
 
-        Assert.True(map.TryComplete(outbound, out var pending));
-        Assert.Equal("textDocument/hover", pending.Method);
-        Assert.Equal("\"init-1\"", Encoding.UTF8.GetString(pending.OriginalIdToken!));
-        Assert.Null(pending.Completion);
+        Assert.That(map.TryComplete(outbound, out var pending), Is.True);
+        Assert.That(pending.Method, Is.EqualTo("textDocument/hover"));
+        Assert.That(Encoding.UTF8.GetString(pending.OriginalIdToken!), Is.EqualTo("\"init-1\""));
+        Assert.That(pending.Completion, Is.Null);
 
         // And it is gone: an answer arriving twice must not be delivered twice.
-        Assert.False(map.TryComplete(outbound, out _));
+        Assert.That(map.TryComplete(outbound, out _), Is.False);
     }
 
-    [Fact]
+    [Test]
     public void CompletingAnAdapterRequestHandsBackItsCompletionSource()
     {
         var map = new IdMap();
         var completion = new TaskCompletionSource<JsonElement>();
         var outbound = map.Register("shutdown", completion);
 
-        Assert.True(map.TryComplete(outbound, out var pending));
-        Assert.Same(completion, pending.Completion);
-        Assert.Null(pending.OriginalIdToken);
+        Assert.That(map.TryComplete(outbound, out var pending), Is.True);
+        Assert.That(pending.Completion, Is.SameAs(completion));
+        Assert.That(pending.OriginalIdToken, Is.Null);
     }
 
     /// <summary>
     /// What <c>$/cancelRequest</c> needs: the id the <em>other</em> peer knows the request by, with
     /// the request still outstanding, because a cancellation is not an answer.
     /// </summary>
-    [Fact]
+    [Test]
     public void ACancellationResolvesThePeersIdWithoutRemovingTheRequest()
     {
         var map = new IdMap();
         var outbound = map.Forward(JsonRpcId.FromNumber(9), "9"u8, "textDocument/references");
 
-        Assert.True(map.TryResolveOutboundId(JsonRpcId.FromNumber(9), out var resolved));
-        Assert.Equal(outbound, resolved);
-        Assert.Equal(1, map.PendingCount);
+        Assert.That(map.TryResolveOutboundId(JsonRpcId.FromNumber(9), out var resolved), Is.True);
+        Assert.That(resolved, Is.EqualTo(outbound));
+        Assert.That(map.PendingCount, Is.EqualTo(1));
 
-        Assert.True(map.TryComplete(outbound, out _));
-        Assert.False(map.TryResolveOutboundId(JsonRpcId.FromNumber(9), out _));
+        Assert.That(map.TryComplete(outbound, out _), Is.True);
+        Assert.That(map.TryResolveOutboundId(JsonRpcId.FromNumber(9), out _), Is.False);
     }
 
     /// <summary>
     /// The backend going away must leave no request unanswered — a peer waits on an outstanding
     /// request indefinitely, so every entry has to become an error rather than silence.
     /// </summary>
-    [Fact]
+    [Test]
     public void DrainingReturnsEverythingOutstandingAndEmptiesTheTable()
     {
         var map = new IdMap();
@@ -98,14 +98,14 @@ public class IdMapTests
 
         var drained = map.DrainAll();
 
-        Assert.Equal(3, drained.Count);
-        Assert.Equal(0, map.PendingCount);
-        Assert.False(map.TryResolveOutboundId(JsonRpcId.FromNumber(1), out _));
+        Assert.That(drained.Count, Is.EqualTo(3));
+        Assert.That(map.PendingCount, Is.EqualTo(0));
+        Assert.That(map.TryResolveOutboundId(JsonRpcId.FromNumber(1), out _), Is.False);
     }
 
-    [Fact]
+    [Test]
     public void AnOutboundIdRendersAsABareJsonNumberToken()
     {
-        Assert.Equal("17", Encoding.UTF8.GetString(IdMap.TokenFor(17)));
+        Assert.That(Encoding.UTF8.GetString(IdMap.TokenFor(17)), Is.EqualTo("17"));
     }
 }

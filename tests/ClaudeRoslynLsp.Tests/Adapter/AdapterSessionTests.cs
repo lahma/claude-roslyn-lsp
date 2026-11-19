@@ -9,7 +9,7 @@ using ClaudeRoslynLsp.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -33,13 +33,13 @@ namespace ClaudeRoslynLsp.Tests.Adapter;
 /// </remarks>
 public class AdapterSessionTests
 {
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>
     /// The handshake is answered out of this repository's own capability document, before anything
     /// has been connected. Claude Code holds <c>initialize</c> open forever otherwise.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task InitializeIsAnsweredBeforeTheBackendIsEvenConnected()
     {
         await using var harness = new SessionHarness();
@@ -50,18 +50,18 @@ public class AdapterSessionTests
         var result = response.GetProperty("result");
         var serverInfo = result.GetProperty("serverInfo");
 
-        Assert.Equal(ServerVersion.Name, serverInfo.GetProperty("name").GetString());
-        Assert.Equal(ServerVersion.Value, serverInfo.GetProperty("version").GetString());
+        Assert.That(serverInfo.GetProperty("name").GetString(), Is.EqualTo(ServerVersion.Name));
+        Assert.That(serverInfo.GetProperty("version").GetString(), Is.EqualTo(ServerVersion.Value));
 
         // Nothing was connected to answer it with.
-        Assert.Null(harness.Factory!.Server);
-        Assert.Equal(ReadinessState.Starting, harness.Session.Gate.State);
+        Assert.That(harness.Factory!.Server, Is.Null);
+        Assert.That(harness.Session.Gate.State, Is.EqualTo(ReadinessState.Starting));
 
         var sync = result.GetProperty("capabilities").GetProperty("textDocumentSync");
 
-        Assert.True(sync.GetProperty("openClose").GetBoolean());
-        Assert.Equal(1, sync.GetProperty("change").GetInt32());
-        Assert.False(sync.GetProperty("save").GetProperty("includeText").GetBoolean());
+        Assert.That(sync.GetProperty("openClose").GetBoolean(), Is.True);
+        Assert.That(sync.GetProperty("change").GetInt32(), Is.EqualTo(1));
+        Assert.That(sync.GetProperty("save").GetProperty("includeText").GetBoolean(), Is.False);
     }
 
     /// <summary>
@@ -70,7 +70,7 @@ public class AdapterSessionTests
     /// client, because advertising a capability is a promise to answer the requests it enables and
     /// this adapter bridges none of those four.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task RoslynsOwnCapabilitiesAreNeverForwardedToTheClient()
     {
         await using var harness = new SessionHarness();
@@ -83,17 +83,17 @@ public class AdapterSessionTests
 
         var capabilities = response.GetProperty("result").GetProperty("capabilities");
 
-        Assert.False(capabilities.TryGetProperty("semanticTokensProvider", out _));
-        Assert.False(capabilities.TryGetProperty("codeLensProvider", out _));
-        Assert.False(capabilities.TryGetProperty("inlayHintProvider", out _));
-        Assert.False(capabilities.TryGetProperty("_vs_onAutoInsertProvider", out _));
-        Assert.False(capabilities.TryGetProperty("documentOnTypeFormattingProvider", out _));
+        Assert.That(capabilities.TryGetProperty("semanticTokensProvider", out _), Is.False);
+        Assert.That(capabilities.TryGetProperty("codeLensProvider", out _), Is.False);
+        Assert.That(capabilities.TryGetProperty("inlayHintProvider", out _), Is.False);
+        Assert.That(capabilities.TryGetProperty("_vs_onAutoInsertProvider", out _), Is.False);
+        Assert.That(capabilities.TryGetProperty("documentOnTypeFormattingProvider", out _), Is.False);
 
         // And what it does advertise is what the mediation actually carries.
-        Assert.True(capabilities.GetProperty("definitionProvider").GetBoolean());
-        Assert.True(capabilities.GetProperty("callHierarchyProvider").GetBoolean());
-        Assert.True(capabilities.GetProperty("renameProvider").GetProperty("prepareProvider").GetBoolean());
-        Assert.True(capabilities.GetProperty("codeActionProvider").GetProperty("resolveProvider").GetBoolean());
+        Assert.That(capabilities.GetProperty("definitionProvider").GetBoolean(), Is.True);
+        Assert.That(capabilities.GetProperty("callHierarchyProvider").GetBoolean(), Is.True);
+        Assert.That(capabilities.GetProperty("renameProvider").GetProperty("prepareProvider").GetBoolean(), Is.True);
+        Assert.That(capabilities.GetProperty("codeActionProvider").GetProperty("resolveProvider").GetBoolean(), Is.True);
     }
 
     /// <summary>
@@ -106,7 +106,7 @@ public class AdapterSessionTests
     /// reading them from the wrong level produces a server that works in every respect except that
     /// it silently opens nothing.
     /// </remarks>
-    [Fact]
+    [Test]
     public async Task TheClientsRootReachesRoslynsInitialize()
     {
         await using var harness = new SessionHarness();
@@ -115,37 +115,38 @@ public class AdapterSessionTests
         var backend = await harness.AwaitBackendAsync(Cancellation);
         await harness.AwaitBackendMethodAsync(backend, "initialized", Cancellation);
 
-        var initialize = Assert.Single(
+        Assert.That(
             backend.ReceivedMessages,
-            x => x.Contains("\"method\":\"initialize\"", StringComparison.Ordinal));
+            Has.Exactly(1).Matches<string>(x => x!.Contains("\"method\":\"initialize\"", StringComparison.Ordinal)));
+        var initialize = backend.ReceivedMessages.Single(x => x.Contains("\"method\":\"initialize\"", StringComparison.Ordinal));
 
         using var document = JsonDocument.Parse(initialize);
         var parameters = document.RootElement.GetProperty("params");
 
-        Assert.Equal("file:///w/Fixture", parameters.GetProperty("rootUri").GetString());
-        Assert.Equal(Environment.ProcessId, parameters.GetProperty("processId").GetInt32());
-        Assert.Equal("file:///w/Fixture", parameters.GetProperty("workspaceFolders")[0].GetProperty("uri").GetString());
-        Assert.Equal(ServerVersion.Name, parameters.GetProperty("clientInfo").GetProperty("name").GetString());
+        Assert.That(parameters.GetProperty("rootUri").GetString(), Is.EqualTo("file:///w/Fixture"));
+        Assert.That(parameters.GetProperty("processId").GetInt32(), Is.EqualTo(Environment.ProcessId));
+        Assert.That(parameters.GetProperty("workspaceFolders")[0].GetProperty("uri").GetString(), Is.EqualTo("file:///w/Fixture"));
+        Assert.That(parameters.GetProperty("clientInfo").GetProperty("name").GetString(), Is.EqualTo(ServerVersion.Name));
 
         // And the authored document, not the client's: Claude Code declares almost none of this.
         var capabilities = parameters.GetProperty("capabilities");
 
-        Assert.True(capabilities.GetProperty("workspace").GetProperty("configuration").GetBoolean());
-        Assert.True(capabilities.GetProperty("workspace").GetProperty("didChangeWatchedFiles")
-            .GetProperty("dynamicRegistration").GetBoolean());
-        Assert.True(capabilities.GetProperty("textDocument").GetProperty("diagnostic")
-            .GetProperty("dynamicRegistration").GetBoolean());
-        Assert.True(capabilities.GetProperty("window").GetProperty("workDoneProgress").GetBoolean());
-        Assert.Equal("utf-16", capabilities.GetProperty("general").GetProperty("positionEncodings")[0].GetString());
+        Assert.That(capabilities.GetProperty("workspace").GetProperty("configuration").GetBoolean(), Is.True);
+        Assert.That(capabilities.GetProperty("workspace").GetProperty("didChangeWatchedFiles")
+            .GetProperty("dynamicRegistration").GetBoolean(), Is.True);
+        Assert.That(capabilities.GetProperty("textDocument").GetProperty("diagnostic")
+            .GetProperty("dynamicRegistration").GetBoolean(), Is.True);
+        Assert.That(capabilities.GetProperty("window").GetProperty("workDoneProgress").GetBoolean(), Is.True);
+        Assert.That(capabilities.GetProperty("general").GetProperty("positionEncodings")[0].GetString(), Is.EqualTo("utf-16"));
 
         // linkSupport false everywhere: Claude Code renders a LocationLink as nothing at all.
-        Assert.False(capabilities.GetProperty("textDocument").GetProperty("definition")
-            .GetProperty("linkSupport").GetBoolean());
+        Assert.That(capabilities.GetProperty("textDocument").GetProperty("definition")
+            .GetProperty("linkSupport").GetBoolean(), Is.False);
 
         // And the three the adapter refuses to carry are absent, so Roslyn never registers them.
-        Assert.False(capabilities.GetProperty("textDocument").TryGetProperty("semanticTokens", out _));
-        Assert.False(capabilities.GetProperty("textDocument").TryGetProperty("inlayHint", out _));
-        Assert.False(capabilities.GetProperty("textDocument").TryGetProperty("codeLens", out _));
+        Assert.That(capabilities.GetProperty("textDocument").TryGetProperty("semanticTokens", out _), Is.False);
+        Assert.That(capabilities.GetProperty("textDocument").TryGetProperty("inlayHint", out _), Is.False);
+        Assert.That(capabilities.GetProperty("textDocument").TryGetProperty("codeLens", out _), Is.False);
     }
 
     /// <summary>
@@ -153,7 +154,7 @@ public class AdapterSessionTests
     /// <c>projectInitializationComplete</c> with an empty successful result (C27) — indistinguishable
     /// from "no definition found". So the adapter holds it, and answers when the workspace is up.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ADefinitionIssuedDuringTheLoadIsHeldAndThenAnswered()
     {
         await using var harness = new SessionHarness();
@@ -167,16 +168,16 @@ public class AdapterSessionTests
             """), Cancellation);
 
         await harness.WaitUntilAsync(() => harness.Session.Gate.HeldCount == 1, Cancellation);
-        Assert.Null(harness.TryFindResponse(2));
+        Assert.That(harness.TryFindResponse(2), Is.Null);
 
         backend.CompleteProjectInitialization();
 
         var response = await harness.AwaitResponseAsync(2, Cancellation);
         var result = response.GetProperty("result");
 
-        Assert.Equal(ReadinessState.ProjectsLoaded, harness.Session.Gate.State);
-        Assert.Equal(1, result.GetArrayLength());
-        Assert.Equal("file:///w/Fixture/Fixture.Core/IShape.cs", result[0].GetProperty("uri").GetString());
+        Assert.That(harness.Session.Gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
+        Assert.That(result.GetArrayLength(), Is.EqualTo(1));
+        Assert.That(result[0].GetProperty("uri").GetString(), Is.EqualTo("file:///w/Fixture/Fixture.Core/IShape.cs"));
     }
 
     /// <summary>
@@ -184,7 +185,7 @@ public class AdapterSessionTests
     /// client's own id — in the form the client wrote it. Answering <c>"nav-7"</c> with <c>7</c> is a
     /// correlation failure the client reports as a request that never came back.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AfterReadinessARequestPassesThroughAndItsAnswerCarriesTheClientsOwnId()
     {
         await using var harness = new SessionHarness();
@@ -202,20 +203,23 @@ public class AdapterSessionTests
 
         var response = await harness.AwaitResponseAsync("nav-7", Cancellation);
 
-        Assert.Equal(JsonValueKind.String, response.GetProperty("id").ValueKind);
-        Assert.Equal("nav-7", response.GetProperty("id").GetString());
-        Assert.Equal("markdown", response.GetProperty("result").GetProperty("contents").GetProperty("kind").GetString());
+        Assert.That(response.GetProperty("id").ValueKind, Is.EqualTo(JsonValueKind.String));
+        Assert.That(response.GetProperty("id").GetString(), Is.EqualTo("nav-7"));
+        Assert.That(response.GetProperty("result").GetProperty("contents").GetProperty("kind").GetString(), Is.EqualTo("markdown"));
 
         // And Roslyn saw an id this adapter minted, not the client's.
-        var forwarded = Assert.Single(backend.ReceivedMessages, x => x.Contains("textDocument/hover", StringComparison.Ordinal));
-        Assert.DoesNotContain("nav-7", forwarded, StringComparison.Ordinal);
+        Assert.That(
+            backend.ReceivedMessages,
+            Has.Exactly(1).Matches<string>(x => x!.Contains("textDocument/hover", StringComparison.Ordinal)));
+        var forwarded = backend.ReceivedMessages.Single(x => x.Contains("textDocument/hover", StringComparison.Ordinal));
+        Assert.That(forwarded, !Contains.Substring("nav-7").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// A cancellation for a request that has never reached Roslyn cannot be mapped through — Roslyn
     /// has never seen the id. The gate answers it instead, with LSP's <c>RequestCancelled</c>.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task CancellingAHeldRequestAnswersItWithRequestCancelled()
     {
         await using var harness = new SessionHarness();
@@ -232,11 +236,11 @@ public class AdapterSessionTests
         var response = await harness.AwaitResponseAsync(3, Cancellation);
         var error = response.GetProperty("error");
 
-        Assert.Equal(JsonRpcErrors.RequestCancelled, error.GetProperty("code").GetInt32());
-        Assert.Equal(0, harness.Session.Gate.HeldCount);
+        Assert.That(error.GetProperty("code").GetInt32(), Is.EqualTo(JsonRpcErrors.RequestCancelled));
+        Assert.That(harness.Session.Gate.HeldCount, Is.EqualTo(0));
 
         // And the request never reached Roslyn at all.
-        Assert.DoesNotContain("textDocument/references", backend.ReceivedMethods);
+        Assert.That(backend.ReceivedMethods, Does.Not.Contain("textDocument/references"));
     }
 
     /// <summary>
@@ -244,7 +248,7 @@ public class AdapterSessionTests
     /// <c>-32601</c> rather than silence: an unanswered server-to-client request stalls whichever
     /// handler issued it, and several of those are on the solution-load path.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnUnknownRoslynRequestIsRefusedRatherThanIgnored()
     {
         await using var harness = new SessionHarness();
@@ -256,16 +260,17 @@ public class AdapterSessionTests
             () => backend.ReceivedMessages.Any(x => x.Contains("-32601", StringComparison.Ordinal)),
             Cancellation);
 
-        var refusal = Assert.Single(backend.ReceivedMessages, x => x.Contains("-32601", StringComparison.Ordinal));
+        Assert.That(backend.ReceivedMessages, Has.Exactly(1).Matches<string>(x => x!.Contains("-32601", StringComparison.Ordinal)));
+        var refusal = backend.ReceivedMessages.Single(x => x.Contains("-32601", StringComparison.Ordinal));
 
-        Assert.Contains("window/_roslyn_unknownFutureRequest", refusal, StringComparison.Ordinal);
+        Assert.That(refusal, Contains.Substring("window/_roslyn_unknownFutureRequest").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// The registrations and configuration requests Claude Code refuses are answered here, so Roslyn
     /// ends up with its watchers, its diagnostic sources and this adapter's tuned options.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task RoslynsRegistrationsAndConfigurationAreAnsweredByTheAdapter()
     {
         await using var harness = new SessionHarness();
@@ -279,19 +284,19 @@ public class AdapterSessionTests
 
         var sources = harness.Session.Registrations.DiagnosticSources;
 
-        Assert.Contains(sources, x => x.Identifier == "DocumentCompilerSemantic");
-        Assert.Contains(sources, x => x.Identifier == "DocumentAnalyzerSemantic");
-        Assert.Contains(sources, x => x.Identifier is null);
+        Assert.That(sources, Has.Some.Matches<DiagnosticSourceRegistration>(x => x!.Identifier == "DocumentCompilerSemantic"));
+        Assert.That(sources, Has.Some.Matches<DiagnosticSourceRegistration>(x => x!.Identifier == "DocumentAnalyzerSemantic"));
+        Assert.That(sources, Has.Some.Matches<DiagnosticSourceRegistration>(x => x!.Identifier is null));
 
         // 135 registrations collapsed onto two real directories in the script's shape.
-        Assert.Equal(2, harness.Session.Registrations.Watchers.Count);
+        Assert.That(harness.Session.Registrations.Watchers.Count, Is.EqualTo(2));
 
         var configuration = backend.ReceivedMessages
             .Where(x => x.Contains("\"result\":[", StringComparison.Ordinal))
             .ToArray();
 
-        Assert.Equal(2, configuration.Length);
-        Assert.Contains(configuration, x => x.Contains("openFiles", StringComparison.Ordinal));
+        Assert.That(configuration.Length, Is.EqualTo(2));
+        Assert.That(configuration, Has.Some.Matches<string>(x => x!.Contains("openFiles", StringComparison.Ordinal)));
     }
 
     /// <summary>
@@ -299,7 +304,7 @@ public class AdapterSessionTests
     /// holds the latest text and replays one <c>didOpen</c> per document once Roslyn is initialised.
     /// Three edits before the backend arrived become one notification at the third text.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task DocumentsOpenedBeforeTheBackendIsUpAreReplayedFromTheMirror()
     {
         await using var harness = new SessionHarness();
@@ -320,21 +325,24 @@ public class AdapterSessionTests
             () => backend.ReceivedMethods.Count(x => x == "textDocument/didOpen") == 1,
             Cancellation);
 
-        var replay = Assert.Single(backend.ReceivedMessages, x => x.Contains("textDocument/didOpen", StringComparison.Ordinal));
+        Assert.That(
+            backend.ReceivedMessages,
+            Has.Exactly(1).Matches<string>(x => x!.Contains("textDocument/didOpen", StringComparison.Ordinal)));
+        var replay = backend.ReceivedMessages.Single(x => x.Contains("textDocument/didOpen", StringComparison.Ordinal));
 
         using var document = JsonDocument.Parse(replay);
         var item = document.RootElement.GetProperty("params").GetProperty("textDocument");
 
-        Assert.Equal(3, item.GetProperty("version").GetInt32());
-        Assert.Equal("three", item.GetProperty("text").GetString());
-        Assert.DoesNotContain("textDocument/didChange", backend.ReceivedMethods);
+        Assert.That(item.GetProperty("version").GetInt32(), Is.EqualTo(3));
+        Assert.That(item.GetProperty("text").GetString(), Is.EqualTo("three"));
+        Assert.That(backend.ReceivedMethods, Does.Not.Contain("textDocument/didChange"));
     }
 
     /// <summary>
     /// <c>shutdown</c> reaches Roslyn before the client is answered, and <c>exit</c> reaches it before
     /// the process stops — the ordering an editor's quit depends on.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ShutdownAndExitPropagateToRoslynInOrderAndExitZero()
     {
         await using var harness = new SessionHarness();
@@ -346,15 +354,15 @@ public class AdapterSessionTests
         await harness.SendAsync(Request(9, "shutdown", null), Cancellation);
         var response = await harness.AwaitResponseAsync(9, Cancellation);
 
-        Assert.True(response.TryGetProperty("result", out var result));
-        Assert.Equal(JsonValueKind.Null, result.ValueKind);
-        Assert.Contains("shutdown", backend.ReceivedMethods);
-        Assert.True(backend.ShutdownRequested);
+        Assert.That(response.TryGetProperty("result", out var result), Is.True);
+        Assert.That(result.ValueKind, Is.EqualTo(JsonValueKind.Null));
+        Assert.That(backend.ReceivedMethods, Does.Contain("shutdown"));
+        Assert.That(backend.ShutdownRequested, Is.True);
 
         await harness.SendAsync(Notification("exit"), Cancellation);
 
-        Assert.Equal(CliDispatcher.ExitSuccess, await harness.RunToCompletionAsync(Cancellation));
-        Assert.Contains("exit", backend.ReceivedMethods);
+        Assert.That(await harness.RunToCompletionAsync(Cancellation), Is.EqualTo(CliDispatcher.ExitSuccess));
+        Assert.That(backend.ReceivedMethods, Does.Contain("exit"));
     }
 
     /// <summary>
@@ -362,7 +370,7 @@ public class AdapterSessionTests
     /// has not read it: <c>exit</c> without a preceding <c>shutdown</c> is a failure the client is
     /// entitled to notice.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ExitWithoutShutdownIsAFailedExit()
     {
         await using var harness = new SessionHarness();
@@ -371,16 +379,15 @@ public class AdapterSessionTests
         await harness.AwaitResponseAsync(1, Cancellation);
         await harness.SendAsync(Notification("exit"), Cancellation);
 
-        Assert.Equal(CliDispatcher.ExitFailure, await harness.RunToCompletionAsync(Cancellation));
+        Assert.That(await harness.RunToCompletionAsync(Cancellation), Is.EqualTo(CliDispatcher.ExitFailure));
     }
 
     /// <summary>
     /// A client that was killed closes the stream without saying anything. Same rule: orderly only if
     /// <c>shutdown</c> came first.
     /// </summary>
-    [Theory]
-    [InlineData(false, CliDispatcher.ExitFailure)]
-    [InlineData(true, CliDispatcher.ExitSuccess)]
+    [TestCase(false, CliDispatcher.ExitFailure)]
+    [TestCase(true, CliDispatcher.ExitSuccess)]
     public async Task ClientEndOfStreamFollowsTheSameExitCodeRule(bool shutdownFirst, int expected)
     {
         await using var harness = new SessionHarness();
@@ -396,28 +403,28 @@ public class AdapterSessionTests
 
         harness.CloseClientStream();
 
-        Assert.Equal(expected, await harness.RunToCompletionAsync(Cancellation));
+        Assert.That(await harness.RunToCompletionAsync(Cancellation), Is.EqualTo(expected));
     }
 
     /// <summary>
     /// Losing framing is not recoverable — there is no way to find where the next message begins — so
     /// the session stops rather than answering from the middle of a stream.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AStreamThatIsNotFramedStopsTheSession()
     {
         await using var harness = new SessionHarness();
 
         await harness.SendRawAsync("Content-Length: not-a-number\r\n\r\n{}", Cancellation);
 
-        Assert.Equal(CliDispatcher.ExitFailure, await harness.RunToCompletionAsync(Cancellation));
+        Assert.That(await harness.RunToCompletionAsync(Cancellation), Is.EqualTo(CliDispatcher.ExitFailure));
     }
 
     /// <summary>
     /// Well framed, badly written. The frame boundary is still known, so the connection survives it —
     /// and the answer carries a null id, because there was no readable one.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AMessageThatIsNotJsonIsAnsweredUnderANullIdAndTheSessionContinues()
     {
         await using var harness = new SessionHarness();
@@ -430,7 +437,7 @@ public class AdapterSessionTests
                  && error.GetProperty("code").GetInt32() == JsonRpcErrors.ParseError,
             Cancellation);
 
-        Assert.Equal(JsonValueKind.Null, parseError.GetProperty("id").ValueKind);
+        Assert.That(parseError.GetProperty("id").ValueKind, Is.EqualTo(JsonValueKind.Null));
 
         // And the session kept going.
         await harness.AwaitResponseAsync(1, Cancellation);
@@ -440,7 +447,7 @@ public class AdapterSessionTests
     /// With no backend to be had, every request is refused with an explanation and a <c>doctor</c>
     /// hint. That is a state a user can act on, unlike a server that answers everything with nothing.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task WithNoBackendEveryRequestIsRefusedWithADoctorHint()
     {
         await using var harness = new SessionHarness(new FailingFactory());
@@ -452,15 +459,15 @@ public class AdapterSessionTests
 
         var error = (await harness.AwaitResponseAsync(2, Cancellation)).GetProperty("error");
 
-        Assert.Equal(JsonRpcErrors.InternalError, error.GetProperty("code").GetInt32());
-        Assert.Contains("doctor", error.GetProperty("message").GetString()!, StringComparison.Ordinal);
+        Assert.That(error.GetProperty("code").GetInt32(), Is.EqualTo(JsonRpcErrors.InternalError));
+        Assert.That(error.GetProperty("message").GetString()!, Contains.Substring("doctor").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// With nothing configured there is nothing that will ever report the workspace loaded, so holding
     /// requests would be a hang. Misc-files mode is degraded, not broken (C28).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task WithNoSolutionConfiguredTheGateOpensImmediately()
     {
         await using var harness = new SessionHarness(solutionPath: null);
@@ -473,7 +480,7 @@ public class AdapterSessionTests
         await harness.SendAsync(Request(2, "textDocument/definition", "{}"), Cancellation);
         var response = await harness.AwaitResponseAsync(2, Cancellation);
 
-        Assert.True(response.TryGetProperty("result", out _));
+        Assert.That(response.TryGetProperty("result", out _), Is.True);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -622,9 +629,9 @@ public class AdapterSessionTests
 
         internal async Task<FakeRoslynServer> AwaitBackendAsync(CancellationToken cancellationToken)
         {
-            Assert.NotNull(Factory);
-            await WaitUntilAsync(() => Factory.Server is not null, cancellationToken).ConfigureAwait(false);
-            return Factory.Server!;
+            Assert.That(Factory, Is.Not.Null);
+            await WaitUntilAsync(() => Factory!.Server is not null, cancellationToken).ConfigureAwait(false);
+            return Factory!.Server!;
         }
 
         internal Task AwaitBackendMethodAsync(FakeRoslynServer backend, string method, CancellationToken cancellationToken) =>

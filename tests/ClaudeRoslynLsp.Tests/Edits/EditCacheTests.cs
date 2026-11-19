@@ -2,7 +2,7 @@ using ClaudeRoslynLsp.Edits;
 using ClaudeRoslynLsp.Mcp.Engine;
 using ClaudeRoslynLsp.Tests.Testing;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Edits;
 
@@ -15,31 +15,31 @@ public class EditCacheTests
     /// <c>preview</c> is deliberately not part of the key, because the preview call and the apply
     /// call differ in exactly that argument — if it were, they would never meet.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheKeyIsTheToolAndItsAnswerChangingArguments()
     {
-        Assert.Equal(
+        Assert.That(
             EditCache.KeyFor("renameSymbol", "IScheduler.Start", "Begin"),
-            EditCache.KeyFor("renameSymbol", "IScheduler.Start", "Begin"));
+            Is.EqualTo(EditCache.KeyFor("renameSymbol", "IScheduler.Start", "Begin")));
 
-        Assert.NotEqual(
-            EditCache.KeyFor("renameSymbol", "IScheduler.Start", "Begin"),
-            EditCache.KeyFor("renameSymbol", "IScheduler.Start", "Start2"));
+        Assert.That(
+            EditCache.KeyFor("renameSymbol", "IScheduler.Start", "Start2"),
+            Is.Not.EqualTo(EditCache.KeyFor("renameSymbol", "IScheduler.Start", "Begin")));
 
-        Assert.NotEqual(
-            EditCache.KeyFor("renameSymbol", "A", "B"),
-            EditCache.KeyFor("formatCode", "A", "B"));
+        Assert.That(
+            EditCache.KeyFor("formatCode", "A", "B"),
+            Is.Not.EqualTo(EditCache.KeyFor("renameSymbol", "A", "B")));
     }
 
-    [Fact]
+    [Test]
     public void AStoredEditIsReturnedWhileNothingHasChanged()
     {
         using var workspace = TempWorkspace.Create("cache-hit");
         var (cache, plan, edit) = Store(workspace, "rename");
 
-        Assert.Same(edit, cache.TryTake("rename"));
-        Assert.Same(edit, cache.TryTake("rename"));
-        Assert.Single(plan.Files);
+        Assert.That(cache.TryTake("rename"), Is.SameAs(edit));
+        Assert.That(cache.TryTake("rename"), Is.SameAs(edit));
+        Assert.That(plan.Files, Has.Exactly(1).Items);
     }
 
     /// <summary>
@@ -47,7 +47,7 @@ public class EditCacheTests
     /// model may have written to the file, and re-using an edit computed against the old text would
     /// apply something nobody approved.
     /// </summary>
-    [Fact]
+    [Test]
     public void AChangedFileInvalidatesTheEntry()
     {
         using var workspace = TempWorkspace.Create("cache-changed");
@@ -56,11 +56,11 @@ public class EditCacheTests
         var path = plan.Files[0].Path;
         File.WriteAllText(path, "class Changed;\nand longer\n");
 
-        Assert.Null(cache.TryTake("rename"));
-        Assert.Equal(0, cache.Count);
+        Assert.That(cache.TryTake("rename"), Is.Null);
+        Assert.That(cache.Count, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public void ADeletedFileInvalidatesTheEntry()
     {
         using var workspace = TempWorkspace.Create("cache-deleted");
@@ -68,22 +68,22 @@ public class EditCacheTests
 
         File.Delete(plan.Files[0].Path);
 
-        Assert.Null(cache.TryTake("rename"));
+        Assert.That(cache.TryTake("rename"), Is.Null);
     }
 
-    [Fact]
+    [Test]
     public void AnUnknownKeyIsAMiss()
     {
         using var workspace = TempWorkspace.Create("cache-miss");
         var (cache, _, _) = Store(workspace, "rename");
 
-        Assert.Null(cache.TryTake("formatCode nothing"));
+        Assert.That(cache.TryTake("formatCode nothing"), Is.Null);
     }
 
     /// <summary>
     /// A preview nobody followed up on must not decide what a call ten minutes later writes.
     /// </summary>
-    [Fact]
+    [Test]
     public void AnEntryExpires()
     {
         using var workspace = TempWorkspace.Create("cache-expiry");
@@ -91,14 +91,14 @@ public class EditCacheTests
         var (cache, _, edit) = Store(workspace, "rename", time);
 
         time.Advance(EditCache.Lifetime - TimeSpan.FromSeconds(1));
-        Assert.Same(edit, cache.TryTake("rename"));
+        Assert.That(cache.TryTake("rename"), Is.SameAs(edit));
 
         time.Advance(TimeSpan.FromSeconds(2));
-        Assert.Null(cache.TryTake("rename"));
+        Assert.That(cache.TryTake("rename"), Is.Null);
     }
 
     /// <summary>An applied edit has changed every file it read, so nothing it remembers is usable.</summary>
-    [Fact]
+    [Test]
     public void ClearForgetsEverything()
     {
         using var workspace = TempWorkspace.Create("cache-clear");
@@ -106,8 +106,8 @@ public class EditCacheTests
 
         cache.Clear();
 
-        Assert.Equal(0, cache.Count);
-        Assert.Null(cache.TryTake("rename"));
+        Assert.That(cache.Count, Is.EqualTo(0));
+        Assert.That(cache.TryTake("rename"), Is.Null);
     }
 
     private static (EditCache Cache, WorkspaceEditPlan Plan, WorkspaceEdit Edit) Store(

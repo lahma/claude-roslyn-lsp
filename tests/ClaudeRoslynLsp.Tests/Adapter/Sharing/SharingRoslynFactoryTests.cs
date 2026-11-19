@@ -10,7 +10,7 @@ using ClaudeRoslynLsp.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter.Sharing;
 
@@ -35,9 +35,9 @@ public class SharingRoslynFactoryTests
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(20);
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
-    [Fact]
+    [Test]
     public async Task TheSecondProcessAttachesToTheFirstsRoslynAndStartsNoneOfItsOwn()
     {
         using var home = TempWorkspace.Create("share-two");
@@ -49,11 +49,11 @@ public class SharingRoslynFactoryTests
         var key = SessionRegistry.KeyFor(solution);
         var published = registry.TryRead(key);
 
-        Assert.NotNull(published);
-        Assert.Equal(Environment.ProcessId, published.ProcessId);
-        Assert.Equal(ServerVersion.Value, published.Version);
-        Assert.Equal(solution, published.Solution);
-        Assert.NotNull(host.Factory.Host);
+        Assert.That(published, Is.Not.Null);
+        Assert.That(published!.ProcessId, Is.EqualTo(Environment.ProcessId));
+        Assert.That(published.Version, Is.EqualTo(ServerVersion.Value));
+        Assert.That(published.Solution, Is.EqualTo(solution));
+        Assert.That(host.Factory.Host, Is.Not.Null);
 
         // The second process. Its own launcher is a scripted backend that must never be asked for a
         // connection, which is the whole claim of this work package.
@@ -68,20 +68,19 @@ public class SharingRoslynFactoryTests
 
         await using var connection = await factory.ConnectAsync(Cancellation);
 
-        Assert.True(connection.Attached);
-        Assert.Equal(Environment.ProcessId, connection.HostProcessId);
-        Assert.True(factory.IsAttached);
-        Assert.Null(factory.Host);
-        Assert.Null(attaching.Server);
+        Assert.That(connection.Attached, Is.True);
+        Assert.That(connection.HostProcessId, Is.EqualTo(Environment.ProcessId));
+        Assert.That(factory.IsAttached, Is.True);
+        Assert.That(factory.Host, Is.Null);
+        Assert.That(attaching.Server, Is.Null);
 
         await using var peer = new AttachedConnection(connection);
 
         var initialized = await peer.RequestAsync(1, "initialize", "{}");
 
-        Assert.Contains(
-            "shared engine",
+        Assert.That(
             initialized.GetProperty("result").GetProperty("serverInfo").GetProperty("name").GetString()!,
-            StringComparison.Ordinal);
+            Contains.Substring("shared engine").Using(StringComparison.Ordinal));
 
         // Readiness reaches the attached process over the pipe, so its own gate opens on the host's
         // load rather than on a load it never started (D89).
@@ -96,15 +95,15 @@ public class SharingRoslynFactoryTests
             "textDocument/definition",
             """{"textDocument":{"uri":"file:///w/Fixture/Fixture.Core/Calculator.cs"},"position":{"line":7,"character":18}}""");
 
-        Assert.Single(answered.GetProperty("result").EnumerateArray());
-        Assert.Null(attaching.Server);
+        Assert.That(answered.GetProperty("result").EnumerateArray(), Has.Exactly(1).Items);
+        Assert.That(attaching.Server, Is.Null);
     }
 
     /// <summary>
     /// A machine that rebooted leaves a file naming a process that no longer exists; the reader
     /// removes it and takes over (D86).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ASessionNamingADeadProcessIsReplacedByTheProcessThatFoundIt()
     {
         using var home = TempWorkspace.Create("share-stale");
@@ -124,17 +123,17 @@ public class SharingRoslynFactoryTests
 
         var published = registry.TryRead(key);
 
-        Assert.NotNull(published);
-        Assert.Equal(Environment.ProcessId, published.ProcessId);
-        Assert.NotEqual("claude-roslyn-lsp-share-nobody", published.PipeName);
-        Assert.NotNull(host.Factory.Host);
+        Assert.That(published, Is.Not.Null);
+        Assert.That(published!.ProcessId, Is.EqualTo(Environment.ProcessId));
+        Assert.That(published.PipeName, Is.Not.EqualTo("claude-roslyn-lsp-share-nobody"));
+        Assert.That(host.Factory.Host, Is.Not.Null);
     }
 
     /// <summary>
     /// The pid check is a filter, not a proof: a reused process id passes it and the connect is what
     /// catches it.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ASessionWhosePipeIsNotThereIsRemovedAndTheReaderHosts()
     {
         using var home = TempWorkspace.Create("share-nopipe");
@@ -156,16 +155,16 @@ public class SharingRoslynFactoryTests
 
         var published = registry.TryRead(key);
 
-        Assert.NotNull(published);
-        Assert.NotNull(host.Factory.Host);
-        Assert.Equal(host.Factory.Host.PipeName, published.PipeName);
+        Assert.That(published, Is.Not.Null);
+        Assert.That(host.Factory.Host, Is.Not.Null);
+        Assert.That(published!.PipeName, Is.EqualTo(host.Factory.Host!.PipeName));
     }
 
     /// <summary>
     /// Misc-files mode (C28): with no solution there is nothing two processes could agree they are
     /// both looking at, so nothing is published and the inner factory is used unchanged.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task WithNoSolutionNothingIsPublishedAndNothingIsShared()
     {
         using var home = TempWorkspace.Create("share-none");
@@ -181,17 +180,17 @@ public class SharingRoslynFactoryTests
 
         await using var connection = await factory.ConnectAsync(Cancellation);
 
-        Assert.False(connection.Attached);
-        Assert.Null(factory.Host);
-        Assert.Null(factory.Key);
-        Assert.Empty(registry.List());
+        Assert.That(connection.Attached, Is.False);
+        Assert.That(factory.Host, Is.Null);
+        Assert.That(factory.Key, Is.Null);
+        Assert.That(registry.List(), Is.Empty);
     }
 
     /// <summary>
     /// A host that goes away withdraws its file, so the next process to look hosts rather than
     /// spending an attach cycle on a pipe that is being torn down.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task DisposingTheHostsConnectionWithdrawsItsSessionFile()
     {
         using var home = TempWorkspace.Create("share-withdraw");
@@ -201,12 +200,12 @@ public class SharingRoslynFactoryTests
 
         var host = await SharedHostSession.StartAsync(registry, solution);
 
-        Assert.NotNull(registry.TryRead(key));
+        Assert.That(registry.TryRead(key), Is.Not.Null);
 
         await host.DisposeAsync();
 
-        Assert.Null(registry.TryRead(key));
-        Assert.False(File.Exists(registry.FileFor(key)));
+        Assert.That(registry.TryRead(key), Is.Null);
+        Assert.That(File.Exists(registry.FileFor(key)), Is.False);
     }
 
     /// <summary>
@@ -214,7 +213,7 @@ public class SharingRoslynFactoryTests
     /// housekeeping's problem, not the host's: hosting succeeds and the file is left where it is
     /// (finding 1 of the 0.2.0 review, D103).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task HostingSurvivesASessionFileItCannotJudge()
     {
         const int Denied = int.MaxValue - 11;
@@ -240,17 +239,17 @@ public class SharingRoslynFactoryTests
 
         await using var host = await SharedHostSession.StartAsync(registry, solution);
 
-        Assert.NotNull(host.Factory.Host);
-        Assert.NotNull(registry.TryRead(SessionRegistry.KeyFor(solution)));
-        Assert.NotEqual(ReadinessState.Failed, host.Session.Gate.State);
-        Assert.True(File.Exists(registry.FileFor(other)));
+        Assert.That(host.Factory.Host, Is.Not.Null);
+        Assert.That(registry.TryRead(SessionRegistry.KeyFor(solution)), Is.Not.Null);
+        Assert.That(host.Session.Gate.State, Is.Not.EqualTo(ReadinessState.Failed));
+        Assert.That(File.Exists(registry.FileFor(other)), Is.True);
     }
 
     /// <summary>
     /// A host records its pid namespace, so a sweep in another container can tell its file is not
     /// one to judge (finding 8, D103).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task APublishedSessionRecordsItsPidNamespace()
     {
         using var home = TempWorkspace.Create("share-namespace");
@@ -265,7 +264,7 @@ public class SharingRoslynFactoryTests
 
         await using var host = await SharedHostSession.StartAsync(registry, solution);
 
-        Assert.Equal("pid:[4026531836]", registry.TryRead(SessionRegistry.KeyFor(solution))!.PidNamespace);
+        Assert.That(registry.TryRead(SessionRegistry.KeyFor(solution))!.PidNamespace, Is.EqualTo("pid:[4026531836]"));
     }
 
     /// <summary>

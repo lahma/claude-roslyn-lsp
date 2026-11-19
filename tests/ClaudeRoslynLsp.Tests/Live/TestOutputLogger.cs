@@ -1,7 +1,5 @@
 using Microsoft.Extensions.Logging;
 
-using Xunit;
-
 namespace ClaudeRoslynLsp.Tests.Live;
 
 /// <summary>
@@ -16,19 +14,19 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// live test that fails on somebody else's machine only ever gets one attempt at explaining itself.
 /// </para>
 /// <para>
-/// Writes are guarded: xunit rejects output after a test has finished, and the adapter's background
-/// tasks outlive the assertion that failed.
+/// Writes are guarded: a test's writer may refuse output once the test has finished, and the
+/// adapter's background tasks outlive the assertion that failed.
 /// </para>
 /// </remarks>
 internal sealed class TestOutputLogger : ILogger
 {
-    private readonly ITestOutputHelper _output;
+    private readonly TextWriter _output;
     private readonly LogLevel _minimum;
 
     /// <summary>Creates a logger over one test's output.</summary>
-    /// <param name="output">Where the lines go.</param>
+    /// <param name="output">Where the lines go: the test's own <see cref="NUnit.Framework.TestContext.Out"/>.</param>
     /// <param name="minimum">The lowest level to write.</param>
-    internal TestOutputLogger(ITestOutputHelper output, LogLevel minimum = LogLevel.Debug)
+    internal TestOutputLogger(TextWriter output, LogLevel minimum = LogLevel.Debug)
     {
         _output = output;
         _minimum = minimum;
@@ -68,8 +66,9 @@ internal sealed class TestOutputLogger : ILogger
         }
         catch (InvalidOperationException)
         {
-            // The test has finished and xunit no longer accepts output; a background task of the
-            // adapter's is still running. Losing the line is the right outcome.
+            // The test has finished and its writer no longer accepts output (ObjectDisposedException
+            // is one of these); a background task of the adapter's is still running. Losing the line
+            // is the right outcome.
         }
     }
 }

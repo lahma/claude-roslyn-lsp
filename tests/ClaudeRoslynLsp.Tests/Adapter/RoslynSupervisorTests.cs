@@ -3,7 +3,7 @@ using ClaudeRoslynLsp.Tests.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -17,82 +17,82 @@ namespace ClaudeRoslynLsp.Tests.Adapter;
 public class RoslynSupervisorTests
 {
     /// <summary>An expected exit — the adapter shutting the backend down — spends nothing.</summary>
-    [Fact]
+    [Test]
     public void AnExpectedExitIsNotARestart()
     {
         var supervisor = new RoslynSupervisor(new TestTimeProvider(), NullLogger.Instance);
 
-        Assert.Equal(RestartDecision.Expected, supervisor.Decide(stopping: true, out _));
-        Assert.Equal(0, supervisor.RestartsInWindow);
+        Assert.That(supervisor.Decide(stopping: true, out _), Is.EqualTo(RestartDecision.Expected));
+        Assert.That(supervisor.RestartsInWindow, Is.EqualTo(0));
     }
 
     /// <summary>Two goes, and the third failure gives up.</summary>
-    [Fact]
+    [Test]
     public void TwoRestartsAreAllowedAndTheThirdFailureGivesUp()
     {
         var supervisor = new RoslynSupervisor(new TestTimeProvider(), NullLogger.Instance);
 
-        Assert.Equal(RestartDecision.Restart, supervisor.Decide(stopping: false, out var first));
-        Assert.Equal(1, first);
+        Assert.That(supervisor.Decide(stopping: false, out var first), Is.EqualTo(RestartDecision.Restart));
+        Assert.That(first, Is.EqualTo(1));
 
-        Assert.Equal(RestartDecision.Restart, supervisor.Decide(stopping: false, out var second));
-        Assert.Equal(2, second);
+        Assert.That(supervisor.Decide(stopping: false, out var second), Is.EqualTo(RestartDecision.Restart));
+        Assert.That(second, Is.EqualTo(2));
 
-        Assert.Equal(RestartDecision.GiveUp, supervisor.Decide(stopping: false, out var third));
-        Assert.Equal(0, third);
+        Assert.That(supervisor.Decide(stopping: false, out var third), Is.EqualTo(RestartDecision.GiveUp));
+        Assert.That(third, Is.EqualTo(0));
     }
 
     /// <summary>
     /// The budget is a rate, not a total: a backend that died twice this morning still gets another
     /// go this afternoon.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheBudgetRefillsAsTheWindowSlides()
     {
         var time = new TestTimeProvider();
         var supervisor = new RoslynSupervisor(time, NullLogger.Instance);
 
-        Assert.Equal(RestartDecision.Restart, supervisor.Decide(stopping: false, out _));
-        Assert.Equal(RestartDecision.Restart, supervisor.Decide(stopping: false, out _));
-        Assert.Equal(RestartDecision.GiveUp, supervisor.Decide(stopping: false, out _));
+        Assert.That(supervisor.Decide(stopping: false, out _), Is.EqualTo(RestartDecision.Restart));
+        Assert.That(supervisor.Decide(stopping: false, out _), Is.EqualTo(RestartDecision.Restart));
+        Assert.That(supervisor.Decide(stopping: false, out _), Is.EqualTo(RestartDecision.GiveUp));
 
         time.Advance(RoslynSupervisor.RestartWindow + TimeSpan.FromSeconds(1));
 
-        Assert.Equal(0, supervisor.RestartsInWindow);
-        Assert.Equal(RestartDecision.Restart, supervisor.Decide(stopping: false, out var afterWindow));
-        Assert.Equal(1, afterWindow);
+        Assert.That(supervisor.RestartsInWindow, Is.EqualTo(0));
+        Assert.That(supervisor.Decide(stopping: false, out var afterWindow), Is.EqualTo(RestartDecision.Restart));
+        Assert.That(afterWindow, Is.EqualTo(1));
     }
 
     /// <summary>
     /// Only the oldest restart falls out of a partly-slid window, so a slow crash loop cannot buy
     /// itself an extra go by spacing itself out just inside the limit.
     /// </summary>
-    [Fact]
+    [Test]
     public void OnlyRestartsOlderThanTheWindowExpire()
     {
         var time = new TestTimeProvider();
         var supervisor = new RoslynSupervisor(time, NullLogger.Instance);
 
-        Assert.Equal(RestartDecision.Restart, supervisor.Decide(stopping: false, out _));
+        Assert.That(supervisor.Decide(stopping: false, out _), Is.EqualTo(RestartDecision.Restart));
 
         time.Advance(TimeSpan.FromMinutes(9));
 
-        Assert.Equal(RestartDecision.Restart, supervisor.Decide(stopping: false, out _));
-        Assert.Equal(2, supervisor.RestartsInWindow);
-        Assert.Equal(RestartDecision.GiveUp, supervisor.Decide(stopping: false, out _));
+        Assert.That(supervisor.Decide(stopping: false, out _), Is.EqualTo(RestartDecision.Restart));
+        Assert.That(supervisor.RestartsInWindow, Is.EqualTo(2));
+        Assert.That(supervisor.Decide(stopping: false, out _), Is.EqualTo(RestartDecision.GiveUp));
 
         // Two minutes later the first one is out of the window and the second is not.
         time.Advance(TimeSpan.FromMinutes(2));
 
-        Assert.Equal(1, supervisor.RestartsInWindow);
-        Assert.Equal(RestartDecision.Restart, supervisor.Decide(stopping: false, out _));
+        Assert.That(supervisor.RestartsInWindow, Is.EqualTo(1));
+        Assert.That(supervisor.Decide(stopping: false, out _), Is.EqualTo(RestartDecision.Restart));
     }
 
     /// <summary>The sentence the client is given names the numbers, because a bug report needs them.</summary>
-    [Fact]
+    [Test]
     public void TheGiveUpReasonNamesTheBudget()
     {
-        Assert.Contains("3 times", RoslynSupervisor.GiveUpReason, StringComparison.Ordinal);
-        Assert.Contains("10 minutes", RoslynSupervisor.GiveUpReason, StringComparison.Ordinal);
+        Assert.That(RoslynSupervisor.GiveUpReason, Contains.Substring("3 times").Using(StringComparison.Ordinal));
+        Assert.That(RoslynSupervisor.GiveUpReason, Contains.Substring("10 minutes").Using(StringComparison.Ordinal));
     }
 }

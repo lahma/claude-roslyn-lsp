@@ -2,7 +2,7 @@ using ClaudeRoslynLsp.Cli;
 using ClaudeRoslynLsp.Configuration;
 using ClaudeRoslynLsp.Roslyn;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Roslyn;
 
@@ -17,7 +17,7 @@ namespace ClaudeRoslynLsp.Tests.Roslyn;
 /// </remarks>
 public class GarbageCollectorEnvironmentTests
 {
-    [Fact]
+    [Test]
     public void TheConserveLevelIsSetByDefault()
     {
         var environment = Environment_();
@@ -27,23 +27,23 @@ public class GarbageCollectorEnvironmentTests
             RoslynGarbageCollector.Workstation,
             ClaudeRoslynLspOptions.DefaultGcConserveMemory);
 
-        Assert.Equal("7", environment[RoslynProcessLauncher.GcConserveMemoryVariable]);
-        Assert.Equal("0", environment["DOTNET_gcServer"]);
+        Assert.That(environment[RoslynProcessLauncher.GcConserveMemoryVariable], Is.EqualTo("7"));
+        Assert.That(environment["DOTNET_gcServer"], Is.EqualTo("0"));
     }
 
     /// <summary>Zero means "no opinion", which is not the same thing as setting zero.</summary>
-    [Fact]
+    [Test]
     public void ZeroLeavesTheVariableUnset()
     {
         var environment = Environment_();
 
         RoslynProcessLauncher.ApplyGarbageCollectorEnvironment(environment, RoslynGarbageCollector.Workstation, 0);
 
-        Assert.False(environment.ContainsKey(RoslynProcessLauncher.GcConserveMemoryVariable));
+        Assert.That(environment.ContainsKey(RoslynProcessLauncher.GcConserveMemoryVariable), Is.False);
     }
 
     /// <summary>Somebody who set it meant it — the same rule <c>DOTNET_gcServer</c> has always had.</summary>
-    [Fact]
+    [Test]
     public void AnInheritedValueIsLeftAlone()
     {
         var environment = Environment_(
@@ -52,43 +52,43 @@ public class GarbageCollectorEnvironmentTests
 
         RoslynProcessLauncher.ApplyGarbageCollectorEnvironment(environment, RoslynGarbageCollector.Workstation, 5);
 
-        Assert.Equal("7", environment[RoslynProcessLauncher.GcConserveMemoryVariable]);
-        Assert.Equal("1", environment["DOTNET_gcServer"]);
+        Assert.That(environment[RoslynProcessLauncher.GcConserveMemoryVariable], Is.EqualTo("7"));
+        Assert.That(environment["DOTNET_gcServer"], Is.EqualTo("1"));
     }
 
-    [Fact]
+    [Test]
     public void TheConfiguredLevelReachesTheLaunchRequest()
     {
         var options = ClaudeRoslynLspOptions.FromEnvironment(
             name => name == "CLAUDE_ROSLYN_LSP_GC_CONSERVE" ? "3" : null);
 
-        Assert.Equal(3, options.GcConserveMemory);
-        Assert.Equal("CLAUDE_ROSLYN_LSP_GC_CONSERVE", options.GcConserveMemoryVariable);
+        Assert.That(options.GcConserveMemory, Is.EqualTo(3));
+        Assert.That(options.GcConserveMemoryVariable, Is.EqualTo("CLAUDE_ROSLYN_LSP_GC_CONSERVE"));
     }
 
     /// <summary><c>doctor</c> says the effective value and which of the three places it came from.</summary>
-    [Fact]
+    [Test]
     public void DoctorSaysWhereTheConserveLevelCameFrom()
     {
         var defaults = ClaudeRoslynLspOptions.FromEnvironment(static _ => null);
 
         var byDefault = DoctorCommand.DescribeGcConserve(defaults, static _ => null);
-        Assert.Equal(7, byDefault.Level);
-        Assert.Equal("default", byDefault.Source);
+        Assert.That(byDefault.Level, Is.EqualTo(7));
+        Assert.That(byDefault.Source, Is.EqualTo("default"));
 
         var configured = DoctorCommand.DescribeGcConserve(defaults with { GcConserveMemory = 2, GcConserveMemoryVariable = "CLAUDE_ROSLYN_LSP_GC_CONSERVE" }, static _ => null);
-        Assert.Equal(2, configured.Level);
-        Assert.Equal("CLAUDE_ROSLYN_LSP_GC_CONSERVE", configured.Source);
+        Assert.That(configured.Level, Is.EqualTo(2));
+        Assert.That(configured.Source, Is.EqualTo("CLAUDE_ROSLYN_LSP_GC_CONSERVE"));
 
         var off = DoctorCommand.DescribeGcConserve(defaults with { GcConserveMemory = 0 }, static _ => null);
-        Assert.Null(off.Level);
-        Assert.Contains("not set", off.Text, StringComparison.Ordinal);
+        Assert.That(off.Level, Is.Null);
+        Assert.That(off.Text, Contains.Substring("not set").Using(StringComparison.Ordinal));
 
         var inherited = DoctorCommand.DescribeGcConserve(
             defaults with { GcConserveMemory = 2 },
             static name => name == RoslynProcessLauncher.GcConserveMemoryVariable ? "9" : null);
-        Assert.Equal(9, inherited.Level);
-        Assert.Equal(RoslynProcessLauncher.GcConserveMemoryVariable, inherited.Source);
+        Assert.That(inherited.Level, Is.EqualTo(9));
+        Assert.That(inherited.Source, Is.EqualTo(RoslynProcessLauncher.GcConserveMemoryVariable));
     }
 
     /// <summary>
@@ -96,21 +96,21 @@ public class GarbageCollectorEnvironmentTests
     /// <c>COMPlus_</c> value is the user's choice too — and writing the <c>DOTNET_</c> one beside it
     /// would silently overrule it, since that spelling wins (finding 10 of the 0.2.0 review).
     /// </summary>
-    [Fact]
+    [Test]
     public void TheOlderSpellingIsJustAsExplicit()
     {
         var environment = Environment_(("COMPlus_gcServer", "1"), ("COMPlus_GCConserveMemory", "0"));
 
         RoslynProcessLauncher.ApplyGarbageCollectorEnvironment(environment, RoslynGarbageCollector.Workstation, 7);
 
-        Assert.False(environment.ContainsKey("DOTNET_gcServer"));
-        Assert.False(environment.ContainsKey(RoslynProcessLauncher.GcConserveMemoryVariable));
-        Assert.Equal("1", environment["COMPlus_gcServer"]);
-        Assert.Equal("0", environment["COMPlus_GCConserveMemory"]);
+        Assert.That(environment.ContainsKey("DOTNET_gcServer"), Is.False);
+        Assert.That(environment.ContainsKey(RoslynProcessLauncher.GcConserveMemoryVariable), Is.False);
+        Assert.That(environment["COMPlus_gcServer"], Is.EqualTo("1"));
+        Assert.That(environment["COMPlus_GCConserveMemory"], Is.EqualTo("0"));
     }
 
     /// <summary><c>doctor</c> names the spelling that is set, and the runtime's preference when both are.</summary>
-    [Fact]
+    [Test]
     public void DoctorNamesWhicheverSpellingIsSet()
     {
         var defaults = ClaudeRoslynLspOptions.FromEnvironment(static _ => null);
@@ -119,9 +119,9 @@ public class GarbageCollectorEnvironmentTests
             defaults,
             static name => name == "COMPlus_GCConserveMemory" ? "0" : null);
 
-        Assert.Equal(0, older.Level);
-        Assert.Equal("COMPlus_GCConserveMemory", older.Source);
-        Assert.Contains("COMPlus_GCConserveMemory", older.Text, StringComparison.Ordinal);
+        Assert.That(older.Level, Is.EqualTo(0));
+        Assert.That(older.Source, Is.EqualTo("COMPlus_GCConserveMemory"));
+        Assert.That(older.Text, Contains.Substring("COMPlus_GCConserveMemory").Using(StringComparison.Ordinal));
 
         var both = DoctorCommand.DescribeGcConserve(
             defaults,
@@ -132,17 +132,19 @@ public class GarbageCollectorEnvironmentTests
                 _ => null,
             });
 
-        Assert.Equal(5, both.Level);
-        Assert.Equal(RoslynProcessLauncher.GcConserveMemoryVariable, both.Source);
+        Assert.That(both.Level, Is.EqualTo(5));
+        Assert.That(both.Source, Is.EqualTo(RoslynProcessLauncher.GcConserveMemoryVariable));
 
         var server = DoctorCommand.DescribeGarbageCollector(
             defaults,
             static name => name == "COMPlus_gcServer" ? "1" : null);
 
-        Assert.StartsWith("server", server, StringComparison.Ordinal);
-        Assert.Contains("COMPlus_gcServer=1", server, StringComparison.Ordinal);
+        Assert.That(server, Does.StartWith("server").Using(StringComparison.Ordinal));
+        Assert.That(server, Contains.Substring("COMPlus_gcServer=1").Using(StringComparison.Ordinal));
 
-        Assert.StartsWith("workstation", DoctorCommand.DescribeGarbageCollector(defaults, static _ => null), StringComparison.Ordinal);
+        Assert.That(
+            DoctorCommand.DescribeGarbageCollector(defaults, static _ => null),
+            Does.StartWith("workstation").Using(StringComparison.Ordinal));
     }
 
     private static Dictionary<string, string?> Environment_(params (string Name, string Value)[] inherited)

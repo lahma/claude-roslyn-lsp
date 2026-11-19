@@ -7,7 +7,7 @@ using ClaudeRoslynLsp.Tests.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -31,10 +31,10 @@ public class DiagnosticsBridgeTests
            "code":"IDE0005","message":"Using directive is unnecessary.","tags":[1,2147483645]}]}
         """;
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>A <c>didOpen</c> on a loaded workspace pulls at once and publishes what survives.</summary>
-    [Fact]
+    [Test]
     public async Task DidOpenPullsImmediatelyAndPublishesTheTranslatedSet()
     {
         using var harness = new BridgeHarness();
@@ -44,29 +44,30 @@ public class DiagnosticsBridgeTests
         harness.Bridge.OnDidOpen(Uri);
         await harness.Channel.WaitForClientAsync(1, Cancellation);
 
-        var asked = Assert.Single(harness.Channel.Asked);
-        Assert.Equal("textDocument/diagnostic", asked.Method);
+        Assert.That(harness.Channel.Asked, Has.Exactly(1).Items);
+        var asked = harness.Channel.Asked.Single();
+        Assert.That(asked.Method, Is.EqualTo("textDocument/diagnostic"));
 
         // C9: no identifier, because one pull with none gives the union of every source.
-        Assert.False(asked.Params.TryGetProperty("identifier", out _));
-        Assert.Equal(Uri, asked.Params.GetProperty("textDocument").GetProperty("uri").GetString());
+        Assert.That(asked.Params.TryGetProperty("identifier", out _), Is.False);
+        Assert.That(asked.Params.GetProperty("textDocument").GetProperty("uri").GetString(), Is.EqualTo(Uri));
 
         var published = Published(harness, 0);
 
-        Assert.Equal(Uri, published.GetProperty("uri").GetString());
-        Assert.Equal(1, published.GetProperty("version").GetInt32());
+        Assert.That(published.GetProperty("uri").GetString(), Is.EqualTo(Uri));
+        Assert.That(published.GetProperty("version").GetInt32(), Is.EqualTo(1));
 
         var diagnostics = published.GetProperty("diagnostics");
 
-        Assert.Equal(1, diagnostics.GetArrayLength());
-        Assert.Equal("CS0029", diagnostics[0].GetProperty("code").GetString());
+        Assert.That(diagnostics.GetArrayLength(), Is.EqualTo(1));
+        Assert.That(diagnostics[0].GetProperty("code").GetString(), Is.EqualTo("CS0029"));
     }
 
     /// <summary>
     /// C28: a document opened before the workspace has loaded is not pulled — misc-files answers are
     /// wrong in a way that reads as correct — and is pulled the moment it has.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ADidOpenBeforeTheWorkspaceLoadsIsDeferredUntilItHas()
     {
         using var harness = new BridgeHarness();
@@ -75,18 +76,18 @@ public class DiagnosticsBridgeTests
 
         harness.Bridge.OnDidOpen(Uri);
 
-        Assert.Empty(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Is.Empty);
 
         harness.Channel.Readiness = ReadinessState.ProjectsLoaded;
         harness.Channel.Answer(FullReport);
         harness.Bridge.OnProjectsLoaded();
 
         await harness.Channel.WaitForClientAsync(1, Cancellation);
-        Assert.NotEmpty(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Is.Not.Empty);
     }
 
     /// <summary>A <c>didChange</c> waits out the trailing debounce, and a burst is one pull.</summary>
-    [Fact]
+    [Test]
     public async Task DidChangeIsDebouncedAndABurstCollapsesToOnePull()
     {
         using var harness = new BridgeHarness();
@@ -99,16 +100,16 @@ public class DiagnosticsBridgeTests
         harness.Time.Advance(TimeSpan.FromMilliseconds(200));
         harness.Bridge.OnDidChange(Uri);
 
-        Assert.Empty(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Is.Empty);
 
         harness.Time.Advance(DiagnosticsBridge.ChangeDebounce);
         await harness.Channel.WaitForClientAsync(1, Cancellation);
 
-        Assert.Single(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Has.Exactly(1).Items);
     }
 
     /// <summary>A save pulls at once: it is the strongest "does this compile" signal an agent gives.</summary>
-    [Fact]
+    [Test]
     public async Task DidSavePullsWithoutWaiting()
     {
         using var harness = new BridgeHarness();
@@ -118,14 +119,14 @@ public class DiagnosticsBridgeTests
         harness.Bridge.OnDidSave(Uri);
         await harness.Channel.WaitForClientAsync(1, Cancellation);
 
-        Assert.Single(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Has.Exactly(1).Items);
     }
 
     /// <summary>
     /// C12: the second pull presents the first's <c>resultId</c>, and an <c>unchanged</c> report
     /// publishes nothing — which is what keeps an idle session quiet.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ThePreviousResultIdIsSentAndAnUnchangedReportPublishesNothing()
     {
         using var harness = new BridgeHarness();
@@ -139,15 +140,15 @@ public class DiagnosticsBridgeTests
         harness.Bridge.OnDidSave(Uri);
         await harness.Channel.WaitForAskedAsync(2, Cancellation);
 
-        Assert.Equal("r1", harness.Channel.Asked[1].Params.GetProperty("previousResultId").GetString());
+        Assert.That(harness.Channel.Asked[1].Params.GetProperty("previousResultId").GetString(), Is.EqualTo("r1"));
 
         // Nothing new reached the client: still the one publish from the first pull.
         await Task.Delay(50, Cancellation);
-        Assert.Single(harness.Channel.ToClient);
+        Assert.That(harness.Channel.ToClient, Has.Exactly(1).Items);
     }
 
     /// <summary>A close clears the client's set, because a client keeps the last one forever.</summary>
-    [Fact]
+    [Test]
     public void DidCloseClearsTheDiagnosticsAndForgetsTheDocument()
     {
         using var harness = new BridgeHarness();
@@ -157,15 +158,15 @@ public class DiagnosticsBridgeTests
 
         var published = Published(harness, 0);
 
-        Assert.Equal(Uri, published.GetProperty("uri").GetString());
-        Assert.Equal(0, published.GetProperty("diagnostics").GetArrayLength());
+        Assert.That(published.GetProperty("uri").GetString(), Is.EqualTo(Uri));
+        Assert.That(published.GetProperty("diagnostics").GetArrayLength(), Is.EqualTo(0));
     }
 
     /// <summary>
     /// <c>-32801 ContentModified</c> means the document moved under the pull. One retry, because the
     /// world settles or it does not, and a retry loop against a fast typist would never return.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AContentModifiedRefusalIsRetriedExactlyOnce()
     {
         using var harness = new BridgeHarness();
@@ -185,11 +186,11 @@ public class DiagnosticsBridgeTests
         harness.Time.Advance(DiagnosticsBridge.RetryDelay);
         await harness.Channel.WaitForClientAsync(1, Cancellation);
 
-        Assert.Equal(2, harness.Channel.Asked.Count);
+        Assert.That(harness.Channel.Asked.Count, Is.EqualTo(2));
     }
 
     /// <summary>Any other refusal is reported and dropped; there is nothing a second ask would fix.</summary>
-    [Fact]
+    [Test]
     public async Task AnOrdinaryRefusalIsNotRetried()
     {
         using var harness = new BridgeHarness();
@@ -200,14 +201,14 @@ public class DiagnosticsBridgeTests
         await harness.Channel.WaitForAskedAsync(1, Cancellation);
         await Task.Delay(50, Cancellation);
 
-        Assert.Single(harness.Channel.Asked);
-        Assert.Empty(harness.Channel.ToClient);
+        Assert.That(harness.Channel.Asked, Has.Exactly(1).Items);
+        Assert.That(harness.Channel.ToClient, Is.Empty);
     }
 
     /// <summary>
     /// A refresh re-pulls every open document, after its own debounce — Roslyn sends several in a row.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ARefreshRePullsEveryOpenDocument()
     {
         using var harness = new BridgeHarness();
@@ -217,22 +218,21 @@ public class DiagnosticsBridgeTests
         harness.Bridge.OnRefreshRequested("workspace/diagnostic/refresh");
         harness.Bridge.OnRefreshRequested("workspace/diagnostic/refresh");
 
-        Assert.Empty(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Is.Empty);
 
         harness.Time.Advance(DiagnosticsBridge.RefreshDebounce);
         await harness.Channel.WaitForAskedAsync(2, Cancellation);
 
-        Assert.Equal(2, harness.Channel.Asked.Count);
+        Assert.That(harness.Channel.Asked.Count, Is.EqualTo(2));
     }
 
     /// <summary>
     /// The other three refreshes are for capabilities the adapter does not advertise (D45), so
     /// acting on them would be work whose output nobody reads.
     /// </summary>
-    [Theory]
-    [InlineData("workspace/codeLens/refresh")]
-    [InlineData("workspace/inlayHint/refresh")]
-    [InlineData("workspace/semanticTokens/refresh")]
+    [TestCase("workspace/codeLens/refresh")]
+    [TestCase("workspace/inlayHint/refresh")]
+    [TestCase("workspace/semanticTokens/refresh")]
     public void TheRefreshesForCapabilitiesTheAdapterDoesNotCarryAreIgnored(string method)
     {
         using var harness = new BridgeHarness();
@@ -241,14 +241,14 @@ public class DiagnosticsBridgeTests
         harness.Bridge.OnRefreshRequested(method);
         harness.Time.Advance(DiagnosticsBridge.RefreshDebounce * 2);
 
-        Assert.Empty(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Is.Empty);
     }
 
     /// <summary>
     /// A project file changed on disk: every open document is re-pulled a second later, because the
     /// event is the start of Roslyn's work, not the end of it (C33).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AProjectFileChangeRePullsAfterASecond()
     {
         using var harness = new BridgeHarness();
@@ -257,14 +257,14 @@ public class DiagnosticsBridgeTests
         harness.Bridge.OnProjectFilesChanged();
         harness.Time.Advance(TimeSpan.FromMilliseconds(900));
 
-        Assert.Empty(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Is.Empty);
 
         harness.Time.Advance(TimeSpan.FromMilliseconds(200));
         await harness.Channel.WaitForAskedAsync(1, Cancellation);
     }
 
     /// <summary>A reset forgets the result ids, because the server that issued them is gone.</summary>
-    [Fact]
+    [Test]
     public async Task ResetForgetsTheResultIds()
     {
         using var harness = new BridgeHarness();
@@ -280,11 +280,11 @@ public class DiagnosticsBridgeTests
         harness.Bridge.OnDidSave(Uri);
         await harness.Channel.WaitForAskedAsync(2, Cancellation);
 
-        Assert.False(harness.Channel.Asked[1].Params.TryGetProperty("previousResultId", out _));
+        Assert.That(harness.Channel.Asked[1].Params.TryGetProperty("previousResultId", out _), Is.False);
     }
 
     /// <summary>Nothing is asked while there is no backend to ask.</summary>
-    [Fact]
+    [Test]
     public void NothingIsPulledWithoutABackend()
     {
         using var harness = new BridgeHarness();
@@ -293,31 +293,30 @@ public class DiagnosticsBridgeTests
 
         harness.Bridge.OnDidSave(Uri);
 
-        Assert.Empty(harness.Channel.Asked);
+        Assert.That(harness.Channel.Asked, Is.Empty);
     }
 
     /// <summary>The opt-in workspace mode is off unless it is asked for by name.</summary>
-    [Theory]
-    [InlineData(null, false)]
-    [InlineData("errors", true)]
-    [InlineData("ERRORS", true)]
-    [InlineData("off", false)]
-    [InlineData("true", false)]
-    [InlineData("everything", false)]
+    [TestCase(null, false)]
+    [TestCase("errors", true)]
+    [TestCase("ERRORS", true)]
+    [TestCase("off", false)]
+    [TestCase("true", false)]
+    [TestCase("everything", false)]
     public void TheWorkspaceModeIsOptInByName(string? value, bool expected) =>
-        Assert.Equal(expected, DiagnosticsBridge.IsWorkspaceModeRequested(value, NullLogger.Instance));
+        Assert.That(DiagnosticsBridge.IsWorkspaceModeRequested(value, NullLogger.Instance), Is.EqualTo(expected));
 
     /// <summary>
     /// With the mode on, a save runs a <c>workspace/diagnostic</c> after its own longer debounce, with
     /// no identifier and the result ids it knows (C14).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task TheWorkspaceModeAsksAfterASaveWithNoIdentifier()
     {
         using var harness = new BridgeHarness(workspaceDiagnostics: "errors");
         harness.Open(Uri, "class C { }");
 
-        Assert.True(harness.Bridge.WorkspaceMode);
+        Assert.That(harness.Bridge.WorkspaceMode, Is.True);
 
         harness.Channel.Answer("""{"kind":"full","resultId":"r1","items":[]}""");
         harness.Bridge.OnDidSave(Uri);
@@ -329,16 +328,16 @@ public class DiagnosticsBridgeTests
 
         var workspace = harness.Channel.Asked[1];
 
-        Assert.Equal("workspace/diagnostic", workspace.Method);
-        Assert.False(workspace.Params.TryGetProperty("identifier", out _));
-        Assert.Equal(0, workspace.Params.GetProperty("previousResultIds").GetArrayLength());
+        Assert.That(workspace.Method, Is.EqualTo("workspace/diagnostic"));
+        Assert.That(workspace.Params.TryGetProperty("identifier", out _), Is.False);
+        Assert.That(workspace.Params.GetProperty("previousResultIds").GetArrayLength(), Is.EqualTo(0));
     }
 
     /// <summary>
     /// C15's noise, filtered: open documents, <c>obj/</c>, <c>.csproj</c> entries and the per-TFM
     /// duplicate all go, and what is published is errors only.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task TheWorkspaceModePublishesErrorsForClosedSourceFilesOnly()
     {
         using var harness = new BridgeHarness(workspaceDiagnostics: "errors");
@@ -373,30 +372,31 @@ public class DiagnosticsBridgeTests
             .Where(x => x.GetProperty("uri").GetString()!.EndsWith("Caller.cs", StringComparison.Ordinal))
             .ToArray();
 
-        var only = Assert.Single(closed);
+        Assert.That(closed, Has.Exactly(1).Items);
+        var only = closed.Single();
         var diagnostics = only.GetProperty("diagnostics");
 
-        Assert.Equal(1, diagnostics.GetArrayLength());
-        Assert.Equal("REAL", diagnostics[0].GetProperty("code").GetString());
+        Assert.That(diagnostics.GetArrayLength(), Is.EqualTo(1));
+        Assert.That(diagnostics[0].GetProperty("code").GetString(), Is.EqualTo("REAL"));
 
         // No version on a file nobody has open: a fabricated one would make the client discard it.
-        Assert.False(only.TryGetProperty("version", out _));
+        Assert.That(only.TryGetProperty("version", out _), Is.False);
 
         // And nothing at all for the open file, the obj/ file or the project file.
-        Assert.DoesNotContain(
+        Assert.That(
             harness.Channel.ToClient,
-            x => x.GetProperty("params").GetProperty("uri").GetString()!.Contains("obj/", StringComparison.Ordinal));
+            Has.None.Matches<JsonElement>(x => x.GetProperty("params").GetProperty("uri").GetString()!.Contains("obj/", StringComparison.Ordinal)));
 
-        Assert.DoesNotContain(
+        Assert.That(
             harness.Channel.ToClient,
-            x => x.GetProperty("params").GetProperty("uri").GetString()!.EndsWith(".csproj", StringComparison.Ordinal));
+            Has.None.Matches<JsonElement>(x => x.GetProperty("params").GetProperty("uri").GetString()!.EndsWith(".csproj", StringComparison.Ordinal)));
     }
 
     /// <summary>
     /// A closed file that was reported and is now clean gets an explicit empty set, or it stays
     /// broken in the transcript for the rest of the session.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AClosedFileThatWasFixedIsClearedExplicitly()
     {
         using var harness = new BridgeHarness(workspaceDiagnostics: "errors");
@@ -425,8 +425,8 @@ public class DiagnosticsBridgeTests
 
         var last = harness.Channel.ToClient[^1].GetProperty("params");
 
-        Assert.EndsWith("Caller.cs", last.GetProperty("uri").GetString()!, StringComparison.Ordinal);
-        Assert.Equal(0, last.GetProperty("diagnostics").GetArrayLength());
+        Assert.That(last.GetProperty("uri").GetString()!, Does.EndWith("Caller.cs").Using(StringComparison.Ordinal));
+        Assert.That(last.GetProperty("diagnostics").GetArrayLength(), Is.EqualTo(0));
     }
 
     private static JsonElement Published(BridgeHarness harness, int index) =>

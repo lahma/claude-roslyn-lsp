@@ -2,7 +2,7 @@ using System.Text;
 
 using ClaudeRoslynLsp.Protocol;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Protocol;
 
@@ -34,12 +34,12 @@ public class LspFramingTests
     /// The test's own cancellation token, threaded through every awaited call.
     /// </summary>
     /// <remarks>
-    /// xunit.v3 requires it (xUnit1051): a hung await inside a test would otherwise ignore the
-    /// runner's cancellation and keep the whole run alive until its outer timeout.
+    /// Cancelling the test then reaches a hung await inside it, rather than leaving that await to
+    /// keep the whole run alive until its outer timeout.
     /// </remarks>
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
-    [Fact]
+    [Test]
     public async Task AWrittenFrameReadsBackByteForByte()
     {
         var body = Encoding.UTF8.GetBytes("""{"jsonrpc":"2.0","method":"initialized","params":{}}""");
@@ -47,11 +47,11 @@ public class LspFramingTests
         var wire = await WriteAsync(body);
         var reader = new LspFrameReader(new MemoryStream(wire));
 
-        Assert.Equal(body, await reader.ReadFrameAsync(Cancellation));
-        Assert.Null(await reader.ReadFrameAsync(Cancellation));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.EqualTo(body));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.Null);
     }
 
-    [Fact]
+    [Test]
     public async Task TheHeaderDeclaresTheEncodedByteCountNotTheCharacterCount()
     {
         var body = Encoding.UTF8.GetBytes(NonAsciiBody);
@@ -59,14 +59,14 @@ public class LspFramingTests
 
         var header = Encoding.ASCII.GetString(wire, 0, Encoding.ASCII.GetString(wire).IndexOf("\r\n\r\n", StringComparison.Ordinal));
 
-        Assert.Equal($"Content-Length: {body.Length}", header);
-        Assert.NotEqual(NonAsciiBody.Length, body.Length);
+        Assert.That(header, Is.EqualTo($"Content-Length: {body.Length}"));
+        Assert.That(body.Length, Is.Not.EqualTo(NonAsciiBody.Length));
 
         var reader = new LspFrameReader(new MemoryStream(wire));
-        Assert.Equal(body, await reader.ReadFrameAsync(Cancellation));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.EqualTo(body));
     }
 
-    [Fact]
+    [Test]
     public async Task SeveralFramesReadBackInOrder()
     {
         var first = Encoding.UTF8.GetBytes("""{"id":1}""");
@@ -83,10 +83,10 @@ public class LspFramingTests
 
         var reader = new LspFrameReader(new MemoryStream(buffer.ToArray()));
 
-        Assert.Equal(first, await reader.ReadFrameAsync(Cancellation));
-        Assert.Equal(second, await reader.ReadFrameAsync(Cancellation));
-        Assert.Equal(third, await reader.ReadFrameAsync(Cancellation));
-        Assert.Null(await reader.ReadFrameAsync(Cancellation));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.EqualTo(first));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.EqualTo(second));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.EqualTo(third));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.Null);
     }
 
     /// <summary>
@@ -94,11 +94,10 @@ public class LspFramingTests
     /// worst case and the only one that exercises every partial state — a split inside the header
     /// name, inside the length, and inside the four-byte separator.
     /// </summary>
-    [Theory]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    [InlineData(7)]
+    [TestCase(1)]
+    [TestCase(2)]
+    [TestCase(3)]
+    [TestCase(7)]
     public async Task AFrameSplitAcrossReadsIsReassembled(int chunkSize)
     {
         var body = Encoding.UTF8.GetBytes(NonAsciiBody);
@@ -106,17 +105,17 @@ public class LspFramingTests
 
         var reader = new LspFrameReader(new ChunkedStream(wire, chunkSize));
 
-        Assert.Equal(body, await reader.ReadFrameAsync(Cancellation));
-        Assert.Null(await reader.ReadFrameAsync(Cancellation));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.EqualTo(body));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.Null);
     }
 
     /// <summary>A stream that ends between messages is a peer that hung up, not a protocol error.</summary>
-    [Fact]
+    [Test]
     public async Task AnEmptyStreamIsACleanEndOfStream()
     {
         var reader = new LspFrameReader(new MemoryStream([]));
 
-        Assert.Null(await reader.ReadFrameAsync(Cancellation));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.Null);
     }
 
     /// <summary>
@@ -124,7 +123,7 @@ public class LspFramingTests
     /// the peers it sits between, so a message it accepted might be one Roslyn rejects — which is the
     /// worst kind of leniency: it moves the failure somewhere else.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task BareLineFeedsAreNotAHeaderTerminator()
     {
         var wire = Encoding.ASCII.GetBytes("Content-Length: 2\n\n{}");
@@ -132,17 +131,17 @@ public class LspFramingTests
         await AssertProtocolErrorAsync(wire);
     }
 
-    [Fact]
+    [Test]
     public async Task AHeaderTheProtocolDoesNotDefineIsRefused()
     {
         var wire = Encoding.ASCII.GetBytes("Content-Length: 2\r\nX-Trace-Id: 7\r\n\r\n{}");
 
         var error = await AssertProtocolErrorAsync(wire);
-        Assert.Contains("X-Trace-Id", error.Message, StringComparison.Ordinal);
+        Assert.That(error.Message, Contains.Substring("X-Trace-Id").Using(StringComparison.Ordinal));
     }
 
     /// <summary>The one optional header the specification does define is accepted and ignored.</summary>
-    [Fact]
+    [Test]
     public async Task ContentTypeIsAccepted()
     {
         var wire = Encoding.ASCII.GetBytes(
@@ -150,15 +149,14 @@ public class LspFramingTests
 
         var reader = new LspFrameReader(new MemoryStream(wire));
 
-        Assert.Equal("{}"u8.ToArray(), await reader.ReadFrameAsync(Cancellation));
+        Assert.That(await reader.ReadFrameAsync(Cancellation), Is.EqualTo("{}"u8.ToArray()));
     }
 
-    [Theory]
-    [InlineData("Content-Length: twelve\r\n\r\n{}")]
-    [InlineData("Content-Length: -1\r\n\r\n{}")]
-    [InlineData("Content-Length: +2\r\n\r\n{}")]
-    [InlineData("Content-Length 2\r\n\r\n{}")]
-    [InlineData("Content-Type: application/json\r\n\r\n{}")]
+    [TestCase("Content-Length: twelve\r\n\r\n{}")]
+    [TestCase("Content-Length: -1\r\n\r\n{}")]
+    [TestCase("Content-Length: +2\r\n\r\n{}")]
+    [TestCase("Content-Length 2\r\n\r\n{}")]
+    [TestCase("Content-Type: application/json\r\n\r\n{}")]
     public async Task AMalformedOrMissingLengthIsRefused(string wire)
     {
         await AssertProtocolErrorAsync(Encoding.ASCII.GetBytes(wire));
@@ -168,63 +166,63 @@ public class LspFramingTests
     /// A length above the ceiling is refused before anything is allocated for it. Without this a
     /// corrupted or hostile header would turn straight into an allocation of whatever it claimed.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ALengthAboveTheCeilingIsRefused()
     {
         var wire = Encoding.ASCII.GetBytes($"Content-Length: {LspFrameReader.MaxContentLength + 1}\r\n\r\n");
 
         var error = await AssertProtocolErrorAsync(wire);
-        Assert.Contains("ceiling", error.Message, StringComparison.Ordinal);
+        Assert.That(error.Message, Contains.Substring("ceiling").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// A peer that never sends the blank line must not be able to grow this process's buffer without
     /// bound.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AHeaderSectionAboveTheCeilingIsRefused()
     {
         var padding = new string('x', LspFrameReader.MaxHeaderBytes + 1024);
         var wire = Encoding.ASCII.GetBytes($"Content-Length: 2\r\nContent-Type: {padding}\r\n\r\n{{}}");
 
         var error = await AssertProtocolErrorAsync(wire);
-        Assert.Contains("header", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.That(error.Message, Contains.Substring("header").Using(StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
     /// A body shorter than its header promised is the classic symptom of a peer that died mid-write.
     /// Returning what arrived would hand the layer above a truncated JSON document to misparse.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ABodyShorterThanItsDeclaredLengthIsRefused()
     {
         var wire = Encoding.ASCII.GetBytes("Content-Length: 20\r\n\r\n{\"id\":1}");
 
         var error = await AssertProtocolErrorAsync(wire);
-        Assert.Contains("short", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.That(error.Message, Contains.Substring("short").Using(StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>A header that ends mid-field is a truncation too, and reads as one.</summary>
-    [Fact]
+    [Test]
     public async Task AHeaderThatNeverEndsIsRefused()
     {
         await AssertProtocolErrorAsync(Encoding.ASCII.GetBytes("Content-Length: 2\r\n"));
     }
 
-    [Fact]
+    [Test]
     public async Task NonAsciiBytesInTheHeaderAreRefused()
     {
         var wire = Encoding.UTF8.GetBytes("Content-Length: 2\r\nContent-Typé: x\r\n\r\n{}");
 
         var error = await AssertProtocolErrorAsync(wire);
-        Assert.Contains("ASCII", error.Message, StringComparison.Ordinal);
+        Assert.That(error.Message, Contains.Substring("ASCII").Using(StringComparison.Ordinal));
     }
 
     private static async Task<LspProtocolException> AssertProtocolErrorAsync(byte[] wire)
     {
         var reader = new LspFrameReader(new MemoryStream(wire));
 
-        return await Assert.ThrowsAsync<LspProtocolException>(async () => await reader.ReadFrameAsync(Cancellation));
+        return (await Assert.ThrowsAsync<LspProtocolException>(async () => await reader.ReadFrameAsync(Cancellation)))!;
     }
 
     private static async Task<byte[]> WriteAsync(byte[] body)

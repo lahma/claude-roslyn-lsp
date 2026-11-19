@@ -1,11 +1,12 @@
-using System.ComponentModel;
 using System.Reflection;
 
 using ClaudeRoslynLsp.Mcp.Tools;
 
 using ModelContextProtocol.Server;
 
-using Xunit;
+using NUnit.Framework;
+
+using DescriptionAttribute = System.ComponentModel.DescriptionAttribute;
 
 namespace ClaudeRoslynLsp.Tests.Tools;
 
@@ -58,46 +59,45 @@ public class ToolInventoryTests
         typeof(CancellationToken),
     ];
 
-    [Fact]
+    [Test]
     public void ExactlyTenToolsAreDeclaredAcrossTheFiveToolClasses()
     {
-        Assert.Equal(5, ToolTestHost.ToolTypes.Count);
-        Assert.Equal(ExpectedToolNames.Length, ToolTestHost.ToolMethods.Count);
-        Assert.Equal(ExpectedToolNames.Length, ToolTestHost.Tools.Count);
-        Assert.Equal(10, ExpectedToolNames.Length);
+        Assert.That(ToolTestHost.ToolTypes.Count, Is.EqualTo(5));
+        Assert.That(ToolTestHost.ToolMethods.Count, Is.EqualTo(ExpectedToolNames.Length));
+        Assert.That(ToolTestHost.Tools.Count, Is.EqualTo(ExpectedToolNames.Length));
+        Assert.That(ExpectedToolNames.Length, Is.EqualTo(10));
     }
 
-    [Fact]
+    [Test]
     public void ToolNamesAreExactlyThePlannedOnes() =>
-        Assert.Equal(ExpectedToolNames, ToolTestHost.Tools.Select(tool => tool.ProtocolTool.Name).ToArray());
+        Assert.That(ToolTestHost.Tools.Select(tool => tool.ProtocolTool.Name).ToArray(), Is.EqualTo(ExpectedToolNames));
 
-    [Fact]
+    [Test]
     public void TheToolClassesAreTheFiveTheDesignNames()
     {
         var names = ToolTestHost.ToolTypes.Select(type => type.Name).Order(StringComparer.Ordinal).ToArray();
 
-        Assert.Equal(
-            ["CodeActionTools", "DiagnosticTools", "EditTools", "SymbolTools", "WorkspaceTools"],
-            names);
+        Assert.That(
+            names,
+            Is.EqualTo(["CodeActionTools", "DiagnosticTools", "EditTools", "SymbolTools", "WorkspaceTools"]));
     }
 
-    [Theory]
-    [InlineData("getWorkspaceStatus", "Get workspace status")]
-    [InlineData("resolveSymbol", "Resolve symbol")]
-    [InlineData("getTypeMembers", "Get type members")]
-    [InlineData("findReferences", "Find references")]
-    [InlineData("getDiagnostics", "Get diagnostics")]
-    [InlineData("getCodeActions", "Get code actions")]
-    [InlineData("applyCodeAction", "Apply code action")]
-    [InlineData("renameSymbol", "Rename symbol")]
-    [InlineData("fixDiagnostics", "Fix diagnostics")]
-    [InlineData("formatCode", "Format code")]
+    [TestCase("getWorkspaceStatus", "Get workspace status")]
+    [TestCase("resolveSymbol", "Resolve symbol")]
+    [TestCase("getTypeMembers", "Get type members")]
+    [TestCase("findReferences", "Find references")]
+    [TestCase("getDiagnostics", "Get diagnostics")]
+    [TestCase("getCodeActions", "Get code actions")]
+    [TestCase("applyCodeAction", "Apply code action")]
+    [TestCase("renameSymbol", "Rename symbol")]
+    [TestCase("fixDiagnostics", "Fix diagnostics")]
+    [TestCase("formatCode", "Format code")]
     public void TitleIsTheOneTheDesignSpecifies(string name, string expectedTitle)
     {
         var tool = ToolTestHost.Find(name).ProtocolTool;
 
-        Assert.Equal(expectedTitle, tool.Title);
-        Assert.Equal(expectedTitle, tool.Annotations?.Title);
+        Assert.That(tool.Title, Is.EqualTo(expectedTitle));
+        Assert.That(tool.Annotations?.Title, Is.EqualTo(expectedTitle));
     }
 
     /// <summary>
@@ -110,21 +110,20 @@ public class ToolInventoryTests
     /// it exists. The hint is about effects, not about a stable response.
     /// </para>
     /// </summary>
-    [Theory]
-    [InlineData("getWorkspaceStatus")]
-    [InlineData("resolveSymbol")]
-    [InlineData("getTypeMembers")]
-    [InlineData("findReferences")]
-    [InlineData("getDiagnostics")]
-    [InlineData("getCodeActions")]
+    [TestCase("getWorkspaceStatus")]
+    [TestCase("resolveSymbol")]
+    [TestCase("getTypeMembers")]
+    [TestCase("findReferences")]
+    [TestCase("getDiagnostics")]
+    [TestCase("getCodeActions")]
     public void ReadToolsAreReadOnlyIdempotentAndSayNothingAboutDestruction(string name)
     {
         var annotations = ToolTestHost.Find(name).ProtocolTool.Annotations;
 
-        Assert.NotNull(annotations);
-        Assert.True(annotations.ReadOnlyHint);
-        Assert.True(annotations.IdempotentHint);
-        Assert.Null(annotations.DestructiveHint);
+        Assert.That(annotations, Is.Not.Null);
+        Assert.That(annotations!.ReadOnlyHint, Is.True);
+        Assert.That(annotations.IdempotentHint, Is.True);
+        Assert.That(annotations.DestructiveHint, Is.Null);
     }
 
     /// <summary>
@@ -151,19 +150,18 @@ public class ToolInventoryTests
     /// record" applied twice are two different transformations of two different sources.
     /// </para>
     /// </remarks>
-    [Theory]
-    [InlineData("applyCodeAction", true, false)]
-    [InlineData("renameSymbol", false, true)]
-    [InlineData("fixDiagnostics", true, true)]
-    [InlineData("formatCode", false, true)]
+    [TestCase("applyCodeAction", true, false)]
+    [TestCase("renameSymbol", false, true)]
+    [TestCase("fixDiagnostics", true, true)]
+    [TestCase("formatCode", false, true)]
     public void MutatingToolsDeclareDestructionAndIdempotenceExplicitly(string name, bool destructive, bool idempotent)
     {
         var annotations = ToolTestHost.Find(name).ProtocolTool.Annotations;
 
-        Assert.NotNull(annotations);
-        Assert.False(annotations.ReadOnlyHint);
-        Assert.Equal(destructive, annotations.DestructiveHint);
-        Assert.Equal(idempotent, annotations.IdempotentHint);
+        Assert.That(annotations, Is.Not.Null);
+        Assert.That(annotations!.ReadOnlyHint, Is.False);
+        Assert.That(annotations.DestructiveHint, Is.EqualTo(destructive));
+        Assert.That(annotations.IdempotentHint, Is.EqualTo(idempotent));
     }
 
     /// <summary>
@@ -172,33 +170,33 @@ public class ToolInventoryTests
     /// says, and saying <c>true</c> — as a server talking to a web API would — would misdescribe every
     /// tool in the list.
     /// </summary>
-    [Fact]
+    [Test]
     public void NoToolClaimsAnOpenWorld()
     {
         foreach (var tool in ToolTestHost.Tools)
         {
-            Assert.Equal(false, tool.ProtocolTool.Annotations?.OpenWorldHint);
+            Assert.That(tool.ProtocolTool.Annotations?.OpenWorldHint, Is.EqualTo(false));
         }
     }
 
-    [Fact]
+    [Test]
     public void EveryToolAdvertisesStructuredOutput()
     {
         foreach (var tool in ToolTestHost.Tools)
         {
-            Assert.True(
-                tool.ProtocolTool.OutputSchema is not null,
+            Assert.That(
+                tool.ProtocolTool.OutputSchema is not null, Is.True,
                 $"{tool.ProtocolTool.Name} has no output schema; UseStructuredContent must be true.");
         }
     }
 
-    [Fact]
+    [Test]
     public void EveryToolHasATitle()
     {
         foreach (var tool in ToolTestHost.Tools)
         {
-            Assert.False(
-                string.IsNullOrWhiteSpace(tool.ProtocolTool.Title),
+            Assert.That(
+                string.IsNullOrWhiteSpace(tool.ProtocolTool.Title), Is.False,
                 $"{tool.ProtocolTool.Name} has no title; it is what a client shows a human.");
         }
     }
@@ -208,48 +206,48 @@ public class ToolInventoryTests
     /// <c>WithTools&lt;T&gt;</c> (CS0718). The private constructor is what keeps it uninstantiable
     /// anyway, and the methods themselves must be static so no instance is activated per call.
     /// </summary>
-    [Fact]
+    [Test]
     public void ToolClassesAreSealedAttributedAndUninstantiable()
     {
         foreach (var type in ToolTestHost.ToolTypes)
         {
-            Assert.True(type.IsSealed, $"{type.Name} must be sealed.");
-            Assert.NotNull(type.GetCustomAttribute<McpServerToolTypeAttribute>());
-            Assert.Empty(type.GetConstructors(BindingFlags.Public | BindingFlags.Instance));
+            Assert.That(type.IsSealed, Is.True, $"{type.Name} must be sealed.");
+            Assert.That(type.GetCustomAttribute<McpServerToolTypeAttribute>(), Is.Not.Null);
+            Assert.That(type.GetConstructors(BindingFlags.Public | BindingFlags.Instance), Is.Empty);
         }
     }
 
-    [Fact]
+    [Test]
     public void EveryToolMethodIsPublicStaticAndReturnsATaskOfAShapedResult()
     {
         foreach (var method in ToolTestHost.ToolMethods)
         {
-            Assert.True(method.IsPublic, $"{method.Name} must be public.");
-            Assert.True(method.IsStatic, $"{method.Name} must be static.");
+            Assert.That(method.IsPublic, Is.True, $"{method.Name} must be public.");
+            Assert.That(method.IsStatic, Is.True, $"{method.Name} must be static.");
 
-            Assert.True(
+            Assert.That(
                 method.ReturnType.IsGenericType
-                && method.ReturnType.GetGenericTypeDefinition() == typeof(Task<>),
+                && method.ReturnType.GetGenericTypeDefinition() == typeof(Task<>), Is.True,
                 $"{method.Name} must return Task<T>, not {method.ReturnType.Name}.");
 
-            Assert.Equal("ClaudeRoslynLsp.Mcp.Models", method.ReturnType.GetGenericArguments()[0].Namespace);
+            Assert.That(method.ReturnType.GetGenericArguments()[0].Namespace, Is.EqualTo("ClaudeRoslynLsp.Mcp.Models"));
         }
     }
 
-    [Fact]
+    [Test]
     public void EveryToolMethodHasADescription()
     {
         foreach (var method in ToolTestHost.ToolMethods)
         {
             var description = method.GetCustomAttribute<DescriptionAttribute>()?.Description;
 
-            Assert.False(
-                string.IsNullOrWhiteSpace(description),
+            Assert.That(
+                string.IsNullOrWhiteSpace(description), Is.False,
                 $"{method.Name} needs a [Description]; it is what the model reads to choose the tool.");
         }
     }
 
-    [Fact]
+    [Test]
     public void EveryModelSuppliedParameterHasADescription()
     {
         foreach (var method in ToolTestHost.ToolMethods)
@@ -261,8 +259,8 @@ public class ToolInventoryTests
                     continue;
                 }
 
-                Assert.False(
-                    string.IsNullOrWhiteSpace(parameter.GetCustomAttribute<DescriptionAttribute>()?.Description),
+                Assert.That(
+                    string.IsNullOrWhiteSpace(parameter.GetCustomAttribute<DescriptionAttribute>()?.Description), Is.False,
                     $"{method.Name}({parameter.Name}) needs a [Description]; it becomes the schema description.");
             }
         }
@@ -272,7 +270,7 @@ public class ToolInventoryTests
     /// The token is the SDK's cancellation wiring, and a defaulted trailing parameter is the only
     /// shape that keeps every other argument callable by name and position from a test.
     /// </summary>
-    [Fact]
+    [Test]
     public void CancellationTokenIsTheLastParameterOfEveryTool()
     {
         foreach (var method in ToolTestHost.ToolMethods)
@@ -280,12 +278,12 @@ public class ToolInventoryTests
             var parameters = method.GetParameters();
             var last = parameters[^1];
 
-            Assert.Equal(typeof(CancellationToken), last.ParameterType);
-            Assert.True(last.HasDefaultValue, $"{method.Name}'s cancellationToken must be optional.");
+            Assert.That(last.ParameterType, Is.EqualTo(typeof(CancellationToken)));
+            Assert.That(last.HasDefaultValue, Is.True, $"{method.Name}'s cancellationToken must be optional.");
 
-            Assert.DoesNotContain(
+            Assert.That(
                 parameters[..^1],
-                parameter => parameter.ParameterType == typeof(CancellationToken));
+                Has.None.Matches<ParameterInfo>(parameter => parameter!.ParameterType == typeof(CancellationToken)));
         }
     }
 
@@ -293,12 +291,12 @@ public class ToolInventoryTests
     /// One injected collaborator, always first, so the model-facing arguments are the tail of the
     /// signature and every schema exclusion has one name to watch for.
     /// </summary>
-    [Fact]
+    [Test]
     public void EveryToolTakesItsContextAsTheFirstParameter()
     {
         foreach (var method in ToolTestHost.ToolMethods)
         {
-            Assert.Equal(typeof(RoslynToolContext), method.GetParameters()[0].ParameterType);
+            Assert.That(method.GetParameters()[0].ParameterType, Is.EqualTo(typeof(RoslynToolContext)));
         }
     }
 
@@ -306,14 +304,14 @@ public class ToolInventoryTests
     /// Every tool method's name is its MCP name plus <c>Async</c>, so a stack trace, a log line and a
     /// <c>tools/list</c> entry all name the same thing.
     /// </summary>
-    [Fact]
+    [Test]
     public void EveryToolMethodIsNamedAfterTheToolItDeclares()
     {
         foreach (var method in ToolTestHost.ToolMethods)
         {
             var name = method.GetCustomAttribute<McpServerToolAttribute>()!.Name;
 
-            Assert.Equal(char.ToUpperInvariant(name![0]) + name[1..] + "Async", method.Name);
+            Assert.That(method.Name, Is.EqualTo(char.ToUpperInvariant(name![0]) + name[1..] + "Async"));
         }
     }
 
@@ -323,29 +321,28 @@ public class ToolInventoryTests
     /// preview flag on a tool that writes nothing would be a promise about an operation that does not
     /// exist.
     /// </summary>
-    [Theory]
-    [InlineData("applyCodeAction", true)]
-    [InlineData("renameSymbol", true)]
-    [InlineData("fixDiagnostics", true)]
-    [InlineData("formatCode", true)]
-    [InlineData("getWorkspaceStatus", false)]
-    [InlineData("resolveSymbol", false)]
-    [InlineData("getTypeMembers", false)]
-    [InlineData("findReferences", false)]
-    [InlineData("getDiagnostics", false)]
-    [InlineData("getCodeActions", false)]
+    [TestCase("applyCodeAction", true)]
+    [TestCase("renameSymbol", true)]
+    [TestCase("fixDiagnostics", true)]
+    [TestCase("formatCode", true)]
+    [TestCase("getWorkspaceStatus", false)]
+    [TestCase("resolveSymbol", false)]
+    [TestCase("getTypeMembers", false)]
+    [TestCase("findReferences", false)]
+    [TestCase("getDiagnostics", false)]
+    [TestCase("getCodeActions", false)]
     public void PreviewExistsOnEveryMutatingToolAndOnNoOther(string name, bool expected)
     {
         var parameter = ToolTestHost.FindMethod(name)
             .GetParameters()
             .FirstOrDefault(candidate => string.Equals(candidate.Name, "preview", StringComparison.Ordinal));
 
-        Assert.Equal(expected, parameter is not null);
+        Assert.That(parameter is not null, Is.EqualTo(expected));
 
         if (parameter is not null)
         {
-            Assert.Equal(typeof(bool), parameter.ParameterType);
-            Assert.Equal(false, parameter.DefaultValue);
+            Assert.That(parameter.ParameterType, Is.EqualTo(typeof(bool)));
+            Assert.That(parameter.DefaultValue, Is.EqualTo(false));
         }
     }
 }

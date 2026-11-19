@@ -1,6 +1,6 @@
 using ClaudeRoslynLsp.Mcp;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Mcp;
 
@@ -14,94 +14,88 @@ namespace ClaudeRoslynLsp.Tests.Mcp;
 /// </remarks>
 public class SymbolAddressTests
 {
-    [Theory]
-    [InlineData("src/Core/Calculator.cs:7:15", "src/Core/Calculator.cs", 7, 15)]
-    [InlineData(@"C:\src\Core\Calculator.cs:7:15", @"C:\src\Core\Calculator.cs", 7, 15)]
-    [InlineData("C:/src/Core/Calculator.cs:12:3", "C:/src/Core/Calculator.cs", 12, 3)]
-    [InlineData("Calculator.cs:1:1", "Calculator.cs", 1, 1)]
+    [TestCase("src/Core/Calculator.cs:7:15", "src/Core/Calculator.cs", 7, 15)]
+    [TestCase(@"C:\src\Core\Calculator.cs:7:15", @"C:\src\Core\Calculator.cs", 7, 15)]
+    [TestCase("C:/src/Core/Calculator.cs:12:3", "C:/src/Core/Calculator.cs", 12, 3)]
+    [TestCase("Calculator.cs:1:1", "Calculator.cs", 1, 1)]
     public void PositionFormIsParsedFromTheRight(string value, string path, int line, int column)
     {
         var address = SymbolAddress.Parse(value);
 
-        Assert.True(address.IsPosition);
-        Assert.Equal(path, address.Path);
-        Assert.Equal(line, address.Line);
-        Assert.Equal(column, address.Column);
+        Assert.That(address.IsPosition, Is.True);
+        Assert.That(address.Path, Is.EqualTo(path));
+        Assert.That(address.Line, Is.EqualTo(line));
+        Assert.That(address.Column, Is.EqualTo(column));
     }
 
     /// <summary>
     /// The one conversion this type exists to own: what a model writes is 1-based, what goes on the
     /// wire is 0-based.
     /// </summary>
-    [Fact]
+    [Test]
     public void PositionConvertsToZeroBasedForTheWire()
     {
         var position = SymbolAddress.Parse("a.cs:7:15").ToPosition();
 
-        Assert.Equal(6, position.Line);
-        Assert.Equal(14, position.Character);
-        Assert.Equal(7, position.OneBasedLine);
-        Assert.Equal(15, position.OneBasedColumn);
+        Assert.That(position.Line, Is.EqualTo(6));
+        Assert.That(position.Character, Is.EqualTo(14));
+        Assert.That(position.OneBasedLine, Is.EqualTo(7));
+        Assert.That(position.OneBasedColumn, Is.EqualTo(15));
     }
 
-    [Theory]
-    [InlineData("Calculator")]
-    [InlineData("Quartz.IScheduler.Start")]
-    [InlineData("IScheduler.Start")]
-    [InlineData("List`1")]
-    [InlineData(@"C:\src\Calculator.cs")]
-    [InlineData("a.cs:notaline:15")]
-    [InlineData("a.cs:7")]
+    [TestCase("Calculator")]
+    [TestCase("Quartz.IScheduler.Start")]
+    [TestCase("IScheduler.Start")]
+    [TestCase("List`1")]
+    [TestCase(@"C:\src\Calculator.cs")]
+    [TestCase("a.cs:notaline:15")]
+    [TestCase("a.cs:7")]
     public void EverythingElseIsAName(string value)
     {
         var address = SymbolAddress.Parse(value);
 
-        Assert.False(address.IsPosition);
-        Assert.Equal(value, address.Name);
+        Assert.That(address.IsPosition, Is.False);
+        Assert.That(address.Name, Is.EqualTo(value));
     }
 
-    [Theory]
-    [InlineData("Calculator", "Calculator")]
-    [InlineData("Quartz.IScheduler.Start", "Start")]
-    [InlineData("List`1", "List")]
-    [InlineData("Quartz.Collections.List`1", "List")]
+    [TestCase("Calculator", "Calculator")]
+    [TestCase("Quartz.IScheduler.Start", "Start")]
+    [TestCase("List`1", "List")]
+    [TestCase("Quartz.Collections.List`1", "List")]
     public void SimpleNameIsWhatWorkspaceSymbolCanSearchFor(string value, string expected) =>
-        Assert.Equal(expected, SymbolAddress.Parse(value).SimpleName);
+        Assert.That(SymbolAddress.Parse(value).SimpleName, Is.EqualTo(expected));
 
     /// <summary>
     /// Suffix matching on dot boundaries is what lets a caller write as much of a name as it takes to
     /// be unambiguous. <c>Scheduler.Start</c> must not match <c>Quartz.IScheduler.Start</c>: it is a
     /// different type, and matching it would rename the wrong member.
     /// </summary>
-    [Theory]
-    [InlineData("Start", "Quartz.IScheduler.Start", true)]
-    [InlineData("IScheduler.Start", "Quartz.IScheduler.Start", true)]
-    [InlineData("Quartz.IScheduler.Start", "Quartz.IScheduler.Start", true)]
-    [InlineData("Scheduler.Start", "Quartz.IScheduler.Start", false)]
-    [InlineData("IScheduler.Stop", "Quartz.IScheduler.Start", false)]
+    [TestCase("Start", "Quartz.IScheduler.Start", true)]
+    [TestCase("IScheduler.Start", "Quartz.IScheduler.Start", true)]
+    [TestCase("Quartz.IScheduler.Start", "Quartz.IScheduler.Start", true)]
+    [TestCase("Scheduler.Start", "Quartz.IScheduler.Start", false)]
+    [TestCase("IScheduler.Stop", "Quartz.IScheduler.Start", false)]
     public void NameMatchingIsBySegmentSuffix(string address, string candidate, bool expected) =>
-        Assert.Equal(expected, SymbolAddress.Parse(address).MatchesName(candidate));
+        Assert.That(SymbolAddress.Parse(address).MatchesName(candidate), Is.EqualTo(expected));
 
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
+    [TestCase(null)]
+    [TestCase("")]
+    [TestCase("   ")]
     public void AnEmptySymbolIsRefusedWithAReason(string? value)
     {
-        Assert.False(SymbolAddress.TryParse(value, out _, out var reason));
-        Assert.Contains("no symbol", reason, StringComparison.Ordinal);
+        Assert.That(SymbolAddress.TryParse(value, out _, out var reason), Is.False);
+        Assert.That(reason, Contains.Substring("no symbol").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// Zero is not a line number anywhere a model reads one, so accepting it would silently address
     /// the line before the one that was meant.
     /// </summary>
-    [Theory]
-    [InlineData("a.cs:0:1")]
-    [InlineData("a.cs:1:0")]
+    [TestCase("a.cs:0:1")]
+    [TestCase("a.cs:1:0")]
     public void ZeroBasedNumbersAreRefusedRatherThanShifted(string value)
     {
-        Assert.False(SymbolAddress.TryParse(value, out _, out var reason));
-        Assert.Contains("1-based", reason, StringComparison.Ordinal);
+        Assert.That(SymbolAddress.TryParse(value, out _, out var reason), Is.False);
+        Assert.That(reason, Contains.Substring("1-based").Using(StringComparison.Ordinal));
     }
 }

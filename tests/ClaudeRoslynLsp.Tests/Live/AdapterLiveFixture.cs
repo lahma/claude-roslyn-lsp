@@ -5,7 +5,7 @@ using ClaudeRoslynLsp.Roslyn;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Live;
 
@@ -33,7 +33,7 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// completes at all.
 /// </para>
 /// </remarks>
-public sealed class AdapterLiveFixture : IAsyncLifetime
+public sealed class AdapterLiveFixture : IAsyncDisposable
 {
     /// <summary>The variable that turns the live tests on.</summary>
     internal const string EnableVariable = "CLAUDE_ROSLYN_LSP_LIVE_TESTS";
@@ -71,12 +71,12 @@ public sealed class AdapterLiveFixture : IAsyncLifetime
     {
         if (!Enabled)
         {
-            Assert.Skip($"Set {EnableVariable}=1 to run the live adapter tests (they start a real Roslyn).");
+            Assert.Ignore($"Set {EnableVariable}=1 to run the live adapter tests (they start a real Roslyn).");
         }
     }
 
-    /// <inheritdoc />
-    public async ValueTask InitializeAsync()
+    /// <summary>Copies the fixture and acquires Roslyn; does nothing when the live tests are off.</summary>
+    public async Task InitializeAsync()
     {
         if (!Enabled)
         {
@@ -133,7 +133,7 @@ public sealed class AdapterLiveFixture : IAsyncLifetime
 
         AcquisitionElapsed = stopwatch.Elapsed;
 
-        Assert.True(Resolution.IsResolved, Resolution.Failure);
+        Assert.That(Resolution.IsResolved, Is.True, Resolution.Failure);
     }
 
     /// <inheritdoc />

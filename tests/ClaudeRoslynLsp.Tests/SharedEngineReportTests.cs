@@ -8,7 +8,7 @@ using ClaudeRoslynLsp.Cli;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests;
 
@@ -30,7 +30,7 @@ public class SharedEngineReportTests
     /// A session file naming a process <c>doctor</c> may not look at is reported, not crashed on —
     /// and <c>--fix</c> leaves it, because a check that cannot judge must not delete (finding 1).
     /// </summary>
-    [Fact]
+    [Test]
     public void TheReportSurvivesAProcessItCannotLookAt()
     {
         const int Denied = int.MaxValue - 11;
@@ -55,14 +55,15 @@ public class SharedEngineReportTests
 
         var report = SharedEngineReport.Gather(registry, sharingEnabled: true, fix: true, static _ => null);
 
-        var entry = Assert.Single(report.Entries);
+        Assert.That(report.Entries, Has.Exactly(1).Items);
+        var entry = report.Entries.Single();
 
-        Assert.True(entry.Report.Alive);
-        Assert.Equal(0, report.Stale.Sessions);
-        Assert.True(File.Exists(registry.FileFor(key)));
+        Assert.That(entry.Report.Alive, Is.True);
+        Assert.That(report.Stale.Sessions, Is.EqualTo(0));
+        Assert.That(File.Exists(registry.FileFor(key)), Is.True);
     }
 
-    [Fact]
+    [Test]
     public void TheJsonCarriesWhatEachLiveHostsRoslynHoldsAndATotal()
     {
         using var home = TempWorkspace.Create("doctor-shared");
@@ -106,37 +107,39 @@ public class SharedEngineReportTests
         var session = sharing.GetProperty("sessions").EnumerateArray()
             .Single(x => x.GetProperty("key").GetString() == live);
 
-        Assert.True(session.GetProperty("usable").GetBoolean());
-        Assert.Equal(4242, session.GetProperty("roslynProcessId").GetInt32());
-        Assert.Equal("dormant", session.GetProperty("state").GetString());
-        Assert.Equal(47, session.GetProperty("idleMinutes").GetInt32());
-        Assert.Equal(410, session.GetProperty("baselineMegabytes").GetInt32());
-        Assert.Equal(2, session.GetProperty("recycles").GetInt32());
-        Assert.Equal(1, session.GetProperty("attachedClients").GetInt32());
-        Assert.Equal(300 * Megabyte, session.GetProperty("roslyn").GetProperty("workingSetBytes").GetInt64());
-        Assert.Equal(700 * Megabyte, session.GetProperty("roslyn").GetProperty("privateBytes").GetInt64());
+        Assert.That(session.GetProperty("usable").GetBoolean(), Is.True);
+        Assert.That(session.GetProperty("roslynProcessId").GetInt32(), Is.EqualTo(4242));
+        Assert.That(session.GetProperty("state").GetString(), Is.EqualTo("dormant"));
+        Assert.That(session.GetProperty("idleMinutes").GetInt32(), Is.EqualTo(47));
+        Assert.That(session.GetProperty("baselineMegabytes").GetInt32(), Is.EqualTo(410));
+        Assert.That(session.GetProperty("recycles").GetInt32(), Is.EqualTo(2));
+        Assert.That(session.GetProperty("attachedClients").GetInt32(), Is.EqualTo(1));
+        Assert.That(session.GetProperty("roslyn").GetProperty("workingSetBytes").GetInt64(), Is.EqualTo(300 * Megabyte));
+        Assert.That(session.GetProperty("roslyn").GetProperty("privateBytes").GetInt64(), Is.EqualTo(700 * Megabyte));
 
         // The stale one is listed, not measured: the process it names has gone.
         var stale = sharing.GetProperty("sessions").EnumerateArray()
             .Single(x => x.GetProperty("key").GetString() == dead);
 
-        Assert.False(stale.GetProperty("usable").GetBoolean());
-        Assert.False(stale.TryGetProperty("roslyn", out _));
+        Assert.That(stale.GetProperty("usable").GetBoolean(), Is.False);
+        Assert.That(stale.TryGetProperty("roslyn", out _), Is.False);
 
         var totals = sharing.GetProperty("totals");
 
-        Assert.Equal(1, totals.GetProperty("liveHosts").GetInt32());
-        Assert.Equal(300 * Megabyte, totals.GetProperty("roslynWorkingSetBytes").GetInt64());
-        Assert.Equal(700 * Megabyte, totals.GetProperty("roslynPrivateBytes").GetInt64());
+        Assert.That(totals.GetProperty("liveHosts").GetInt32(), Is.EqualTo(1));
+        Assert.That(totals.GetProperty("roslynWorkingSetBytes").GetInt64(), Is.EqualTo(300 * Megabyte));
+        Assert.That(totals.GetProperty("roslynPrivateBytes").GetInt64(), Is.EqualTo(700 * Megabyte));
 
         // Counted, and still there: plain doctor deletes nothing (D94).
-        Assert.Equal(1, sharing.GetProperty("stale").GetProperty("sessions").GetInt32());
-        Assert.True(File.Exists(registry.FileFor(dead)));
+        Assert.That(sharing.GetProperty("stale").GetProperty("sessions").GetInt32(), Is.EqualTo(1));
+        Assert.That(File.Exists(registry.FileFor(dead)), Is.True);
 
-        Assert.Contains("CLAUDE_ROSLYN_LSP_SHARE=off", sharing.GetProperty("note").GetString()!, StringComparison.Ordinal);
+        Assert.That(
+            sharing.GetProperty("note").GetString()!,
+            Contains.Substring("CLAUDE_ROSLYN_LSP_SHARE=off").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void TheTextNamesTheRoslynMemoryTheStateAndTheTotal()
     {
         using var home = TempWorkspace.Create("doctor-shared-text");
@@ -164,22 +167,24 @@ public class SharedEngineReportTests
 
         var lines = report.Lines(Now);
 
-        var roslyn = Assert.Single(lines, line => line.Label.Trim() == "roslyn").Value;
+        Assert.That(lines, Has.Exactly(1).Matches<(string Label, string Value)>(line => line.Label.Trim() == "roslyn"));
+        var roslyn = lines.Single(line => line.Label.Trim() == "roslyn").Value;
 
-        Assert.Contains("pid 4242", roslyn, StringComparison.Ordinal);
-        Assert.Contains("820 MB working set, 1100 MB private", roslyn, StringComparison.Ordinal);
-        Assert.Contains("running", roslyn, StringComparison.Ordinal);
-        Assert.Contains("last used 5 min ago", roslyn, StringComparison.Ordinal);
-        Assert.Contains("baseline 410 MB", roslyn, StringComparison.Ordinal);
+        Assert.That(roslyn, Contains.Substring("pid 4242").Using(StringComparison.Ordinal));
+        Assert.That(roslyn, Contains.Substring("820 MB working set, 1100 MB private").Using(StringComparison.Ordinal));
+        Assert.That(roslyn, Contains.Substring("running").Using(StringComparison.Ordinal));
+        Assert.That(roslyn, Contains.Substring("last used 5 min ago").Using(StringComparison.Ordinal));
+        Assert.That(roslyn, Contains.Substring("baseline 410 MB").Using(StringComparison.Ordinal));
 
-        var total = Assert.Single(lines, line => line.Label == "total").Value;
-        Assert.Contains("1 live host(s)", total, StringComparison.Ordinal);
+        Assert.That(lines, Has.Exactly(1).Matches<(string Label, string Value)>(line => line.Label == "total"));
+        var total = lines.Single(line => line.Label == "total").Value;
+        Assert.That(total, Contains.Substring("1 live host(s)").Using(StringComparison.Ordinal));
 
-        Assert.Contains(lines, line => line.Label == "not listed");
+        Assert.That(lines, Has.Some.Matches<(string Label, string Value)>(line => line.Label == "not listed"));
     }
 
     /// <summary><c>doctor --fix</c> sweeps first, so the listing is what stayed (D103).</summary>
-    [Fact]
+    [Test]
     public void FixSweepsBeforeListing()
     {
         using var home = TempWorkspace.Create("doctor-shared-fix");
@@ -196,12 +201,12 @@ public class SharedEngineReportTests
 
         var report = SharedEngineReport.Gather(registry, sharingEnabled: true, fix: true, static _ => null);
 
-        Assert.Empty(report.Entries);
-        Assert.Equal(1, report.Stale.Sessions);
-        Assert.False(File.Exists(registry.FileFor(dead)));
+        Assert.That(report.Entries, Is.Empty);
+        Assert.That(report.Stale.Sessions, Is.EqualTo(1));
+        Assert.That(File.Exists(registry.FileFor(dead)), Is.False);
 
         using var json = Render(report);
-        Assert.Equal(1, json.RootElement.GetProperty("sharing").GetProperty("removed").GetProperty("sessions").GetInt32());
+        Assert.That(json.RootElement.GetProperty("sharing").GetProperty("removed").GetProperty("sessions").GetInt32(), Is.EqualTo(1));
     }
 
     private static JsonDocument Render(SharedEngineReport report)

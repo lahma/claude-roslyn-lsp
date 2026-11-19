@@ -4,6 +4,9 @@
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- NUnit3TestAdapter's Microsoft.Testing.Platform runner: the project builds to a test
+         executable that `dotnet test` drives directly, with no VSTest host. -->
+    <EnableNUnitRunner>true</EnableNUnitRunner>
     <!-- D6: the same reflection-free serializer contract as the product, so a missing
          [JsonSerializable] fails in `dotnet test` and not only after an AOT publish. -->
     <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
@@ -12,9 +15,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" />
-    <PackageReference Include="xunit.v3" />
-    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="NUnit" />
+    <PackageReference Include="NUnit3TestAdapter" />
   </ItemGroup>
 
   <ItemGroup>

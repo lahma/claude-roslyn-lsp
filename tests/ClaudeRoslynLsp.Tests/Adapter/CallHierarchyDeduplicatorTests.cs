@@ -2,7 +2,7 @@ using System.Text.Json;
 
 using ClaudeRoslynLsp.Adapter;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -25,59 +25,58 @@ public class CallHierarchyDeduplicatorTests
         """;
 
     /// <summary>Only the three call-hierarchy methods are touched.</summary>
-    [Theory]
-    [InlineData("textDocument/prepareCallHierarchy", true)]
-    [InlineData("callHierarchy/incomingCalls", true)]
-    [InlineData("callHierarchy/outgoingCalls", true)]
-    [InlineData("textDocument/references", false)]
-    [InlineData("workspace/symbol", false)]
+    [TestCase("textDocument/prepareCallHierarchy", true)]
+    [TestCase("callHierarchy/incomingCalls", true)]
+    [TestCase("callHierarchy/outgoingCalls", true)]
+    [TestCase("textDocument/references", false)]
+    [TestCase("workspace/symbol", false)]
     public void OnlyCallHierarchyAnswersAreTouched(string method, bool expected) =>
-        Assert.Equal(expected, CallHierarchyDeduplicator.Applies(method));
+        Assert.That(CallHierarchyDeduplicator.Applies(method), Is.EqualTo(expected));
 
     /// <summary>
     /// Two items that differ only in an opaque project GUID are the same symbol, and the key is
     /// (uri, selectionRange) precisely because <c>data</c> is what differs.
     /// </summary>
-    [Fact]
+    [Test]
     public void PrepareLosesThePerFrameworkCopy()
     {
         var result = Array(Item("aaaa"), Item("bbbb"));
         var reduced = CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result);
 
-        Assert.NotNull(reduced);
+        Assert.That(reduced, Is.Not.Null);
 
         var kept = JsonDocument.Parse(reduced).RootElement;
 
-        Assert.Equal(1, kept.GetArrayLength());
+        Assert.That(kept.GetArrayLength(), Is.EqualTo(1));
 
         // The survivor is the first one, verbatim: the opaque payload the next request has to
         // round-trip is still there and still exactly what Roslyn sent.
-        Assert.Equal("opaque", kept[0].GetProperty("data").GetProperty("SymbolKeyData").GetString());
-        Assert.Equal("aaaa", kept[0].GetProperty("data").GetProperty("ProjectGuid").GetString());
+        Assert.That(kept[0].GetProperty("data").GetProperty("SymbolKeyData").GetString(), Is.EqualTo("opaque"));
+        Assert.That(kept[0].GetProperty("data").GetProperty("ProjectGuid").GetString(), Is.EqualTo("aaaa"));
     }
 
     /// <summary>Two genuinely different symbols both survive.</summary>
-    [Fact]
+    [Test]
     public void DistinctSymbolsAreBothKept()
     {
         var result = Array(Item("aaaa", line: 16), Item("aaaa", line: 40));
 
-        Assert.Null(CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result));
+        Assert.That(CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result), Is.Null);
     }
 
     /// <summary>The same identifier range in two different files is two symbols.</summary>
-    [Fact]
+    [Test]
     public void TheSameRangeInADifferentFileIsADifferentSymbol()
     {
         var result = Array(
             Item("aaaa", uri: "file:///w/A.cs"),
             Item("aaaa", uri: "file:///w/B.cs"));
 
-        Assert.Null(CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result));
+        Assert.That(CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result), Is.Null);
     }
 
     /// <summary>An incoming call is keyed on its <c>from</c> item, not on the envelope.</summary>
-    [Fact]
+    [Test]
     public void IncomingCallsAreKeyedOnTheCaller()
     {
         var result = Array(
@@ -86,12 +85,12 @@ public class CallHierarchyDeduplicatorTests
 
         var reduced = CallHierarchyDeduplicator.Deduplicate("callHierarchy/incomingCalls", result);
 
-        Assert.NotNull(reduced);
-        Assert.Equal(1, JsonDocument.Parse(reduced).RootElement.GetArrayLength());
+        Assert.That(reduced, Is.Not.Null);
+        Assert.That(JsonDocument.Parse(reduced).RootElement.GetArrayLength(), Is.EqualTo(1));
     }
 
     /// <summary>An outgoing call is keyed on its <c>to</c> item.</summary>
-    [Fact]
+    [Test]
     public void OutgoingCallsAreKeyedOnTheCallee()
     {
         var result = Array(
@@ -100,29 +99,29 @@ public class CallHierarchyDeduplicatorTests
 
         var reduced = CallHierarchyDeduplicator.Deduplicate("callHierarchy/outgoingCalls", result);
 
-        Assert.NotNull(reduced);
-        Assert.Equal(1, JsonDocument.Parse(reduced).RootElement.GetArrayLength());
+        Assert.That(reduced, Is.Not.Null);
+        Assert.That(JsonDocument.Parse(reduced).RootElement.GetArrayLength(), Is.EqualTo(1));
     }
 
     /// <summary>
     /// An entry whose key cannot be read is kept. Dropping something this code did not understand
     /// would turn a shape change in Roslyn into a silently shorter answer.
     /// </summary>
-    [Fact]
+    [Test]
     public void AnUnreadableEntryIsKept()
     {
         var result = Array("""{"name":"Mystery"}""", """{"name":"Mystery"}""");
 
-        Assert.Null(CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result));
+        Assert.That(CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result), Is.Null);
     }
 
     /// <summary>A null answer — Roslyn's "no hierarchy here" — is left alone.</summary>
-    [Fact]
+    [Test]
     public void ANullResultIsLeftAlone()
     {
         var result = JsonDocument.Parse("null").RootElement;
 
-        Assert.Null(CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result));
+        Assert.That(CallHierarchyDeduplicator.Deduplicate("textDocument/prepareCallHierarchy", result), Is.Null);
     }
 
     private static JsonElement Array(params string[] entries) =>

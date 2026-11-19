@@ -6,7 +6,7 @@ using ClaudeRoslynLsp.Protocol;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -28,7 +28,7 @@ public class RegistrationTrackerTests
     /// <c>registerOptions.identifier</c>. Anything that indexed into the arrival order would be right
     /// most of the time, which is the worst kind of right.
     /// </summary>
-    [Fact]
+    [Test]
     public void DiagnosticSourcesAreKeyedOnTheirIdentifier()
     {
         var tracker = new RegistrationTracker(NullLogger.Instance);
@@ -43,14 +43,16 @@ public class RegistrationTrackerTests
 
         var sources = tracker.DiagnosticSources;
 
-        Assert.Equal(3, sources.Count);
+        Assert.That(sources.Count, Is.EqualTo(3));
 
-        var compiler = Assert.Single(sources, x => x.Identifier == "DocumentCompilerSemantic");
-        Assert.False(compiler.WorkspaceDiagnostics);
-        Assert.True(compiler.InterFileDependencies);
+        Assert.That(sources, Has.Exactly(1).Matches<DiagnosticSourceRegistration>(x => x!.Identifier == "DocumentCompilerSemantic"));
+        var compiler = sources.Single(x => x.Identifier == "DocumentCompilerSemantic");
+        Assert.That(compiler.WorkspaceDiagnostics, Is.False);
+        Assert.That(compiler.InterFileDependencies, Is.True);
 
-        var workspace = Assert.Single(sources, x => x.Identifier == "WorkspaceDocumentsAndProject");
-        Assert.True(workspace.WorkspaceDiagnostics);
+        Assert.That(sources, Has.Exactly(1).Matches<DiagnosticSourceRegistration>(x => x!.Identifier == "WorkspaceDocumentsAndProject"));
+        var workspace = sources.Single(x => x.Identifier == "WorkspaceDocumentsAndProject");
+        Assert.That(workspace.WorkspaceDiagnostics, Is.True);
     }
 
     /// <summary>
@@ -58,7 +60,7 @@ public class RegistrationTrackerTests
     /// recorded, because a tracker that threw or skipped would lose the registration id and could
     /// never honour the matching unregistration.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheRazorRegistrationWithNoIdentifierIsStillRecorded()
     {
         var tracker = new RegistrationTracker(NullLogger.Instance);
@@ -69,10 +71,11 @@ public class RegistrationTrackerTests
             ]}
             """));
 
-        var source = Assert.Single(tracker.DiagnosticSources);
+        Assert.That(tracker.DiagnosticSources, Has.Exactly(1).Items);
+        var source = tracker.DiagnosticSources.Single();
 
-        Assert.Null(source.Identifier);
-        Assert.Equal("razor-1", source.RegistrationId);
+        Assert.That(source.Identifier, Is.Null);
+        Assert.That(source.RegistrationId, Is.EqualTo("razor-1"));
     }
 
     /// <summary>
@@ -80,7 +83,7 @@ public class RegistrationTrackerTests
     /// the rest name the same base with brace groups whose members are in a different order. Both
     /// collapse: one entry per base, patterns as a distinct set.
     /// </summary>
-    [Fact]
+    [Test]
     public void WatchersCollapseByBaseUriWithTheirGlobsAsASet()
     {
         var tracker = new RegistrationTracker(NullLogger.Instance);
@@ -96,17 +99,19 @@ public class RegistrationTrackerTests
 
         var watchers = tracker.Watchers;
 
-        Assert.Equal(2, watchers.Count);
+        Assert.That(watchers.Count, Is.EqualTo(2));
 
-        var core = Assert.Single(watchers, x => x.BaseUri == "file:///w/Core");
-        Assert.Equal(["**/*{.cs,.razor,.cshtml}", "Core.csproj"], core.Patterns);
+        Assert.That(watchers, Has.Exactly(1).Matches<CollapsedWatcher>(x => x!.BaseUri == "file:///w/Core"));
+        var core = watchers.Single(x => x.BaseUri == "file:///w/Core");
+        Assert.That(core.Patterns, Is.EqualTo(["**/*{.cs,.razor,.cshtml}", "Core.csproj"]));
 
-        var cache = Assert.Single(watchers, x => x.BaseUri.Contains("nuget", StringComparison.Ordinal));
-        Assert.Equal(["**/*.dll"], cache.Patterns);
+        Assert.That(watchers, Has.Exactly(1).Matches<CollapsedWatcher>(x => x!.BaseUri.Contains("nuget", StringComparison.Ordinal)));
+        var cache = watchers.Single(x => x.BaseUri.Contains("nuget", StringComparison.Ordinal));
+        Assert.That(cache.Patterns, Is.EqualTo(["**/*.dll"]));
     }
 
     /// <summary>The plain string form the specification also allows, which has no base at all.</summary>
-    [Fact]
+    [Test]
     public void AGlobWithNoBaseUriIsRecordedUnderTheEmptyBase()
     {
         var tracker = new RegistrationTracker(NullLogger.Instance);
@@ -115,10 +120,11 @@ public class RegistrationTrackerTests
             {"registrations":[{"id":"w","method":"workspace/didChangeWatchedFiles","registerOptions":{"watchers":[{"globPattern":"**/*.cs"}]}}]}
             """));
 
-        var watcher = Assert.Single(tracker.Watchers);
+        Assert.That(tracker.Watchers, Has.Exactly(1).Items);
+        var watcher = tracker.Watchers.Single();
 
-        Assert.Equal(string.Empty, watcher.BaseUri);
-        Assert.Equal(["**/*.cs"], watcher.Patterns);
+        Assert.That(watcher.BaseUri, Is.EqualTo(string.Empty));
+        Assert.That(watcher.Patterns, Is.EqualTo(["**/*.cs"]));
     }
 
     /// <summary>
@@ -126,7 +132,7 @@ public class RegistrationTrackerTests
     /// implementation reproduces, Roslyn included (C32). Spelling it correctly here would mean
     /// registrations are never removed and nothing would say so.
     /// </summary>
-    [Fact]
+    [Test]
     public void UnregisterationsAreHonouredUnderTheSpecificationsMisspelling()
     {
         var tracker = new RegistrationTracker(NullLogger.Instance);
@@ -138,7 +144,7 @@ public class RegistrationTrackerTests
             ]}
             """));
 
-        Assert.Equal(2, tracker.Count);
+        Assert.That(tracker.Count, Is.EqualTo(2));
 
         var unregistration = JsonSerializer.Deserialize(
             Encoding.UTF8.GetBytes("""{"unregisterations":[{"id":"a","method":"textDocument/diagnostic"}]}"""),
@@ -146,13 +152,13 @@ public class RegistrationTrackerTests
 
         tracker.Unregister(unregistration);
 
-        Assert.Equal(1, tracker.Count);
-        Assert.Empty(tracker.DiagnosticSources);
-        Assert.Single(tracker.Watchers);
-        Assert.Equal(["workspace/didChangeWatchedFiles"], tracker.RegisteredMethods);
+        Assert.That(tracker.Count, Is.EqualTo(1));
+        Assert.That(tracker.DiagnosticSources, Is.Empty);
+        Assert.That(tracker.Watchers, Has.Exactly(1).Items);
+        Assert.That(tracker.RegisteredMethods, Is.EqualTo(["workspace/didChangeWatchedFiles"]));
     }
 
-    [Fact]
+    [Test]
     public void RegisteringTheSameIdTwiceReplacesRatherThanDuplicates()
     {
         var tracker = new RegistrationTracker(NullLogger.Instance);
@@ -165,8 +171,9 @@ public class RegistrationTrackerTests
             {"registrations":[{"id":"a","method":"textDocument/diagnostic","registerOptions":{"identifier":"NonLocal"}}]}
             """));
 
-        Assert.Equal(1, tracker.Count);
-        Assert.Equal("NonLocal", Assert.Single(tracker.DiagnosticSources).Identifier);
+        Assert.That(tracker.Count, Is.EqualTo(1));
+        Assert.That(tracker.DiagnosticSources, Has.Exactly(1).Items);
+        Assert.That(tracker.DiagnosticSources.Single().Identifier, Is.EqualTo("NonLocal"));
     }
 
     private static RegistrationParams? Parse(string json) =>

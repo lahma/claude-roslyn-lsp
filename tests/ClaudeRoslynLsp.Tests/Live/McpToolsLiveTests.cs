@@ -6,7 +6,7 @@ using ClaudeRoslynLsp.Mcp.Engine;
 using ClaudeRoslynLsp.Mcp.Models;
 using ClaudeRoslynLsp.Mcp.Tools;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Live;
 
@@ -28,8 +28,8 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// <para>
 /// <b>One test method, run in phases (D59, D81).</b> Loading the solution is the expensive part and
 /// several phases destroy what the others need — the fix-all deletes the using that the code-action
-/// phase asks about, the rename changes the symbol the navigation phases resolve. xunit does not
-/// order tests within a class, so a sequence that must be a sequence is written as one.
+/// phase asks about, the rename changes the symbol the navigation phases resolve. NUnit promises no
+/// order for tests within a class, so a sequence that must be a sequence is written as one.
 /// </para>
 /// <para>
 /// Every phase prints its timing, and the run ends with the Roslyn process's working set. Those
@@ -37,26 +37,37 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// when they pass.
 /// </para>
 /// </remarks>
-[Collection(McpToolsLiveCollection.Name)]
+[Category("Live")]
 public class McpToolsLiveTests : IDisposable
 {
-    private readonly McpToolsLiveFixture _fixture;
-    private readonly ITestOutputHelper _output;
+    /// <summary>
+    /// The one MCP engine, over the class's own copy of the fixture, built once and loaded once.
+    /// </summary>
+    private static McpToolsLiveFixture _fixture = null!;
 
-    public McpToolsLiveTests(McpToolsLiveFixture fixture, ITestOutputHelper output)
+    private readonly TextWriter _output = TestContext.Out;
+
+    public McpToolsLiveTests()
     {
-        _fixture = fixture;
-        _output = output;
-
-        if (fixture.Enabled)
+        if (_fixture.Enabled)
         {
-            fixture.Relay.PointAt(new TestOutputLogger(output, Microsoft.Extensions.Logging.LogLevel.Information));
+            _fixture.Relay.PointAt(new TestOutputLogger(_output, Microsoft.Extensions.Logging.LogLevel.Information));
         }
     }
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    [OneTimeSetUp]
+    public static async Task LoadWorkspaceAsync()
+    {
+        _fixture = new McpToolsLiveFixture();
+        await _fixture.InitializeAsync();
+    }
 
-    private RoslynToolContext Context => _fixture.Context;
+    [OneTimeTearDown]
+    public static async Task ReleaseWorkspaceAsync() => await _fixture.DisposeAsync();
+
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
+
+    private static RoslynToolContext Context => _fixture.Context;
 
     /// <inheritdoc />
     public void Dispose()
@@ -66,7 +77,7 @@ public class McpToolsLiveTests : IDisposable
     }
 
     /// <summary>Every tool, in the one order that lets them all run against one workspace.</summary>
-    [Fact]
+    [Test]
     public async Task TheToolsAnswerFromARealRoslynAgainstARealSolution()
     {
         _fixture.SkipIfDisabled();
@@ -93,23 +104,23 @@ public class McpToolsLiveTests : IDisposable
             "getWorkspaceStatus",
             () => WorkspaceTools.GetWorkspaceStatusAsync(Context, Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, status.Status);
-        Assert.Equal(OwnedRoslynEngine.Engine, status.Engine);
-        Assert.Equal("HelloSolution.slnx", status.Solution);
+        Assert.That(status.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(status.Engine, Is.EqualTo(OwnedRoslynEngine.Engine));
+        Assert.That(status.Solution, Is.EqualTo("HelloSolution.slnx"));
 
         // Three projects in the solution file, and Roslyn's own progress stream says how many it is
         // loading — the two numbers agree or the load did not cover the solution (D78).
-        Assert.Equal(3, status.ProjectsTotal);
-        Assert.Equal(status.ProjectsTotal, status.ProjectsLoaded);
-        Assert.NotNull(status.Projects);
-        Assert.Contains(status.Projects!, project => project.Name == "Hello.Core");
+        Assert.That(status.ProjectsTotal, Is.EqualTo(3));
+        Assert.That(status.ProjectsLoaded, Is.EqualTo(status.ProjectsTotal));
+        Assert.That(status.Projects, Is.Not.Null);
+        Assert.That(status.Projects!, Has.Some.Matches<ProjectSummary>(project => project!.Name == "Hello.Core"));
 
         // Hello.Core is multi-targeted on purpose; that is what produces C15's and C24's duplicates.
         var core = status.Projects!.Single(project => project.Name == "Hello.Core");
-        Assert.Equal(["net10.0", "netstandard2.0"], core.TargetFrameworks);
+        Assert.That(core.TargetFrameworks, Is.EqualTo(["net10.0", "netstandard2.0"]));
 
-        Assert.NotNull(status.ProcessId);
-        Assert.NotNull(status.RoslynVersion);
+        Assert.That(status.ProcessId, Is.Not.Null);
+        Assert.That(status.RoslynVersion, Is.Not.Null);
 
         _output.WriteLine($"  solution                      {status.Solution}");
         _output.WriteLine($"  projects                      {status.ProjectsLoaded}/{status.ProjectsTotal}");
@@ -124,15 +135,16 @@ public class McpToolsLiveTests : IDisposable
             "resolveSymbol(Calculator.Compute)",
             () => SymbolTools.ResolveSymbolAsync(Context, "Calculator.Compute", cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, resolved.Status);
-        Assert.NotNull(resolved.Matches);
+        Assert.That(resolved.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(resolved.Matches, Is.Not.Null);
 
-        var compute = Assert.Single(resolved.Matches!, match => match.Path == "Hello.Core/Calculator.cs");
+        Assert.That(resolved.Matches!, Has.Exactly(1).Matches<SymbolMatch>(match => match!.Path == "Hello.Core/Calculator.cs"));
+        var compute = resolved.Matches!.Single(match => match.Path == "Hello.Core/Calculator.cs");
 
-        Assert.Equal("Compute", compute.Name);
-        Assert.Equal("method", compute.Kind);
-        Assert.Equal(Line("Hello.Core/Calculator.cs", "public int Compute()"), compute.Line);
-        Assert.Contains("Compute", compute.Signature ?? string.Empty, StringComparison.Ordinal);
+        Assert.That(compute.Name, Is.EqualTo("Compute"));
+        Assert.That(compute.Kind, Is.EqualTo("method"));
+        Assert.That(compute.Line, Is.EqualTo(Line("Hello.Core/Calculator.cs", "public int Compute()")));
+        Assert.That(compute.Signature ?? string.Empty, Contains.Substring("Compute").Using(StringComparison.Ordinal));
 
         _output.WriteLine($"  {compute.Path}:{compute.Line}:{compute.Column}   {compute.Signature}");
 
@@ -140,8 +152,8 @@ public class McpToolsLiveTests : IDisposable
             "findReferences(Calculator.Compute)",
             () => SymbolTools.FindReferencesAsync(Context, "Calculator.Compute", cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, references.Status);
-        Assert.NotNull(references.ByFile);
+        Assert.That(references.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(references.ByFile, Is.Not.Null);
 
         var files = references.ByFile!.Select(file => file.Path).ToArray();
 
@@ -149,9 +161,9 @@ public class McpToolsLiveTests : IDisposable
 
         // The three call sites live in three different projects, which is how "loaded the solution"
         // is told apart from "loaded the two projects the app references".
-        Assert.Contains("Hello.Core/Caller.cs", files, StringComparer.Ordinal);
-        Assert.Contains("Hello.App/Program.cs", files, StringComparer.Ordinal);
-        Assert.Contains("Hello.Tests/ShapeTests.cs", files, StringComparer.Ordinal);
+        Assert.That(files, Does.Contain("Hello.Core/Caller.cs"));
+        Assert.That(files, Does.Contain("Hello.App/Program.cs"));
+        Assert.That(files, Does.Contain("Hello.Tests/ShapeTests.cs"));
     }
 
     /// <summary>Both halves of <c>getDiagnostics</c>: the workspace pull and the file pull (D67).</summary>
@@ -167,14 +179,15 @@ public class McpToolsLiveTests : IDisposable
                 minSeverity: "error",
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, solution.Status);
-        Assert.NotNull(solution.Diagnostics);
+        Assert.That(solution.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(solution.Diagnostics, Is.Not.Null);
 
-        var cs0029 = Assert.Single(solution.Diagnostics!, entry => entry.Id == "CS0029");
+        Assert.That(solution.Diagnostics!, Has.Exactly(1).Matches<DiagnosticEntry>(entry => entry!.Id == "CS0029"));
+        var cs0029 = solution.Diagnostics!.Single(entry => entry.Id == "CS0029");
 
-        Assert.Equal("Hello.App/Program.cs", cs0029.Path);
-        Assert.Equal("error", cs0029.Severity);
-        Assert.Equal(Line("Hello.App/Program.cs", "int x = \"s\";"), cs0029.Line);
+        Assert.That(cs0029.Path, Is.EqualTo("Hello.App/Program.cs"));
+        Assert.That(cs0029.Severity, Is.EqualTo("error"));
+        Assert.That(cs0029.Line, Is.EqualTo(Line("Hello.App/Program.cs", "int x = \"s\";")));
 
         _output.WriteLine($"  {cs0029.Path}:{cs0029.Line}  {cs0029.Id}  {cs0029.Message}");
 
@@ -189,12 +202,12 @@ public class McpToolsLiveTests : IDisposable
                 minSeverity: "error",
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, file.Status);
-        Assert.Contains(file.Diagnostics ?? [], entry => entry.Id == "CS0029");
+        Assert.That(file.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(file.Diagnostics ?? [], Has.Some.Matches<DiagnosticEntry>(entry => entry!.Id == "CS0029"));
 
         // Opened for the call and put back, so the workspace pull above keeps working (C15 skips
         // open documents).
-        Assert.False(Context.Engine.IsDocumentOpen(Uri("Hello.App/Program.cs")));
+        Assert.That(Context.Engine.IsDocumentOpen(Uri("Hello.App/Program.cs")), Is.False);
     }
 
     /// <summary>The lightbulb list at the IDE0005 site, with its fix-all scopes (D64).</summary>
@@ -211,8 +224,8 @@ public class McpToolsLiveTests : IDisposable
                 col: 1,
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, actions.Status);
-        Assert.NotNull(actions.Actions);
+        Assert.That(actions.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(actions.Actions, Is.Not.Null);
 
         foreach (var action in actions.Actions!)
         {
@@ -221,13 +234,14 @@ public class McpToolsLiveTests : IDisposable
                 + (action.FixAllScopes is { Count: > 0 } scopes ? "  fixAll: " + string.Join(",", scopes) : string.Empty));
         }
 
-        var remove = Assert.Single(
+        Assert.That(
             actions.Actions!,
-            action => action.Title.Contains("Remove unnecessary usings", StringComparison.Ordinal));
+            Has.Exactly(1).Matches<CodeActionEntry>(action => action!.Title.Contains("Remove unnecessary usings", StringComparison.Ordinal)));
+        var remove = actions.Actions!.Single(action => action.Title.Contains("Remove unnecessary usings", StringComparison.Ordinal));
 
         // C18's Fix All entry is folded onto the plain action rather than offered as a sibling (D64).
-        Assert.NotNull(remove.FixAllScopes);
-        Assert.Equal(["document", "project", "solution"], remove.FixAllScopes!);
+        Assert.That(remove.FixAllScopes, Is.Not.Null);
+        Assert.That(remove.FixAllScopes!, Is.EqualTo(["document", "project", "solution"]));
     }
 
     /// <summary>A solution-wide semantic rename, previewed and then applied (D62).</summary>
@@ -236,8 +250,8 @@ public class McpToolsLiveTests : IDisposable
         var callerPath = _fixture.Path_(McpToolsLiveFixture.CrlfBomFile);
         var before = File.ReadAllBytes(callerPath);
 
-        Assert.True(HasBom(before), "the fixture copy should start with a UTF-8 BOM");
-        Assert.True(IsCrlf(before), "the fixture copy should use CRLF endings");
+        Assert.That(HasBom(before), Is.True, "the fixture copy should start with a UTF-8 BOM");
+        Assert.That(IsCrlf(before), Is.True, "the fixture copy should use CRLF endings");
 
         var preview = await TimedAsync(
             "renameSymbol(preview: true)",
@@ -248,14 +262,14 @@ public class McpToolsLiveTests : IDisposable
                 preview: true,
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, preview.Status);
-        Assert.False(preview.Applied);
-        Assert.NotNull(preview.Diff);
-        Assert.Contains("Calculate", preview.Diff!, StringComparison.Ordinal);
+        Assert.That(preview.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(preview.Applied, Is.False);
+        Assert.That(preview.Diff, Is.Not.Null);
+        Assert.That(preview.Diff!, Contains.Substring("Calculate").Using(StringComparison.Ordinal));
 
         // A preview writes nothing at all, which is the property the whole preview/apply pair rests
         // on: the diff describes the operation that is about to happen, not a different one.
-        Assert.Equal(before, File.ReadAllBytes(callerPath));
+        Assert.That(File.ReadAllBytes(callerPath), Is.EqualTo(before));
 
         var applied = await TimedAsync(
             "renameSymbol(preview: false)",
@@ -265,27 +279,27 @@ public class McpToolsLiveTests : IDisposable
                 "Calculate",
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, applied.Status);
-        Assert.True(applied.Applied);
-        Assert.NotNull(applied.Files);
+        Assert.That(applied.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(applied.Applied, Is.True);
+        Assert.That(applied.Files, Is.Not.Null);
 
         var changed = applied.Files!.Select(file => file.Path).ToArray();
 
         _output.WriteLine("  files                         " + string.Join(", ", changed));
 
-        Assert.Contains("Hello.Core/Calculator.cs", changed, StringComparer.Ordinal);
-        Assert.Contains("Hello.Core/Caller.cs", changed, StringComparer.Ordinal);
-        Assert.Contains("Hello.App/Program.cs", changed, StringComparer.Ordinal);
-        Assert.True(changed.Length >= 3, $"the rename touched {changed.Length} file(s)");
+        Assert.That(changed, Does.Contain("Hello.Core/Calculator.cs"));
+        Assert.That(changed, Does.Contain("Hello.Core/Caller.cs"));
+        Assert.That(changed, Does.Contain("Hello.App/Program.cs"));
+        Assert.That(changed.Length >= 3, Is.True, $"the rename touched {changed.Length} file(s)");
 
         // D61: the codec reports how a file was encoded and writes it back that way. Without it a
         // one-word refactoring produces a diff touching every line, invisibly, because the code
         // still compiles.
         var after = File.ReadAllBytes(callerPath);
 
-        Assert.True(HasBom(after), "the rename dropped the byte-order mark");
-        Assert.True(IsCrlf(after), "the rename rewrote CRLF endings as LF");
-        Assert.Contains("Calculate()", File.ReadAllText(callerPath), StringComparison.Ordinal);
+        Assert.That(HasBom(after), Is.True, "the rename dropped the byte-order mark");
+        Assert.That(IsCrlf(after), Is.True, "the rename rewrote CRLF endings as LF");
+        Assert.That(File.ReadAllText(callerPath), Contains.Substring("Calculate()").Using(StringComparison.Ordinal));
 
         // And the solution still compiles exactly as badly as it did before: one CS0029, no more.
         var diagnostics = await TimedAsync(
@@ -296,8 +310,8 @@ public class McpToolsLiveTests : IDisposable
                 minSeverity: "error",
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, diagnostics.Status);
-        Assert.All(diagnostics.Diagnostics ?? [], entry => Assert.Equal("CS0029", entry.Id));
+        Assert.That(diagnostics.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That((diagnostics.Diagnostics ?? []).Select(entry => entry.Id), Has.All.EqualTo("CS0029"));
     }
 
     /// <summary>Roslyn's own fix-all across the solution (D65, C20).</summary>
@@ -305,7 +319,7 @@ public class McpToolsLiveTests : IDisposable
     {
         var calculator = _fixture.Path_("Hello.Core/Calculator.cs");
 
-        Assert.Contains("using System.Text;", File.ReadAllText(calculator), StringComparison.Ordinal);
+        Assert.That(File.ReadAllText(calculator), Contains.Substring("using System.Text;").Using(StringComparison.Ordinal));
 
         // A document pull always sees analyzer diagnostics; a workspace one sees them only once the
         // analyzer scope is raised (C14) *and* the full-solution analyzer pass has finished, which on
@@ -325,7 +339,7 @@ public class McpToolsLiveTests : IDisposable
         _output.WriteLine("  IDE0005                       "
                           + string.Join(", ", (analyzers.Diagnostics ?? []).Select(entry => $"{entry.Path}:{entry.Line}")));
 
-        Assert.Contains(analyzers.Diagnostics ?? [], entry => entry.Path == "Hello.Core/Calculator.cs");
+        Assert.That(analyzers.Diagnostics ?? [], Has.Some.Matches<DiagnosticEntry>(entry => entry!.Path == "Hello.Core/Calculator.cs"));
 
         // C58: with nothing changed since the last solution pull, Roslyn holds the next one. It has
         // to come back anyway, with the answer it gave before, rather than hanging the tool call for
@@ -338,8 +352,8 @@ public class McpToolsLiveTests : IDisposable
                 minSeverity: "error",
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, repeated.Status);
-        Assert.Contains(repeated.Diagnostics ?? [], entry => entry.Id == "CS0029");
+        Assert.That(repeated.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(repeated.Diagnostics ?? [], Has.Some.Matches<DiagnosticEntry>(entry => entry!.Id == "CS0029"));
 
         // The fix reaches the whole solution; the *site* is looked for in the file the caller named,
         // which is the cheap and reliable half of the same question.
@@ -352,8 +366,8 @@ public class McpToolsLiveTests : IDisposable
                 path: "Hello.Core/Calculator.cs",
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, fixAll.Status);
-        Assert.True(fixAll.Applied);
+        Assert.That(fixAll.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(fixAll.Applied, Is.True);
 
         var changed = fixAll.Files!.Select(file => file.Path).ToArray();
 
@@ -361,8 +375,8 @@ public class McpToolsLiveTests : IDisposable
 
         // The one unnecessary using in the solution is Calculator.cs's; a fix-all that rewrote
         // anything else would be removing a using something needs.
-        Assert.Equal(["Hello.Core/Calculator.cs"], changed);
-        Assert.DoesNotContain("using System.Text;", File.ReadAllText(calculator), StringComparison.Ordinal);
+        Assert.That(changed, Is.EqualTo(["Hello.Core/Calculator.cs"]));
+        Assert.That(File.ReadAllText(calculator), !Contains.Substring("using System.Text;").Using(StringComparison.Ordinal));
     }
 
     /// <summary>The refactoring that creates a file before it edits into it (C21).</summary>
@@ -370,7 +384,7 @@ public class McpToolsLiveTests : IDisposable
     {
         var rectangle = _fixture.Path_("Hello.Core/Rectangle.cs");
 
-        Assert.False(File.Exists(rectangle), "Rectangle.cs should not exist yet");
+        Assert.That(File.Exists(rectangle), Is.False, "Rectangle.cs should not exist yet");
 
         var (line, column) = Position("Hello.Core/Square.cs", "public sealed class Rectangle", "Rectangle");
 
@@ -384,10 +398,10 @@ public class McpToolsLiveTests : IDisposable
                 title: "Move type to Rectangle.cs",
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, moved.Status);
-        Assert.True(moved.Applied);
-        Assert.True(File.Exists(rectangle), "the create operation did not produce Rectangle.cs");
-        Assert.Contains("class Rectangle", File.ReadAllText(rectangle), StringComparison.Ordinal);
+        Assert.That(moved.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(moved.Applied, Is.True);
+        Assert.That(File.Exists(rectangle), Is.True, "the create operation did not produce Rectangle.cs");
+        Assert.That(File.ReadAllText(rectangle), Contains.Substring("class Rectangle").Using(StringComparison.Ordinal));
 
         _output.WriteLine("  files                         "
                           + string.Join(", ", moved.Files!.Select(file => file.Path)));
@@ -435,11 +449,11 @@ public class McpToolsLiveTests : IDisposable
                 organizeUsings: true,
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, first.Status);
+        Assert.That(first.Status, Is.EqualTo(ToolStatus.Ok));
         _output.WriteLine($"  first run                     {first.FilesChanged} file(s), {first.Edits} edit(s)");
 
-        Assert.True(first.Applied, "formatting a badly formatted file changed nothing");
-        Assert.Equal(1, first.FilesChanged);
+        Assert.That(first.Applied, Is.True, "formatting a badly formatted file changed nothing");
+        Assert.That(first.FilesChanged, Is.EqualTo(1));
 
         var second = await TimedAsync(
             "formatCode(again)",
@@ -449,9 +463,9 @@ public class McpToolsLiveTests : IDisposable
                 organizeUsings: true,
                 cancellationToken: Cancellation));
 
-        Assert.Equal(ToolStatus.Ok, second.Status);
-        Assert.Equal(0, second.FilesChanged);
-        Assert.Equal(0, second.Edits);
+        Assert.That(second.Status, Is.EqualTo(ToolStatus.Ok));
+        Assert.That(second.FilesChanged, Is.EqualTo(0));
+        Assert.That(second.Edits, Is.EqualTo(0));
     }
 
     /// <summary>C38 re-measured, this time for the MCP half's own child.</summary>
@@ -513,7 +527,7 @@ public class McpToolsLiveTests : IDisposable
     }
 
     /// <summary>The <c>file:</c> URI of a workspace-relative path.</summary>
-    private string Uri(string relativePath) => new Uri(_fixture.Path_(relativePath)).AbsoluteUri;
+    private static string Uri(string relativePath) => new Uri(_fixture.Path_(relativePath)).AbsoluteUri;
 
     /// <summary>
     /// The 1-based line a piece of text sits on, found rather than hard-coded.
@@ -522,7 +536,7 @@ public class McpToolsLiveTests : IDisposable
     /// A doc-comment edit in the fixture would otherwise move every position in this file, and the
     /// failure would look like a Roslyn regression rather than a fixture change.
     /// </remarks>
-    private int Line(string relativePath, string text) => Position(relativePath, text, text).Line;
+    private static int Line(string relativePath, string text) => Position(relativePath, text, text).Line;
 
     /// <summary>
     /// The 1-based line and column of a token on the line that holds some text.
@@ -536,7 +550,7 @@ public class McpToolsLiveTests : IDisposable
     /// <param name="relativePath">The file.</param>
     /// <param name="lineText">Text that identifies the line.</param>
     /// <param name="token">The token on it whose column is wanted.</param>
-    private (int Line, int Column) Position(string relativePath, string lineText, string token)
+    private static (int Line, int Column) Position(string relativePath, string lineText, string token)
     {
         var lines = File.ReadAllLines(_fixture.Path_(relativePath));
 
@@ -588,21 +602,4 @@ public class McpToolsLiveTests : IDisposable
 
         return newlines > 0;
     }
-}
-
-/// <summary>
-/// The collection that owns the one MCP engine.
-/// </summary>
-/// <remarks>
-/// Its own collection, separate from <c>adapter-live</c>: both start a real Roslyn over a real
-/// solution, and running them in parallel would put half a gigabyte and two solution loads on the
-/// machine at once for no benefit. The fixture is shared so the load is paid once.
-/// </remarks>
-[CollectionDefinition(Name)]
-#pragma warning disable CA1711 // xunit's own convention: a collection definition is named for what it is.
-public sealed class McpToolsLiveCollection : ICollectionFixture<McpToolsLiveFixture>
-#pragma warning restore CA1711
-{
-    /// <summary>The collection's name.</summary>
-    public const string Name = "mcp-tools-live";
 }

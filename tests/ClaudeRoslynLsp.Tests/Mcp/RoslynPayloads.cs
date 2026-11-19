@@ -2,7 +2,7 @@ using System.Text.Json;
 
 using ClaudeRoslynLsp.Mcp.Engine;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Mcp;
 
@@ -215,8 +215,8 @@ internal static class RoslynPayloads
     internal static RawCodeAction Action(string json)
     {
         var action = JsonSerializer.Deserialize(json, RoslynEngineJsonContext.Default.RawCodeAction);
-        Assert.NotNull(action);
-        return action;
+        Assert.That(action, Is.Not.Null);
+        return action!;
     }
 
     /// <summary>Deserialises one workspace edit.</summary>
@@ -224,7 +224,7 @@ internal static class RoslynPayloads
     internal static WorkspaceEdit Edit(string json)
     {
         var edit = JsonSerializer.Deserialize(json, RoslynEngineJsonContext.Default.WorkspaceEdit);
-        Assert.NotNull(edit);
-        return edit;
+        Assert.That(edit, Is.Not.Null);
+        return edit!;
     }
 }

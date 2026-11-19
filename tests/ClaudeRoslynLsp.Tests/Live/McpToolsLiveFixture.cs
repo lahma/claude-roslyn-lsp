@@ -11,7 +11,7 @@ using ClaudeRoslynLsp.Roslyn;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Live;
 
@@ -25,7 +25,7 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// a fix-all deletes a using, a code action creates <c>Rectangle.cs</c> — so the checked-in fixture
 /// would end up dirty and the next run's assertions pre-satisfied. It is also a separate copy from
 /// <see cref="AdapterLiveFixture"/>'s, because the two suites edit the same files in different ways
-/// and xunit runs collections in parallel.
+/// and neither may see what the other left behind.
 /// </para>
 /// <para>
 /// <b>One file is converted to CRLF with a BOM on the way in (D81).</b> <c>.gitattributes</c> forces
@@ -36,7 +36,7 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// turn a one-word refactoring into a diff touching every line.
 /// </para>
 /// </remarks>
-public sealed class McpToolsLiveFixture : IAsyncLifetime
+public sealed class McpToolsLiveFixture : IAsyncDisposable
 {
     /// <summary>The fixture file that is stored CRLF with a UTF-8 BOM.</summary>
     internal const string CrlfBomFile = "Hello.Core/Caller.cs";
@@ -80,14 +80,14 @@ public sealed class McpToolsLiveFixture : IAsyncLifetime
     {
         if (!Enabled)
         {
-            Assert.Skip(
+            Assert.Ignore(
                 $"Set {AdapterLiveFixture.EnableVariable}=1 to run the live MCP tool tests "
                 + "(they start a real Roslyn).");
         }
     }
 
-    /// <inheritdoc />
-    public async ValueTask InitializeAsync()
+    /// <summary>Copies the fixture, acquires Roslyn and loads the workspace; does nothing when the live tests are off.</summary>
+    public async Task InitializeAsync()
     {
         if (!Enabled)
         {
@@ -140,7 +140,7 @@ public sealed class McpToolsLiveFixture : IAsyncLifetime
             acquiring.Stop();
 
             AcquisitionElapsed = acquiring.Elapsed;
-            Assert.True(resolution.IsResolved, resolution.Failure);
+            Assert.That(resolution.IsResolved, Is.True, resolution.Failure);
         }
 
         var factory = new LaunchedRoslynFactory(options, paths, Relay);
@@ -249,8 +249,8 @@ internal sealed class RelayLoggerFactory(RelayLogger relay) : ILoggerFactory
 /// A logger whose destination can be changed after the object exists.
 /// </summary>
 /// <remarks>
-/// The engine is built once, in the fixture, and lives longer than any one test; xunit's output
-/// helper belongs to one test and throws once that test has finished. So the fixture holds this and
+/// The engine is built once, in the fixture, and lives longer than any one test; a test's output
+/// writer belongs to that one test. So the fixture holds this and
 /// each test points it at its own output for the duration — which is what makes a live failure a
 /// diagnosis (which directories were watched, what the acquisition chain decided) rather than a
 /// mystery.

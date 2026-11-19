@@ -4,7 +4,7 @@ using ClaudeRoslynLsp.Adapter.Sharing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter.Sharing;
 
@@ -20,7 +20,7 @@ namespace ClaudeRoslynLsp.Tests.Adapter.Sharing;
 /// </remarks>
 public class SessionRegistryTests
 {
-    [Fact]
+    [Test]
     public void APublishedSessionComesBackWithEverythingItWasGiven()
     {
         using var home = TempWorkspace.Create("sessions");
@@ -35,36 +35,36 @@ public class SessionRegistryTests
             "/w/Fixture/Fixture.slnx",
             DateTimeOffset.UtcNow);
 
-        Assert.True(registry.Write(key, published));
+        Assert.That(registry.Write(key, published), Is.True);
 
         var read = registry.TryRead(key);
 
-        Assert.NotNull(read);
-        Assert.Equal(published.ProcessId, read.ProcessId);
-        Assert.Equal(published.PipeName, read.PipeName);
-        Assert.Equal(published.Solution, read.Solution);
-        Assert.Equal(SharedSession.PipeTransport, read.Transport);
+        Assert.That(read, Is.Not.Null);
+        Assert.That(read!.ProcessId, Is.EqualTo(published.ProcessId));
+        Assert.That(read.PipeName, Is.EqualTo(published.PipeName));
+        Assert.That(read.Solution, Is.EqualTo(published.Solution));
+        Assert.That(read.Transport, Is.EqualTo(SharedSession.PipeTransport));
     }
 
     /// <summary>
     /// The key is a property of the solution, not of the string the caller happened to have.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheKeyIsStableAcrossSpellingsOfTheSamePath()
     {
         var direct = SessionRegistry.KeyFor(Path.Combine("w", "Fixture", "Fixture.slnx"));
         var indirect = SessionRegistry.KeyFor(Path.Combine("w", "Other", "..", "Fixture", "Fixture.slnx"));
 
-        Assert.Equal(direct, indirect);
-        Assert.Equal(16, direct.Length);
-        Assert.NotEqual(direct, SessionRegistry.KeyFor(Path.Combine("w", "Fixture", "Other.slnx")));
+        Assert.That(indirect, Is.EqualTo(direct));
+        Assert.That(direct.Length, Is.EqualTo(16));
+        Assert.That(SessionRegistry.KeyFor(Path.Combine("w", "Fixture", "Other.slnx")), Is.Not.EqualTo(direct));
     }
 
     /// <summary>
     /// Case folding follows the file system rather than a preference, which is the same rule
     /// <c>WorkspacePathGuard</c> applies (D61).
     /// </summary>
-    [Fact]
+    [Test]
     public void CaseMattersExactlyWhereTheFileSystemSaysItDoes()
     {
         var lower = SessionRegistry.KeyFor(Path.Combine("w", "fixture", "fixture.slnx"));
@@ -72,11 +72,11 @@ public class SessionRegistryTests
 
         if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
         {
-            Assert.Equal(lower, upper);
+            Assert.That(upper, Is.EqualTo(lower));
         }
         else
         {
-            Assert.NotEqual(lower, upper);
+            Assert.That(upper, Is.Not.EqualTo(lower));
         }
     }
 
@@ -84,7 +84,7 @@ public class SessionRegistryTests
     /// A host that is gone leaves a file behind, and the next reader is the one that cleans it up —
     /// otherwise a home directory collects one entry per solution per reboot.
     /// </summary>
-    [Fact]
+    [Test]
     public void ASessionNamingADeadProcessIsDiscardedAndDeleted()
     {
         using var home = TempWorkspace.Create("sessions-stale");
@@ -95,19 +95,19 @@ public class SessionRegistryTests
 
         var report = registry.Inspect(key);
 
-        Assert.False(report.Usable);
-        Assert.False(report.Alive);
-        Assert.Contains("is gone", report.Verdict, StringComparison.Ordinal);
+        Assert.That(report.Usable, Is.False);
+        Assert.That(report.Alive, Is.False);
+        Assert.That(report.Verdict, Contains.Substring("is gone").Using(StringComparison.Ordinal));
 
-        Assert.Null(registry.TryRead(key));
-        Assert.False(File.Exists(registry.FileFor(key)));
+        Assert.That(registry.TryRead(key), Is.Null);
+        Assert.That(File.Exists(registry.FileFor(key)), Is.False);
     }
 
     /// <summary>
     /// Two versions of this adapter speak the same LSP right up to the moment one of them changes
     /// what it fans out; refusing to attach across versions costs one extra Roslyn on upgrade day.
     /// </summary>
-    [Fact]
+    [Test]
     public void ASessionFromAnotherVersionIsDiscarded()
     {
         using var home = TempWorkspace.Create("sessions-version");
@@ -118,13 +118,13 @@ public class SessionRegistryTests
 
         var report = registry.Inspect(key);
 
-        Assert.True(report.Alive);
-        Assert.False(report.VersionMatches);
-        Assert.Contains("0.0.1-from-the-past", report.Verdict, StringComparison.Ordinal);
-        Assert.Null(registry.TryRead(key));
+        Assert.That(report.Alive, Is.True);
+        Assert.That(report.VersionMatches, Is.False);
+        Assert.That(report.Verdict, Contains.Substring("0.0.1-from-the-past").Using(StringComparison.Ordinal));
+        Assert.That(registry.TryRead(key), Is.Null);
     }
 
-    [Fact]
+    [Test]
     public void AFileThatIsNotJsonIsTreatedAsAbsentRatherThanAsAFailure()
     {
         using var home = TempWorkspace.Create("sessions-garbage");
@@ -134,15 +134,15 @@ public class SessionRegistryTests
         Directory.CreateDirectory(registry.Directory_);
         File.WriteAllText(registry.FileFor(key), "this is not a session file");
 
-        Assert.Null(registry.Inspect(key).Session);
-        Assert.Null(registry.TryRead(key));
+        Assert.That(registry.Inspect(key).Session, Is.Null);
+        Assert.That(registry.TryRead(key), Is.Null);
     }
 
     /// <summary>
     /// The whole point of the lock (D86): the plugin starts both servers at the same instant, so the
     /// question "is anybody hosting" must have exactly one answerer at a time.
     /// </summary>
-    [Fact]
+    [Test]
     public void OnlyOneHolderAtATimeGetsTheDecisionLock()
     {
         using var home = TempWorkspace.Create("sessions-lock");
@@ -152,16 +152,16 @@ public class SessionRegistryTests
 
         using (var held = first.TryAcquireLock(key))
         {
-            Assert.NotNull(held);
-            Assert.Null(second.TryAcquireLock(key));
+            Assert.That(held, Is.Not.Null);
+            Assert.That(second.TryAcquireLock(key), Is.Null);
         }
 
         // Released, so the loser of the race can take it on its next pass round the loop.
         using var afterwards = second.TryAcquireLock(key);
-        Assert.NotNull(afterwards);
+        Assert.That(afterwards, Is.Not.Null);
     }
 
-    [Fact]
+    [Test]
     public void TheLockIsPerSolutionRatherThanPerHome()
     {
         using var home = TempWorkspace.Create("sessions-lock-key");
@@ -170,12 +170,12 @@ public class SessionRegistryTests
         using var one = registry.TryAcquireLock(SessionRegistry.KeyFor("/w/A/A.slnx"));
         using var two = registry.TryAcquireLock(SessionRegistry.KeyFor("/w/B/B.slnx"));
 
-        Assert.NotNull(one);
-        Assert.NotNull(two);
+        Assert.That(one, Is.Not.Null);
+        Assert.That(two, Is.Not.Null);
     }
 
     /// <summary><c>doctor</c>'s view: every file, whether or not it is any good (D94).</summary>
-    [Fact]
+    [Test]
     public void ListingReportsLiveAndStaleSessionsAlike()
     {
         using var home = TempWorkspace.Create("sessions-list");
@@ -189,56 +189,56 @@ public class SessionRegistryTests
 
         var reports = registry.List();
 
-        Assert.Equal(2, reports.Count);
-        Assert.Single(reports, report => report.Usable);
-        Assert.Single(reports, report => !report.Usable);
+        Assert.That(reports.Count, Is.EqualTo(2));
+        Assert.That(reports, Has.Exactly(1).Matches<SharedSessionReport>(report => report!.Usable));
+        Assert.That(reports, Has.Exactly(1).Matches<SharedSessionReport>(report => !report!.Usable));
 
         // Listing does not tidy: a diagnostic that deletes things nobody asked it to is one people
         // stop running (D43's argument, applied here).
-        Assert.True(File.Exists(registry.FileFor(dead)));
+        Assert.That(File.Exists(registry.FileFor(dead)), Is.True);
     }
 
-    [Fact]
+    [Test]
     public void AnEmptyHomeListsNothingRatherThanFailing()
     {
         using var home = TempWorkspace.Create("sessions-empty");
 
-        Assert.Empty(Registry(home).List());
+        Assert.That(Registry(home).List(), Is.Empty);
     }
 
     /// <summary>
     /// D102: the file is rewritten while live, so a write has to replace it whole — and leave nothing
     /// behind in the directory when it has.
     /// </summary>
-    [Fact]
+    [Test]
     public void ARewriteReplacesTheFileWholeAndLeavesNoTemporaryFile()
     {
         using var home = TempWorkspace.Create("sessions-atomic");
         var registry = Registry(home);
         var key = SessionRegistry.KeyFor("/w/Atomic/Atomic.slnx");
 
-        Assert.True(registry.Write(key, Session(key)));
-        Assert.Equal(
-            SessionUpdate.Written,
-            registry.Update(key, Session(key) with { State = "dormant", Recycles = 3, AttachedClients = 2 }));
+        Assert.That(registry.Write(key, Session(key)), Is.True);
+        Assert.That(
+            registry.Update(key, Session(key) with { State = "dormant", Recycles = 3, AttachedClients = 2 }),
+            Is.EqualTo(SessionUpdate.Written));
 
         var read = registry.TryRead(key);
 
-        Assert.NotNull(read);
-        Assert.Equal("dormant", read.State);
-        Assert.Equal(3, read.Recycles);
-        Assert.Equal(2, read.AttachedClients);
+        Assert.That(read, Is.Not.Null);
+        Assert.That(read!.State, Is.EqualTo("dormant"));
+        Assert.That(read.Recycles, Is.EqualTo(3));
+        Assert.That(read.AttachedClients, Is.EqualTo(2));
 
         // The session file and the decision lock the rewrite was made under — and no temporary file.
-        Assert.Equal([registry.FileFor(key)], Directory.GetFiles(registry.Directory_, "*.json"));
-        Assert.Empty(Directory.GetFiles(registry.Directory_, "*.tmp"));
+        Assert.That(Directory.GetFiles(registry.Directory_, "*.json"), Is.EqualTo([registry.FileFor(key)]));
+        Assert.That(Directory.GetFiles(registry.Directory_, "*.tmp"), Is.Empty);
     }
 
     /// <summary>
     /// A file written before the new fields existed still reads, and one written with them still reads
     /// in a build that ignores them — the format is optional in both directions (D102).
     /// </summary>
-    [Fact]
+    [Test]
     public void AFileWithoutTheBackendFieldsStillReads()
     {
         using var home = TempWorkspace.Create("sessions-old");
@@ -255,17 +255,17 @@ public class SessionRegistryTests
 
         var read = registry.TryRead(key);
 
-        Assert.NotNull(read);
-        Assert.Null(read.State);
-        Assert.Null(read.RoslynProcessId);
-        Assert.Equal(0, read.Recycles);
+        Assert.That(read, Is.Not.Null);
+        Assert.That(read!.State, Is.Null);
+        Assert.That(read.RoslynProcessId, Is.Null);
+        Assert.That(read.Recycles, Is.EqualTo(0));
     }
 
     /// <summary>
     /// An unreadable file that is young may be an older build's write caught half done, so a reader
     /// leaves it; one that is old is debris, and goes (D102, D103).
     /// </summary>
-    [Fact]
+    [Test]
     public void AnUnreadableFileIsDeletedOnlyOnceItIsOld()
     {
         using var home = TempWorkspace.Create("sessions-torn");
@@ -276,17 +276,17 @@ public class SessionRegistryTests
         Directory.CreateDirectory(registry.Directory_);
         File.WriteAllText(path, """{"pid":12, "vers""");
 
-        Assert.Null(registry.TryRead(key));
-        Assert.True(File.Exists(path));
+        Assert.That(registry.TryRead(key), Is.Null);
+        Assert.That(File.Exists(path), Is.True);
 
         File.SetLastWriteTimeUtc(path, DateTime.UtcNow - SessionRegistry.DebrisAge - TimeSpan.FromMinutes(1));
 
-        Assert.Null(registry.TryRead(key));
-        Assert.False(File.Exists(path));
+        Assert.That(registry.TryRead(key), Is.Null);
+        Assert.That(File.Exists(path), Is.False);
     }
 
     /// <summary>A write's temporary file is never mistaken for a session.</summary>
-    [Fact]
+    [Test]
     public void ListingIgnoresTemporaryFiles()
     {
         using var home = TempWorkspace.Create("sessions-tmp");
@@ -297,10 +297,11 @@ public class SessionRegistryTests
         File.WriteAllText(Path.Combine(registry.Directory_, key + ".0123456789abcdef.tmp"), "{");
         File.WriteAllText(Path.Combine(registry.Directory_, key + ".json.tmp"), "{");
 
-        var report = Assert.Single(registry.List());
+        Assert.That(registry.List(), Has.Exactly(1).Items);
+        var report = registry.List().Single();
 
-        Assert.Equal(key, report.Key);
-        Assert.True(report.Usable);
+        Assert.That(report.Key, Is.EqualTo(key));
+        Assert.That(report.Usable, Is.True);
     }
 
     /// <summary>
@@ -308,7 +309,7 @@ public class SessionRegistryTests
     /// orphaned locks go and a held one or one with a session beside it stays, old temporary files go
     /// and young ones stay.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheSweepRemovesOnlyWhatNothingCanStillBeUsing()
     {
         using var home = TempWorkspace.Create("sessions-sweep");
@@ -335,7 +336,7 @@ public class SessionRegistryTests
         }
 
         using var holding = registry.TryAcquireLock(held);
-        Assert.NotNull(holding);
+        Assert.That(holding, Is.Not.Null);
 
         var oldTemporary = Path.Combine(directory, dead + ".00000000000000000000000000000001.tmp");
         var youngTemporary = Path.Combine(directory, live + ".00000000000000000000000000000002.tmp");
@@ -347,34 +348,34 @@ public class SessionRegistryTests
         // Counting first: plain doctor deletes nothing (D94).
         var counted = registry.Sweep(apply: false);
 
-        Assert.Equal(new SessionSweep(Sessions: 1, Locks: 1, Temporaries: 1), counted);
-        Assert.True(File.Exists(registry.FileFor(dead)));
-        Assert.True(File.Exists(registry.LockFor(orphan)));
-        Assert.True(File.Exists(oldTemporary));
+        Assert.That(counted, Is.EqualTo(new SessionSweep(Sessions: 1, Locks: 1, Temporaries: 1)));
+        Assert.That(File.Exists(registry.FileFor(dead)), Is.True);
+        Assert.That(File.Exists(registry.LockFor(orphan)), Is.True);
+        Assert.That(File.Exists(oldTemporary), Is.True);
 
         var swept = registry.Sweep(apply: true);
 
-        Assert.Equal(counted, swept);
+        Assert.That(swept, Is.EqualTo(counted));
 
-        Assert.True(File.Exists(registry.FileFor(live)));
-        Assert.False(File.Exists(registry.FileFor(dead)));
+        Assert.That(File.Exists(registry.FileFor(live)), Is.True);
+        Assert.That(File.Exists(registry.FileFor(dead)), Is.False);
 
-        Assert.True(File.Exists(registry.LockFor(live)));
-        Assert.False(File.Exists(registry.LockFor(orphan)));
-        Assert.True(File.Exists(registry.LockFor(held)));
+        Assert.That(File.Exists(registry.LockFor(live)), Is.True);
+        Assert.That(File.Exists(registry.LockFor(orphan)), Is.False);
+        Assert.That(File.Exists(registry.LockFor(held)), Is.True);
 
-        Assert.False(File.Exists(oldTemporary));
-        Assert.True(File.Exists(youngTemporary));
+        Assert.That(File.Exists(oldTemporary), Is.False);
+        Assert.That(File.Exists(youngTemporary), Is.True);
 
         // And the held lock still works as a lock: nobody else can take it.
-        Assert.Null(Registry(home).TryAcquireLock(held));
+        Assert.That(Registry(home).TryAcquireLock(held), Is.Null);
     }
 
     /// <summary>
     /// A live host written by another version is unusable to this build but is still the rendezvous
     /// for its own version's other half, so the sweep must leave it alone (D103).
     /// </summary>
-    [Fact]
+    [Test]
     public void TheSweepLeavesALiveHostOfAnotherVersionAlone()
     {
         using var home = TempWorkspace.Create("sessions-sweep-version");
@@ -383,9 +384,9 @@ public class SessionRegistryTests
 
         registry.Write(key, Session(key) with { Version = "0.0.1-older" });
 
-        Assert.False(registry.Inspect(key).Usable);
-        Assert.Equal(0, registry.Sweep(apply: true).Total);
-        Assert.True(File.Exists(registry.FileFor(key)));
+        Assert.That(registry.Inspect(key).Usable, Is.False);
+        Assert.That(registry.Sweep(apply: true).Total, Is.EqualTo(0));
+        Assert.That(File.Exists(registry.FileFor(key)), Is.True);
     }
 
     /// <summary>
@@ -393,7 +394,7 @@ public class SessionRegistryTests
     /// makes <c>HasExited</c> throw <see cref="Win32Exception"/> — is judged alive, so nothing
     /// deletes it and nothing throws (finding 1 of the 0.2.0 review, D103).
     /// </summary>
-    [Fact]
+    [Test]
     public void AProcessThatCannotBeLookedAtIsAliveAndIsNeverSwept()
     {
         const int Denied = int.MaxValue - 11;
@@ -406,34 +407,34 @@ public class SessionRegistryTests
 
         registry.Write(key, Session(key, processId: Denied));
 
-        Assert.True(registry.Inspect(key).Alive);
-        Assert.Equal(0, registry.Sweep(apply: true).Sessions);
-        Assert.True(File.Exists(registry.FileFor(key)));
-        Assert.NotNull(registry.TryRead(key));
+        Assert.That(registry.Inspect(key).Alive, Is.True);
+        Assert.That(registry.Sweep(apply: true).Sessions, Is.EqualTo(0));
+        Assert.That(File.Exists(registry.FileFor(key)), Is.True);
+        Assert.That(registry.TryRead(key), Is.Not.Null);
     }
 
     /// <summary>Only "no such process" and "it has exited" mean gone; every other answer means alive.</summary>
-    [Fact]
+    [Test]
     public void OnlyNoSuchProcessAndHasExitedMeanGone()
     {
         const int Other = int.MaxValue - 13;
 
-        Assert.False(SessionRegistry.IsAlive(Other, static _ => throw new ArgumentException("no such process")));
-        Assert.False(SessionRegistry.IsAlive(Other, static _ => throw new InvalidOperationException("it exited")));
-        Assert.False(SessionRegistry.IsAlive(Other, static _ => true));
-        Assert.True(SessionRegistry.IsAlive(Other, static _ => false));
-        Assert.True(SessionRegistry.IsAlive(Other, static _ => throw new Win32Exception(5, "Access is denied.")));
-        Assert.True(SessionRegistry.IsAlive(Other, static _ => throw new NotSupportedException()));
+        Assert.That(SessionRegistry.IsAlive(Other, static _ => throw new ArgumentException("no such process")), Is.False);
+        Assert.That(SessionRegistry.IsAlive(Other, static _ => throw new InvalidOperationException("it exited")), Is.False);
+        Assert.That(SessionRegistry.IsAlive(Other, static _ => true), Is.False);
+        Assert.That(SessionRegistry.IsAlive(Other, static _ => false), Is.True);
+        Assert.That(SessionRegistry.IsAlive(Other, static _ => throw new Win32Exception(5, "Access is denied.")), Is.True);
+        Assert.That(SessionRegistry.IsAlive(Other, static _ => throw new NotSupportedException()), Is.True);
 
-        Assert.False(SessionRegistry.IsAlive(0, static _ => false));
-        Assert.True(SessionRegistry.IsAlive(Environment.ProcessId, static _ => throw new InvalidOperationException()));
+        Assert.That(SessionRegistry.IsAlive(0, static _ => false), Is.False);
+        Assert.That(SessionRegistry.IsAlive(Environment.ProcessId, static _ => throw new InvalidOperationException()), Is.True);
     }
 
     /// <summary>
     /// A rewrite touches the file only while it still names this host — this process <em>and</em>
     /// this pipe — and never creates one that has gone (finding 3, D102).
     /// </summary>
-    [Fact]
+    [Test]
     public void ARewriteLeavesAFileThatNamesAnotherHostAlone()
     {
         using var home = TempWorkspace.Create("sessions-owner");
@@ -442,32 +443,32 @@ public class SessionRegistryTests
         var ours = Session(key);
         var path = registry.FileFor(key);
 
-        Assert.Equal(SessionUpdate.NotOurs, registry.Update(key, ours with { State = "running" }));
-        Assert.False(File.Exists(path));
+        Assert.That(registry.Update(key, ours with { State = "running" }), Is.EqualTo(SessionUpdate.NotOurs));
+        Assert.That(File.Exists(path), Is.False);
 
         registry.Write(key, ours with { PipeName = "claude-roslyn-lsp-share-newcomer" });
         var newcomer = File.ReadAllBytes(path);
 
-        Assert.Equal(SessionUpdate.NotOurs, registry.Update(key, ours with { State = "dormant" }));
-        Assert.Equal(newcomer, File.ReadAllBytes(path));
+        Assert.That(registry.Update(key, ours with { State = "dormant" }), Is.EqualTo(SessionUpdate.NotOurs));
+        Assert.That(File.ReadAllBytes(path), Is.EqualTo(newcomer));
 
         registry.Write(key, ours with { ProcessId = ours.ProcessId + 1 });
         var other = File.ReadAllBytes(path);
 
-        Assert.Equal(SessionUpdate.NotOurs, registry.Update(key, ours with { State = "dormant" }));
-        Assert.Equal(other, File.ReadAllBytes(path));
+        Assert.That(registry.Update(key, ours with { State = "dormant" }), Is.EqualTo(SessionUpdate.NotOurs));
+        Assert.That(File.ReadAllBytes(path), Is.EqualTo(other));
 
         registry.Write(key, ours);
 
-        Assert.Equal(SessionUpdate.Written, registry.Update(key, ours with { State = "dormant" }));
-        Assert.Equal("dormant", registry.TryRead(key)!.State);
+        Assert.That(registry.Update(key, ours with { State = "dormant" }), Is.EqualTo(SessionUpdate.Written));
+        Assert.That(registry.TryRead(key)!.State, Is.EqualTo("dormant"));
     }
 
     /// <summary>
     /// While another process holds the decision lock it is deciding whether to take over, so a
     /// rewrite waits and a withdrawal leaves the file to it (D86, D102).
     /// </summary>
-    [Fact]
+    [Test]
     public void NothingIsRewrittenOrWithdrawnWhileAnotherProcessIsDeciding()
     {
         using var home = TempWorkspace.Create("sessions-deciding");
@@ -479,17 +480,17 @@ public class SessionRegistryTests
 
         using (var deciding = Registry(home).TryAcquireLock(key))
         {
-            Assert.NotNull(deciding);
-            Assert.Equal(SessionUpdate.Busy, registry.Update(key, ours with { State = "dormant" }));
-            Assert.False(registry.DeleteIfOwned(key, ours.ProcessId, ours.PipeName));
+            Assert.That(deciding, Is.Not.Null);
+            Assert.That(registry.Update(key, ours with { State = "dormant" }), Is.EqualTo(SessionUpdate.Busy));
+            Assert.That(registry.DeleteIfOwned(key, ours.ProcessId, ours.PipeName), Is.False);
         }
 
-        Assert.Null(registry.TryRead(key)!.State);
-        Assert.Equal(SessionUpdate.Written, registry.Update(key, ours with { State = "dormant" }));
+        Assert.That(registry.TryRead(key)!.State, Is.Null);
+        Assert.That(registry.Update(key, ours with { State = "dormant" }), Is.EqualTo(SessionUpdate.Written));
     }
 
     /// <summary>A stopping host withdraws its own file and only its own (finding 3).</summary>
-    [Fact]
+    [Test]
     public void AStoppingHostWithdrawsOnlyItsOwnFile()
     {
         using var home = TempWorkspace.Create("sessions-withdraw");
@@ -499,20 +500,20 @@ public class SessionRegistryTests
 
         registry.Write(key, ours with { PipeName = "claude-roslyn-lsp-share-newcomer" });
 
-        Assert.False(registry.DeleteIfOwned(key, ours.ProcessId, ours.PipeName));
-        Assert.True(File.Exists(registry.FileFor(key)));
+        Assert.That(registry.DeleteIfOwned(key, ours.ProcessId, ours.PipeName), Is.False);
+        Assert.That(File.Exists(registry.FileFor(key)), Is.True);
 
         registry.Write(key, ours);
 
-        Assert.True(registry.DeleteIfOwned(key, ours.ProcessId, ours.PipeName));
-        Assert.False(File.Exists(registry.FileFor(key)));
+        Assert.That(registry.DeleteIfOwned(key, ours.ProcessId, ours.PipeName), Is.True);
+        Assert.That(File.Exists(registry.FileFor(key)), Is.False);
     }
 
     /// <summary>
     /// Orphaned locks are swept where a file pending deletion cannot be reopened — Windows — and left
     /// alone where an unlink races a lock, which is everywhere else (finding 8, D103).
     /// </summary>
-    [Fact]
+    [Test]
     public void LockFilesAreSweptOnWindowsOnly()
     {
         using var home = TempWorkspace.Create("sessions-locks");
@@ -524,15 +525,15 @@ public class SessionRegistryTests
         {
         }
 
-        Assert.Equal(0, unix.Sweep(apply: true).Locks);
-        Assert.True(File.Exists(unix.LockFor(orphan)));
+        Assert.That(unix.Sweep(apply: true).Locks, Is.EqualTo(0));
+        Assert.That(File.Exists(unix.LockFor(orphan)), Is.True);
 
-        Assert.Equal(OperatingSystem.IsWindows() ? 1 : 0, Registry(home).Sweep(apply: false).Locks);
+        Assert.That(Registry(home).Sweep(apply: false).Locks, Is.EqualTo(OperatingSystem.IsWindows() ? 1 : 0));
 
         var windows = RegistryWith(home, sweepLocks: true);
 
-        Assert.Equal(1, windows.Sweep(apply: true).Locks);
-        Assert.False(File.Exists(windows.LockFor(orphan)));
+        Assert.That(windows.Sweep(apply: true).Locks, Is.EqualTo(1));
+        Assert.That(File.Exists(windows.LockFor(orphan)), Is.False);
     }
 
     /// <summary>
@@ -540,7 +541,7 @@ public class SessionRegistryTests
     /// judged by a pid that means nothing here; one with no namespace, or with ours, is judged as
     /// before (finding 8, D103).
     /// </summary>
-    [Fact]
+    [Test]
     public void TheSweepLeavesAFileFromAnotherPidNamespaceAlone()
     {
         const int Gone = int.MaxValue - 7;
@@ -559,40 +560,40 @@ public class SessionRegistryTests
 
         var report = registry.Inspect(foreign);
 
-        Assert.True(report.ForeignNamespace);
-        Assert.Contains("another pid namespace", report.Verdict, StringComparison.Ordinal);
-        Assert.False(registry.Inspect(local).ForeignNamespace);
+        Assert.That(report.ForeignNamespace, Is.True);
+        Assert.That(report.Verdict, Contains.Substring("another pid namespace").Using(StringComparison.Ordinal));
+        Assert.That(registry.Inspect(local).ForeignNamespace, Is.False);
 
-        Assert.Equal(2, registry.Sweep(apply: true).Sessions);
+        Assert.That(registry.Sweep(apply: true).Sessions, Is.EqualTo(2));
 
-        Assert.True(File.Exists(registry.FileFor(foreign)));
-        Assert.False(File.Exists(registry.FileFor(unmarked)));
-        Assert.False(File.Exists(registry.FileFor(local)));
+        Assert.That(File.Exists(registry.FileFor(foreign)), Is.True);
+        Assert.That(File.Exists(registry.FileFor(unmarked)), Is.False);
+        Assert.That(File.Exists(registry.FileFor(local)), Is.False);
     }
 
     /// <summary>The namespace is a Linux fact, read from <c>/proc/self/ns/pid</c>; elsewhere there is none.</summary>
-    [Fact]
+    [Test]
     public void ThePidNamespaceIsReadOnLinuxAndNowhereElse()
     {
         var current = SessionRegistry.CurrentPidNamespace();
 
         if (OperatingSystem.IsLinux())
         {
-            Assert.NotNull(current);
-            Assert.StartsWith("pid:[", current, StringComparison.Ordinal);
+            Assert.That(current, Is.Not.Null);
+            Assert.That(current, Does.StartWith("pid:[").Using(StringComparison.Ordinal));
         }
         else
         {
-            Assert.Null(current);
+            Assert.That(current, Is.Null);
         }
     }
 
-    [Fact]
+    [Test]
     public void SweepingADirectoryThatDoesNotExistFindsNothing()
     {
         using var home = TempWorkspace.Create("sessions-nothing");
 
-        Assert.Equal(0, Registry(home).Sweep(apply: true).Total);
+        Assert.That(Registry(home).Sweep(apply: true).Total, Is.EqualTo(0));
     }
 
     private static SessionRegistry Registry(TempWorkspace home) =>

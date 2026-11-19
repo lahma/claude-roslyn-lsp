@@ -9,7 +9,7 @@ using ClaudeRoslynLsp.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter.Sharing;
 
@@ -35,13 +35,13 @@ public class SharedRoslynHostTests
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(20);
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>
     /// Rule 1: the host answers the handshake itself. Roslyn has one client, and a second
     /// <c>initialize</c> on its connection is a protocol error.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAttachedClientsInitializeIsAnsweredByTheHostAndNeverReachesRoslyn()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -50,21 +50,21 @@ public class SharedRoslynHostTests
         var answered = await client.RequestAsync(1, "initialize", "{}");
         var result = answered.GetProperty("result");
 
-        Assert.Equal(
-            $"{ServerVersion.Name} shared engine (host process {Environment.ProcessId})",
-            result.GetProperty("serverInfo").GetProperty("name").GetString());
+        Assert.That(
+            result.GetProperty("serverInfo").GetProperty("name").GetString(),
+            Is.EqualTo($"{ServerVersion.Name} shared engine (host process {Environment.ProcessId})"));
 
         // Everything else is Roslyn's own document, verbatim: the capabilities it advertised and the
         // process that actually holds the workspace (C45).
-        Assert.Equal(4242, result.GetProperty("_roslyn_processId").GetInt32());
-        Assert.True(result.GetProperty("capabilities").GetProperty("definitionProvider").GetBoolean());
+        Assert.That(result.GetProperty("_roslyn_processId").GetInt32(), Is.EqualTo(4242));
+        Assert.That(result.GetProperty("capabilities").GetProperty("definitionProvider").GetBoolean(), Is.True);
 
         // One initialize reached the backend, and it was the host's.
-        Assert.Single(harness.Backend.ReceivedMethods, method => method == "initialize");
+        Assert.That(harness.Backend.ReceivedMethods, Has.Exactly(1).Matches<string>(method => method == "initialize"));
     }
 
     /// <summary>Rules 2 and 3: held by the host's gate, then answered under the client's own id.</summary>
-    [Fact]
+    [Test]
     public async Task ARequestIsHeldUntilTheWorkspaceLoadsAndThenAnsweredUnderTheClientsId()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -74,7 +74,7 @@ public class SharedRoslynHostTests
         await client.SendAsync(Request(8, "textDocument/definition", Position()));
 
         await WaitUntilAsync(() => harness.Session.Gate.HeldCount >= 1);
-        Assert.Null(client.TryFind(8));
+        Assert.That(client.TryFind(8), Is.Null);
 
         harness.Backend.CompleteProjectInitialization();
 
@@ -83,14 +83,14 @@ public class SharedRoslynHostTests
         // Non-empty is the proof the gate held it: the scripted backend answers navigation with an
         // empty successful result until it reports the workspace loaded, exactly as the real one does
         // (C27).
-        Assert.NotEmpty(answered.GetProperty("result").EnumerateArray());
+        Assert.That(answered.GetProperty("result").EnumerateArray(), Is.Not.Empty);
     }
 
     /// <summary>
     /// Rule 2 again, with two clients that both count from one: the failure this prevents is a wrong
     /// answer rather than an error.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task TwoAttachedClientsUsingTheSameIdsGetTheirOwnAnswers()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -109,15 +109,15 @@ public class SharedRoslynHostTests
         var one = await first.AwaitResponseAsync(2);
         var two = await second.AwaitResponseAsync(2);
 
-        Assert.Single(one.GetProperty("result").EnumerateArray());
-        Assert.Equal(3, two.GetProperty("result").GetArrayLength());
+        Assert.That(one.GetProperty("result").EnumerateArray(), Has.Exactly(1).Items);
+        Assert.That(two.GetProperty("result").GetArrayLength(), Is.EqualTo(3));
     }
 
     /// <summary>
     /// Rule 5: a client that attached after the load is told so, or it would hold every request until
     /// its own budget ran out on a workspace that finished loading minutes ago.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AClientThatAttachesAfterTheLoadIsToldTheWorkspaceIsReady()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -134,7 +134,7 @@ public class SharedRoslynHostTests
     }
 
     /// <summary>Rule 5: the notifications an attached client needs, and none of the requests.</summary>
-    [Fact]
+    [Test]
     public async Task LogsAndRefreshesAreFannedOutAndRegistrationsAreNot()
     {
         const string Uri = "file:///w/Fixture/Fixture.Core/Saved.cs";
@@ -163,22 +163,22 @@ public class SharedRoslynHostTests
         // Roslyn sent it as a request and the host owes it the answer. What crosses is a
         // notification, so the attached client consumes it without answering under an id its own
         // connection never issued.
-        Assert.False(refresh.TryGetProperty("id", out _));
+        Assert.That(refresh.TryGetProperty("id", out _), Is.False);
 
         // The host answers the registrations, the configuration pulls and the progress-create itself
         // (rule 4). An attached client that saw them would be a second answerer for a question that
         // has one correct answer.
-        Assert.DoesNotContain(client.Methods, method => method == "client/registerCapability");
-        Assert.DoesNotContain(client.Methods, method => method == "workspace/configuration");
-        Assert.DoesNotContain(client.Methods, method => method == "window/workDoneProgress/create");
-        Assert.DoesNotContain(client.Methods, method => method == "$/progress");
+        Assert.That(client.Methods, Has.None.Matches<string>(method => method == "client/registerCapability"));
+        Assert.That(client.Methods, Has.None.Matches<string>(method => method == "workspace/configuration"));
+        Assert.That(client.Methods, Has.None.Matches<string>(method => method == "window/workDoneProgress/create"));
+        Assert.That(client.Methods, Has.None.Matches<string>(method => method == "$/progress"));
     }
 
     /// <summary>
     /// Rule 6: Roslyn keeps one buffer per document, so a second <c>didOpen</c> is redundant and a
     /// <c>didClose</c> from one client would revert the other's live buffer to what is on disk.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ADocumentTwoClientsOpenIsOpenedOnceAndClosedOnce()
     {
         const string Uri = "file:///w/Fixture/Fixture.Core/Shared.cs";
@@ -213,9 +213,9 @@ public class SharedRoslynHostTests
         await first.SendAsync(Request(9, "textDocument/definition", Position()));
         await first.AwaitResponseAsync(9);
 
-        Assert.Equal(1, harness.OpensOf(Uri));
-        Assert.Equal(0, harness.ClosesOf(Uri));
-        Assert.NotNull(harness.Session.Documents.Find(Uri));
+        Assert.That(harness.OpensOf(Uri), Is.EqualTo(1));
+        Assert.That(harness.ClosesOf(Uri), Is.EqualTo(0));
+        Assert.That(harness.Session.Documents.Find(Uri), Is.Not.Null);
 
         await second.SendAsync(Notification("textDocument/didClose", TextDocument(Uri)));
         await WaitUntilAsync(() => harness.ClosesOf(Uri) == 1);
@@ -225,7 +225,7 @@ public class SharedRoslynHostTests
     }
 
     /// <summary>Rule 6: a client that goes away hands back what only it was holding.</summary>
-    [Fact]
+    [Test]
     public async Task ADetachingClientsDocumentsAreGivenBack()
     {
         const string Uri = "file:///w/Fixture/Fixture.Core/Orphan.cs";
@@ -250,7 +250,7 @@ public class SharedRoslynHostTests
     /// Rule 8: an attached client's <c>shutdown</c> is about that client. The Roslyn stays up, and so
     /// does everybody else attached to it.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAttachedShutdownDetachesOnlyThatClient()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -272,15 +272,15 @@ public class SharedRoslynHostTests
         await staying.SendAsync(Request(51, "textDocument/definition", Position()));
         var answered = await staying.AwaitResponseAsync(51);
 
-        Assert.Single(answered.GetProperty("result").EnumerateArray());
-        Assert.False(harness.Backend.ShutdownRequested);
+        Assert.That(answered.GetProperty("result").EnumerateArray(), Has.Exactly(1).Items);
+        Assert.That(harness.Backend.ShutdownRequested, Is.False);
     }
 
     /// <summary>
     /// Rule 7: the workspace is already open, and opening it a second time starts a second load
     /// underneath the first.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ASolutionOpenFromAnAttachedClientIsSwallowed()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -297,14 +297,14 @@ public class SharedRoslynHostTests
             && method.GetString() == "workspace/projectInitializationComplete");
 
         // Exactly one, and it was the host's.
-        Assert.Single(harness.Backend.ReceivedMethods, method => method == "solution/open");
+        Assert.That(harness.Backend.ReceivedMethods, Has.Exactly(1).Matches<string>(method => method == "solution/open"));
     }
 
     /// <summary>
     /// D90: the attached engine's own responder is never asked anything, so an override has to be
     /// applied in the process Roslyn actually asks.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task SetOptionIsAppliedInTheHostsOwnConfigurationResponder()
     {
         const string Section = "csharp|background_analysis.dotnet_compiler_diagnostics_scope";
@@ -323,12 +323,12 @@ public class SharedRoslynHostTests
 
         // The proof is on the wire on the *host's* connection: Roslyn asked for the section again and
         // was answered with the override rather than with the standing openFiles default (D48).
-        Assert.Contains(
+        Assert.That(
             harness.Backend.ReceivedMessages,
-            message => message.Contains("fullSolution", StringComparison.Ordinal));
+            Has.Some.Matches<string>(message => message!.Contains("fullSolution", StringComparison.Ordinal)));
     }
 
-    [Fact]
+    [Test]
     public async Task ASetOptionWithoutASectionIsRefusedRatherThanApplied()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -339,16 +339,16 @@ public class SharedRoslynHostTests
 
         var answered = await client.AwaitResponseAsync(61);
 
-        Assert.Equal(
-            JsonRpcErrors.InvalidParams,
-            answered.GetProperty("error").GetProperty("code").GetInt32());
+        Assert.That(
+            answered.GetProperty("error").GetProperty("code").GetInt32(),
+            Is.EqualTo(JsonRpcErrors.InvalidParams));
     }
 
     /// <summary>
     /// D91: the host going away is the state an attached client's supervisor already knows what to do
     /// with, so it has to look like a backend that went away rather than like nothing at all.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task StoppingTheHostClosesEveryAttachedConnection()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -362,7 +362,7 @@ public class SharedRoslynHostTests
     }
 
     /// <summary>Rule 4, from the other direction: a client cannot answer a question it was not asked.</summary>
-    [Fact]
+    [Test]
     public async Task AResponseFromAnAttachedClientIsDroppedRatherThanForwarded()
     {
         await using var harness = await HostHarness.StartAsync();
@@ -379,9 +379,9 @@ public class SharedRoslynHostTests
 
         // The backend saw the round trip that followed and nothing that looked like an answer to a
         // question it never asked.
-        Assert.DoesNotContain(
+        Assert.That(
             harness.Backend.ReceivedMessages,
-            message => message.Contains("\"applied\":true", StringComparison.Ordinal));
+            Has.None.Matches<string>(message => message!.Contains("\"applied\":true", StringComparison.Ordinal)));
     }
 
     /// <summary>

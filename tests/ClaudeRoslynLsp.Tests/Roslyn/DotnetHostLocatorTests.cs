@@ -1,6 +1,6 @@
 using ClaudeRoslynLsp.Roslyn;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Roslyn;
 
@@ -21,56 +21,55 @@ public class DotnetHostLocatorTests
         Microsoft.WindowsDesktop.App 10.0.1 [C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App]
         """;
 
-    [Fact]
+    [Test]
     public void EveryLineOfListRuntimesBecomesAnEntry()
     {
         var runtimes = DotnetHostLocator.ParseRuntimes(ListRuntimes);
 
-        Assert.Equal(5, runtimes.Count);
-        Assert.Equal("Microsoft.AspNetCore.App", runtimes[0].Name);
-        Assert.Equal("9.0.14", runtimes[0].Version);
-        Assert.Equal(@"C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App", runtimes[0].Location);
+        Assert.That(runtimes.Count, Is.EqualTo(5));
+        Assert.That(runtimes[0].Name, Is.EqualTo("Microsoft.AspNetCore.App"));
+        Assert.That(runtimes[0].Version, Is.EqualTo("9.0.14"));
+        Assert.That(runtimes[0].Location, Is.EqualTo(@"C:\Program Files\dotnet\shared\Microsoft.AspNetCore.App"));
     }
 
     /// <summary>
     /// The bracketed path is the reason this is parsed positionally: it contains spaces, and on a
     /// developer machine it contains brackets too.
     /// </summary>
-    [Fact]
+    [Test]
     public void APathWithSpacesAndBracketsSurvivesParsing()
     {
         var runtimes = DotnetHostLocator.ParseRuntimes(
             @"Microsoft.NETCore.App 10.0.1 [/home/me/my [odd] dir/dotnet/shared/Microsoft.NETCore.App]");
 
-        Assert.Single(runtimes);
-        Assert.Equal("/home/me/my [odd] dir/dotnet/shared/Microsoft.NETCore.App", runtimes[0].Location);
+        Assert.That(runtimes, Has.Exactly(1).Items);
+        Assert.That(runtimes[0].Location, Is.EqualTo("/home/me/my [odd] dir/dotnet/shared/Microsoft.NETCore.App"));
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData(null)]
-    [InlineData("not a runtime line")]
-    [InlineData("Microsoft.NETCore.App 10.0.1 no brackets here")]
+    [TestCase("")]
+    [TestCase(null)]
+    [TestCase("not a runtime line")]
+    [TestCase("Microsoft.NETCore.App 10.0.1 no brackets here")]
     public void OutputThatIsNotARuntimeListYieldsNothing(string? output)
     {
-        Assert.Empty(DotnetHostLocator.ParseRuntimes(output));
+        Assert.That(DotnetHostLocator.ParseRuntimes(output), Is.Empty);
     }
 
-    [Fact]
+    [Test]
     public void OnlyANetTenSharedFrameworkCounts()
     {
         var runtimes = DotnetHostLocator.ParseRuntimes(ListRuntimes);
         var selected = DotnetHostLocator.SelectNet10(runtimes);
 
-        Assert.NotNull(selected);
-        Assert.Equal("Microsoft.NETCore.App", selected!.Name);
-        Assert.Equal("10.0.1", selected.Version);
+        Assert.That(selected, Is.Not.Null);
+        Assert.That(selected!.Name, Is.EqualTo("Microsoft.NETCore.App"));
+        Assert.That(selected.Version, Is.EqualTo("10.0.1"));
     }
 
     /// <summary>
     /// <c>--list-runtimes</c> sorts as text, which puts 10.0.10 before 10.0.9.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheNewestNetTenWinsByVersionNotByListOrder()
     {
         var runtimes = DotnetHostLocator.ParseRuntimes(
@@ -79,10 +78,10 @@ public class DotnetHostLocatorTests
             Microsoft.NETCore.App 10.0.9 [/x]
             """);
 
-        Assert.Equal("10.0.10", DotnetHostLocator.SelectNet10(runtimes)!.Version);
+        Assert.That(DotnetHostLocator.SelectNet10(runtimes)!.Version, Is.EqualTo("10.0.10"));
     }
 
-    [Fact]
+    [Test]
     public void AStableBuildBeatsAPrereleaseOfTheSameVersion()
     {
         var runtimes = DotnetHostLocator.ParseRuntimes(
@@ -91,18 +90,18 @@ public class DotnetHostLocatorTests
             Microsoft.NETCore.App 10.0.0 [/x]
             """);
 
-        Assert.Equal("10.0.0", DotnetHostLocator.SelectNet10(runtimes)!.Version);
+        Assert.That(DotnetHostLocator.SelectNet10(runtimes)!.Version, Is.EqualTo("10.0.0"));
     }
 
-    [Fact]
+    [Test]
     public void AHostWithNoNetTenIsNotUsableAndSaysWhy()
     {
         var runtimes = DotnetHostLocator.ParseRuntimes("Microsoft.NETCore.App 9.0.14 [/x]");
 
-        Assert.Null(DotnetHostLocator.SelectNet10(runtimes));
+        Assert.That(DotnetHostLocator.SelectNet10(runtimes), Is.Null);
     }
 
-    [Fact]
+    [Test]
     public void DotnetRootIsSearchedFirst()
     {
         var probe = Probe(
@@ -112,14 +111,14 @@ public class DotnetHostLocatorTests
 
         var result = DotnetHostLocator.Locate(probe);
 
-        Assert.Equal(Host("/opt/dotnet"), result.Path);
-        Assert.Equal("DOTNET_ROOT", result.Source);
-        Assert.Equal(Path.GetDirectoryName(Host("/opt/dotnet")), result.DotnetRoot);
-        Assert.True(result.IsUsable);
-        Assert.Null(result.Failure);
+        Assert.That(result.Path, Is.EqualTo(Host("/opt/dotnet")));
+        Assert.That(result.Source, Is.EqualTo("DOTNET_ROOT"));
+        Assert.That(result.DotnetRoot, Is.EqualTo(Path.GetDirectoryName(Host("/opt/dotnet"))));
+        Assert.That(result.IsUsable, Is.True);
+        Assert.That(result.Failure, Is.Null);
     }
 
-    [Fact]
+    [Test]
     public void PathIsSearchedWhenDotnetRootIsUnset()
     {
         var probe = Probe(
@@ -129,11 +128,11 @@ public class DotnetHostLocatorTests
 
         var result = DotnetHostLocator.Locate(probe);
 
-        Assert.Equal(Host("/usr/bin"), result.Path);
-        Assert.Equal("PATH", result.Source);
+        Assert.That(result.Path, Is.EqualTo(Host("/usr/bin")));
+        Assert.That(result.Source, Is.EqualTo("PATH"));
     }
 
-    [Fact]
+    [Test]
     public void TheDefaultInstallLocationsAreSearchedLast()
     {
         var probe = Probe(
@@ -143,15 +142,15 @@ public class DotnetHostLocatorTests
 
         var result = DotnetHostLocator.Locate(probe);
 
-        Assert.Equal(Host("/usr/share/dotnet"), result.Path);
-        Assert.Equal("default install location", result.Source);
+        Assert.That(result.Path, Is.EqualTo(Host("/usr/share/dotnet")));
+        Assert.That(result.Source, Is.EqualTo("default install location"));
     }
 
     /// <summary>
     /// A stale <c>DOTNET_ROOT</c> pointing at an uninstalled SDK must not end the search: that is the
     /// most common shape of "the runtime is missing" that is not actually a missing runtime.
     /// </summary>
-    [Fact]
+    [Test]
     public void AStaleDotnetRootFallsThroughToTheRestOfTheChain()
     {
         var probe = Probe(
@@ -161,24 +160,24 @@ public class DotnetHostLocatorTests
 
         var result = DotnetHostLocator.Locate(probe);
 
-        Assert.Equal(Host("/usr/bin"), result.Path);
-        Assert.Contains(
+        Assert.That(result.Path, Is.EqualTo(Host("/usr/bin")));
+        Assert.That(
             result.Chain,
-            step => step.Contains(Host("/gone") + " (not found)", StringComparison.Ordinal));
+            Has.Some.Matches<string>(step => step!.Contains(Host("/gone") + " (not found)", StringComparison.Ordinal)));
     }
 
-    [Fact]
+    [Test]
     public void NoHostAtAllIsAFailureThatNamesTheFix()
     {
         var result = DotnetHostLocator.Locate(Probe(new() { ["PATH"] = "/usr/bin" }, [], ListRuntimes));
 
-        Assert.Null(result.Path);
-        Assert.False(result.IsUsable);
-        Assert.Contains("Install .NET 10", result.Failure, StringComparison.Ordinal);
-        Assert.NotEmpty(result.Chain);
+        Assert.That(result.Path, Is.Null);
+        Assert.That(result.IsUsable, Is.False);
+        Assert.That(result.Failure, Contains.Substring("Install .NET 10").Using(StringComparison.Ordinal));
+        Assert.That(result.Chain, Is.Not.Empty);
     }
 
-    [Fact]
+    [Test]
     public void AHostWithoutNetTenIsFoundButRefused()
     {
         var result = DotnetHostLocator.Locate(Probe(
@@ -186,12 +185,12 @@ public class DotnetHostLocatorTests
             [Host("/usr/bin")],
             "Microsoft.NETCore.App 9.0.14 [/x]"));
 
-        Assert.Equal(Host("/usr/bin"), result.Path);
-        Assert.False(result.IsUsable);
-        Assert.Contains("no Microsoft.NETCore.App 10.x runtime", result.Failure, StringComparison.Ordinal);
+        Assert.That(result.Path, Is.EqualTo(Host("/usr/bin")));
+        Assert.That(result.IsUsable, Is.False);
+        Assert.That(result.Failure, Contains.Substring("no Microsoft.NETCore.App 10.x runtime").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void AHostThatCannotBeRunIsSkipped()
     {
         var probe = new DotnetProbe(
@@ -202,17 +201,17 @@ public class DotnetHostLocatorTests
 
         var result = DotnetHostLocator.Locate(probe);
 
-        Assert.Equal(Host("/usr/bin"), result.Path);
+        Assert.That(result.Path, Is.EqualTo(Host("/usr/bin")));
     }
 
     /// <summary>The whole point of the search: the host it finds must be one Roslyn can run on.</summary>
-    [Fact]
+    [Test]
     public void TheRealHostIsResolvableOnThisMachine()
     {
         var result = DotnetHostLocator.Resolve();
 
-        Assert.True(result.IsUsable, result.Failure ?? "no failure was reported either");
-        Assert.Same(result, DotnetHostLocator.Resolve());
+        Assert.That(result.IsUsable, Is.True, result.Failure ?? "no failure was reported either");
+        Assert.That(DotnetHostLocator.Resolve(), Is.SameAs(result));
     }
 
     /// <summary>

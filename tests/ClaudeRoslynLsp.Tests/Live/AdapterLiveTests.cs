@@ -4,7 +4,7 @@ using System.Text.Json;
 
 using ClaudeRoslynLsp.Adapter;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Live;
 
@@ -23,18 +23,18 @@ namespace ClaudeRoslynLsp.Tests.Live;
 /// <para>
 /// <b>One test method, run in phases, and that is deliberate.</b> The expensive part is loading the
 /// solution — several seconds, a quarter of a gigabyte — so there is one session for everything.
-/// Splitting the phases into separate <c>[Fact]</c>s over a shared fixture would look tidier and be
-/// wrong: xunit does not order tests within a class, and two of these phases (killing Roslyn,
+/// Splitting the phases into separate <c>[Test]</c>s over a shared fixture would look tidier and be
+/// wrong: NUnit promises no order for tests within a class, and two of these phases (killing Roslyn,
 /// shutting the session down) destroy the state the others need. A sequence that must be a sequence
 /// is written as one.
 /// </para>
 /// <para>
-/// Every phase reports its timing through <see cref="ITestOutputHelper"/>, and the run ends with the
+/// Every phase reports its timing through <see cref="TestContext.Out"/>, and the run ends with the
 /// Roslyn process's peak working set — which is C38 re-measured on a small solution, and the number
 /// anybody asking "what does this cost" wants first.
 /// </para>
 /// </remarks>
-[Collection(AdapterLiveCollection.Name)]
+[Category("Live")]
 public class AdapterLiveTests
 {
     /// <summary>How long the solution may take to load before the test gives up (C31 plus slack).</summary>
@@ -52,19 +52,27 @@ public class AdapterLiveTests
     /// <summary>How long <c>shutdown</c>/<c>exit</c> may take.</summary>
     private static readonly TimeSpan ShutdownBudget = TimeSpan.FromSeconds(8);
 
-    private readonly AdapterLiveFixture _fixture;
-    private readonly ITestOutputHelper _output;
+    /// <summary>
+    /// The acquired Roslyn and the copied fixture, built once for the class and private to it.
+    /// </summary>
+    private static AdapterLiveFixture _fixture = null!;
 
-    public AdapterLiveTests(AdapterLiveFixture fixture, ITestOutputHelper output)
+    private readonly TextWriter _output = TestContext.Out;
+
+    [OneTimeSetUp]
+    public static async Task AcquireRoslynAsync()
     {
-        _fixture = fixture;
-        _output = output;
+        _fixture = new AdapterLiveFixture();
+        await _fixture.InitializeAsync();
     }
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    [OneTimeTearDown]
+    public static async Task ReleaseRoslynAsync() => await _fixture.DisposeAsync();
+
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>Everything the adapter promises, against the real server, in one session.</summary>
-    [Fact]
+    [Test]
     public async Task TheAdapterAnswersEverythingItAdvertisesAgainstTheRealServer()
     {
         _fixture.SkipIfDisabled();
@@ -104,7 +112,7 @@ public class AdapterLiveTests
         var definition = await session.RequestAsync(
             "textDocument/definition", Position(calculator, compute), AnswerBudget, Cancellation);
 
-        Assert.True(definition.GetArrayLength() > 0, "definition returned nothing");
+        Assert.That(definition.GetArrayLength() > 0, Is.True, "definition returned nothing");
 
         var references = await session.RequestAsync(
             "textDocument/references",
@@ -116,7 +124,7 @@ public class AdapterLiveTests
 
         // Caller.CallOnce, Program.Main and ShapeTests all call it, and Hello.Core is multi-targeted,
         // so the only safe assertion is "several".
-        Assert.True(references.GetArrayLength() >= 3, $"references returned {references.GetArrayLength()}");
+        Assert.That(references.GetArrayLength() >= 3, Is.True, $"references returned {references.GetArrayLength()}");
 
         var implementations = await session.RequestAsync(
             "textDocument/implementation", Position(shape, area), AnswerBudget, Cancellation);
@@ -129,21 +137,21 @@ public class AdapterLiveTests
         _output.WriteLine($"implementations                 {implementations.GetArrayLength()} ({distinct.Length} distinct files)");
 
         // Circle and Square, and nothing else implements IShape.Area.
-        Assert.Equal(2, distinct.Length);
+        Assert.That(distinct.Length, Is.EqualTo(2));
 
         var symbols = await session.RequestAsync(
             "workspace/symbol", """{"query":"Calculator"}""", AnswerBudget, Cancellation);
 
-        Assert.True(symbols.GetArrayLength() > 0, "workspaceSymbol found no Calculator");
+        Assert.That(symbols.GetArrayLength() > 0, Is.True, "workspaceSymbol found no Calculator");
 
         var prepared = await session.RequestAsync(
             "textDocument/prepareCallHierarchy", Position(calculator, compute), AnswerBudget, Cancellation);
 
-        Assert.True(prepared.GetArrayLength() > 0, "prepareCallHierarchy returned nothing");
+        Assert.That(prepared.GetArrayLength() > 0, Is.True, "prepareCallHierarchy returned nothing");
 
         // C24, asserted end to end: Hello.Core is multi-targeted, so an un-de-duplicated answer
         // would carry the same symbol once per target framework.
-        Assert.Equal(1, prepared.GetArrayLength());
+        Assert.That(prepared.GetArrayLength(), Is.EqualTo(1));
 
         var incoming = await session.RequestAsync(
             "callHierarchy/incomingCalls",
@@ -158,14 +166,14 @@ public class AdapterLiveTests
 
         _output.WriteLine($"incomingCalls                   {callers.Length}");
 
-        Assert.NotEmpty(callers);
-        Assert.Equal(callers.Length, callers.Distinct(StringComparer.Ordinal).Count());
+        Assert.That(callers, Is.Not.Empty);
+        Assert.That(callers.Distinct(StringComparer.Ordinal).Count(), Is.EqualTo(callers.Length));
 
         var hover = await session.RequestAsync(
             "textDocument/hover", Position(calculator, compute), AnswerBudget, Cancellation);
 
-        Assert.Equal(JsonValueKind.Object, hover.ValueKind);
-        Assert.True(hover.TryGetProperty("contents", out _), "hover carried no contents");
+        Assert.That(hover.ValueKind, Is.EqualTo(JsonValueKind.Object));
+        Assert.That(hover.TryGetProperty("contents", out _), Is.True, "hover carried no contents");
     }
 
     /// <summary>
@@ -191,14 +199,14 @@ public class AdapterLiveTests
 
         var published = session.LatestDiagnostics(program);
 
-        Assert.NotNull(published);
+        Assert.That(published, Is.Not.Null);
 
         // The severity floor and the Unnecessary rule: Calculator.cs's IDE0005 is a Hint and must
         // never reach the client, and what does arrive for Program.cs is errors and warnings only.
-        Assert.All(published, x => Assert.True(x.Severity <= DiagnosticTranslation.SeverityWarning));
+        Assert.That(published!.Select(x => x.Severity), Has.All.LessThanOrEqualTo(DiagnosticTranslation.SeverityWarning));
 
         var fixedText = broken.Replace("int x = \"s\";", "int x = 42;", StringComparison.Ordinal);
-        Assert.NotEqual(broken, fixedText);
+        Assert.That(fixedText, Is.Not.EqualTo(broken));
 
         var cleared = Stopwatch.StartNew();
         await session.ChangeAsync(program, fixedText, Cancellation);
@@ -212,8 +220,8 @@ public class AdapterLiveTests
         cleared.Stop();
         _output.WriteLine($"CS0029 gone after didChange     {cleared.Elapsed.TotalSeconds:F2} s");
 
-        Assert.True(
-            cleared.Elapsed < DiagnosticClearBudget + AnswerBudget,
+        Assert.That(
+            cleared.Elapsed < DiagnosticClearBudget + AnswerBudget, Is.True,
             $"the corrected file kept reporting CS0029 for {cleared.Elapsed.TotalSeconds:F1} s");
 
         // Back to broken on disk and in the buffer, so the recovery phase has something to find.
@@ -263,16 +271,16 @@ public class AdapterLiveTests
         found.Stop();
         _output.WriteLine($"Triangle.cs found by symbol     {found.Elapsed.TotalSeconds:F1} s");
 
-        Assert.True(seen, $"workspace/symbol never found Triangle after {found.Elapsed.TotalSeconds:F0} s");
+        Assert.That(seen, Is.True, $"workspace/symbol never found Triangle after {found.Elapsed.TotalSeconds:F0} s");
     }
 
     /// <summary>Killing Roslyn mid-session is absorbed: the next question is still answered.</summary>
     private async Task RecoveryPhaseAsync(LiveAdapterSession session)
     {
         var pid = session.RoslynProcessId;
-        Assert.NotNull(pid);
+        Assert.That(pid, Is.Not.Null);
 
-        using (var roslyn = Process.GetProcessById(pid.Value))
+        using (var roslyn = Process.GetProcessById(pid!.Value))
         {
             _output.WriteLine($"peak working set before kill    {roslyn.PeakWorkingSet64 / (1024 * 1024)} MB");
             session.RecordPeakWorkingSet(roslyn.PeakWorkingSet64);
@@ -291,8 +299,8 @@ public class AdapterLiveTests
         recovered.Stop();
         _output.WriteLine($"definition after kill           {recovered.Elapsed.TotalSeconds:F1} s");
 
-        Assert.True(definition.GetArrayLength() > 0, "the relaunched backend answered definition empty");
-        Assert.NotEqual(pid.Value, session.RoslynProcessId);
+        Assert.That(definition.GetArrayLength() > 0, Is.True, "the relaunched backend answered definition empty");
+        Assert.That(session.RoslynProcessId, Is.Not.EqualTo(pid.Value));
     }
 
     /// <summary>Shutting down does so promptly; an editor that hangs on quit is a bug users remember.</summary>
@@ -305,8 +313,8 @@ public class AdapterLiveTests
         _output.WriteLine($"shutdown + exit                 {stopwatch.Elapsed.TotalSeconds:F2} s");
         _output.WriteLine($"peak working set (C38)          {session.PeakWorkingSet / (1024 * 1024)} MB");
 
-        Assert.Equal(0, exitCode);
-        Assert.True(stopwatch.Elapsed < ShutdownBudget, $"shutdown took {stopwatch.Elapsed.TotalSeconds:F1} s");
+        Assert.That(exitCode, Is.EqualTo(0));
+        Assert.That(stopwatch.Elapsed < ShutdownBudget, Is.True, $"shutdown took {stopwatch.Elapsed.TotalSeconds:F1} s");
     }
 
     /// <summary>Renders a <c>TextDocumentPositionParams</c>, with an optional extra member.</summary>
@@ -314,21 +322,4 @@ public class AdapterLiveTests
         {"textDocument":{"uri":"{{{uri}}}"},"position":{"line":{{{at.Line}}},"character":{{{at.Character}}}}{{{extra}}}
         }
         """;
-}
-
-/// <summary>
-/// The xunit collection that owns the acquired Roslyn and the copied fixture.
-/// </summary>
-/// <remarks>
-/// A collection rather than a class fixture so that nothing else in the suite runs in parallel with
-/// a quarter-gigabyte child process loading a solution; the acquisition is also paid once for
-/// everything in it.
-/// </remarks>
-[CollectionDefinition(Name)]
-#pragma warning disable CA1711 // xunit's own convention: a collection definition is named for what it is.
-public sealed class AdapterLiveCollection : ICollectionFixture<AdapterLiveFixture>
-#pragma warning restore CA1711
-{
-    /// <summary>The collection's name.</summary>
-    public const string Name = "adapter-live";
 }

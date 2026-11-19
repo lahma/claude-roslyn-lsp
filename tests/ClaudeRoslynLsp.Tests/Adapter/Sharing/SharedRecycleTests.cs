@@ -11,7 +11,7 @@ using ClaudeRoslynLsp.Tests.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter.Sharing;
 
@@ -40,14 +40,14 @@ public class SharedRecycleTests
 
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(20);
 
-    private static CancellationToken Cancellation => TestContext.Current.CancellationToken;
+    private static CancellationToken Cancellation => TestContext.CurrentContext.CancellationToken;
 
     /// <summary>
     /// A recycle with a client attached: the backend goes, the session file stays and says
     /// <c>dormant</c>, the pipe stays open, and the attached client's next request brings the backend
     /// back and is answered.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task ARecycleKeepsThePipeAndTheSessionFileAndAnAttachedRequestWakesTheHost()
     {
         await using var host = await HostedSession.StartAsync();
@@ -61,18 +61,18 @@ public class SharedRecycleTests
 
         var first = host.Inner.Latest!;
 
-        Assert.Contains("shutdown", first.ReceivedMethods);
-        Assert.Equal(1, host.Inner.ConnectCount);
-        Assert.NotNull(host.Factory.Host);
-        Assert.False(peer.Ended);
+        Assert.That(first.ReceivedMethods, Does.Contain("shutdown"));
+        Assert.That(host.Inner.ConnectCount, Is.EqualTo(1));
+        Assert.That(host.Factory.Host, Is.Not.Null);
+        Assert.That(peer.Ended, Is.False);
 
         var published = host.Registry.TryRead(host.Key);
 
-        Assert.NotNull(published);
-        Assert.Equal("dormant", published.State);
-        Assert.Equal(1, published.Recycles);
-        Assert.Equal(1, published.AttachedClients);
-        Assert.Null(published.RoslynProcessId);
+        Assert.That(published, Is.Not.Null);
+        Assert.That(published!.State, Is.EqualTo("dormant"));
+        Assert.That(published.Recycles, Is.EqualTo(1));
+        Assert.That(published.AttachedClients, Is.EqualTo(1));
+        Assert.That(published.RoslynProcessId, Is.Null);
 
         // The attached client was told (D105).
         await peer.AwaitFirstAsync(message => IsBackendChanged(message, "dormant"));
@@ -84,7 +84,7 @@ public class SharedRecycleTests
         host.Inner.Latest!.CompleteProjectInitialization();
 
         var answered = await peer.AwaitResponseAsync(3);
-        Assert.NotEmpty(answered.GetProperty("result").EnumerateArray());
+        Assert.That(answered.GetProperty("result").EnumerateArray(), Is.Not.Empty);
 
         await WaitUntilAsync(() => host.Registry.TryRead(host.Key)?.State == "running");
     }
@@ -93,14 +93,14 @@ public class SharedRecycleTests
     /// A process attaching to a dormant host waits on the host's handshake, so its
     /// <c>initialize</c> has to be what wakes it — or it would wait for ever.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAttachedInitializeWakesADormantHost()
     {
         await using var host = await HostedSession.StartAsync();
 
         host.Memory = 1500 * Megabyte;
         await host.AdvanceUntilDormantAsync();
-        Assert.Equal(ReadinessState.Dormant, host.Session.Session.Gate.State);
+        Assert.That(host.Session.Session.Gate.State, Is.EqualTo(ReadinessState.Dormant));
 
         await using var late = await host.AttachAsync();
         await late.SendAsync(Request(1, "initialize", "{}"));
@@ -109,10 +109,9 @@ public class SharedRecycleTests
 
         var answered = await late.AwaitResponseAsync(1);
 
-        Assert.Contains(
-            "shared engine",
+        Assert.That(
             answered.GetProperty("result").GetProperty("serverInfo").GetProperty("name").GetString()!,
-            StringComparison.Ordinal);
+            Contains.Substring("shared engine").Using(StringComparison.Ordinal));
 
         // And the late attacher learns how many times the backend has been replaced.
         await late.AwaitFirstAsync(message =>
@@ -124,7 +123,7 @@ public class SharedRecycleTests
     /// D95: an attached session's diagnostic pulls are the host's own refreshes coming back, so they
     /// do not keep the shared Roslyn awake.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAttachedDiagnosticPullDoesNotCountAsActivity()
     {
         await using var host = await HostedSession.StartAsync();
@@ -144,7 +143,7 @@ public class SharedRecycleTests
         // 30. It is recycled on the original schedule instead — minute 21, give or take a deferred look.
         await host.AdvanceUntilDormantAsync(maxMinutes: 14);
 
-        Assert.Contains("shutdown", host.Inner.Latest!.ReceivedMethods);
+        Assert.That(host.Inner.Latest!.ReceivedMethods, Does.Contain("shutdown"));
     }
 
     /// <summary>
@@ -152,7 +151,7 @@ public class SharedRecycleTests
     /// shutdown disposing it is what withdraws the file — or a dead host would be left advertising a
     /// pipe nobody serves.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task StoppingADormantHostWithdrawsItsSessionFile()
     {
         var host = await HostedSession.StartAsync();
@@ -162,13 +161,13 @@ public class SharedRecycleTests
             host.Memory = 1500 * Megabyte;
             await host.AdvanceUntilDormantAsync();
 
-            Assert.Equal(ReadinessState.Dormant, host.Session.Session.Gate.State);
-            Assert.NotNull(host.Registry.TryRead(host.Key));
+            Assert.That(host.Session.Session.Gate.State, Is.EqualTo(ReadinessState.Dormant));
+            Assert.That(host.Registry.TryRead(host.Key), Is.Not.Null);
 
             await host.Session.DisposeAsync();
 
-            Assert.False(File.Exists(host.Registry.FileFor(host.Key)));
-            Assert.Null(host.Factory.Host);
+            Assert.That(File.Exists(host.Registry.FileFor(host.Key)), Is.False);
+            Assert.That(host.Factory.Host, Is.Null);
         }
         finally
         {
@@ -180,7 +179,7 @@ public class SharedRecycleTests
     /// D105: an attached engine's <c>getWorkspaceStatus</c> names the Roslyn that is actually running
     /// after a recycle, not the one it met at its own handshake, and counts the recycle.
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAttachedEngineReportsTheHostsNewBackend()
     {
         var connections = 0;
@@ -209,13 +208,13 @@ public class SharedRecycleTests
 
         var before = await engine.EnsureReadyAsync(Patience, Cancellation);
 
-        Assert.Equal(OwnedRoslynEngine.AttachedEngine, before.Engine);
-        Assert.Equal(4242, before.ProcessId);
-        Assert.Equal(0, before.Recycles);
+        Assert.That(before.Engine, Is.EqualTo(OwnedRoslynEngine.AttachedEngine));
+        Assert.That(before.ProcessId, Is.EqualTo(4242));
+        Assert.That(before.Recycles, Is.EqualTo(0));
 
         host.Memory = 1500 * Megabyte;
         await host.AdvanceUntilDormantAsync();
-        Assert.Equal(ReadinessState.Dormant, host.Session.Session.Gate.State);
+        Assert.That(host.Session.Session.Gate.State, Is.EqualTo(ReadinessState.Dormant));
 
         // A tool's question wakes the host through the pipe.
         var asked = engine.WorkspaceSymbolAsync("Circle", Cancellation);
@@ -224,7 +223,7 @@ public class SharedRecycleTests
         await WaitUntilAsync(() => host.Inner.Latest!.ReceivedMethods.Contains("solution/open"));
         host.Inner.Latest!.CompleteProjectInitialization();
 
-        Assert.NotEmpty(await asked.WaitAsync(Patience, Cancellation));
+        Assert.That(await asked.WaitAsync(Patience, Cancellation), Is.Not.Empty);
 
         // The announcement of the new backend follows the reload on the pipe; poll the status for it.
         var deadline = DateTimeOffset.UtcNow + Patience;
@@ -238,8 +237,8 @@ public class SharedRecycleTests
                 break;
             }
 
-            Assert.True(
-                DateTimeOffset.UtcNow < deadline,
+            Assert.That(
+                DateTimeOffset.UtcNow < deadline, Is.True,
                 $"The attached engine still reports process {after.ProcessId} and {after.Recycles} recycle(s).");
 
             await Task.Delay(5, Cancellation);
@@ -251,7 +250,7 @@ public class SharedRecycleTests
     /// never writes the file again, and never deletes it when it stops (finding 3 of the 0.2.0
     /// review, D102).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AHostWhoseFileWasTakenOverNeverWritesOrDeletesItAgain()
     {
         var host = await HostedSession.StartAsync();
@@ -272,12 +271,12 @@ public class SharedRecycleTests
             await host.AdvanceUntilDormantAsync();
             await host.AdvanceMinutesAsync(2);
 
-            Assert.Equal(newcomer, File.ReadAllBytes(path));
+            Assert.That(File.ReadAllBytes(path), Is.EqualTo(newcomer));
 
             await host.Session.DisposeAsync();
             await host.Factory.StopHostingAsync();
 
-            Assert.Equal(newcomer, File.ReadAllBytes(path));
+            Assert.That(File.ReadAllBytes(path), Is.EqualTo(newcomer));
         }
         finally
         {
@@ -290,7 +289,7 @@ public class SharedRecycleTests
     /// Roslyn, an attached engine forgets it, or a later solution pull that outlasts its budget would
     /// fall back to a report about a process that has gone (finding 4, C58, D105).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAttachedEngineForgetsItsWorkspaceReportWhenTheHostRecycles()
     {
         await using var host = await HostedSession.StartAsync(WithWorkspaceReport);
@@ -299,7 +298,7 @@ public class SharedRecycleTests
 
         await engine.EnsureReadyAsync(Patience, Cancellation);
         await engine.WorkspaceDiagnosticAsync([], Cancellation);
-        Assert.True(engine.HasCachedWorkspaceReport);
+        Assert.That(engine.HasCachedWorkspaceReport, Is.True);
 
         host.Memory = 1500 * Megabyte;
         await host.AdvanceUntilDormantAsync();
@@ -312,7 +311,7 @@ public class SharedRecycleTests
     /// pull, which the host does not count — it says so with a notification of its own, which Roslyn
     /// never sees (finding 4, D95).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAttachedEnginesToolCallIsTheHostsActivity()
     {
         await using var host = await HostedSession.StartAsync();
@@ -329,13 +328,13 @@ public class SharedRecycleTests
         var now = host.Time.GetUtcNow();
         await WaitUntilAsync(() => host.Session.Session.Recycler.Status.LastActivityAt == now);
 
-        Assert.DoesNotContain(SharedRoslynHost.ActivityMethod, host.Inner.Latest!.ReceivedMethods);
+        Assert.That(host.Inner.Latest!.ReceivedMethods, Does.Not.Contain(SharedRoslynHost.ActivityMethod));
 
         // So the window runs from minute 10: at minute 25 the backend is still there.
         await host.AdvanceMinutesAsync(15);
 
-        Assert.Equal(ReadinessState.ProjectsLoaded, host.Session.Session.Gate.State);
-        Assert.DoesNotContain("shutdown", host.Inner.Latest!.ReceivedMethods);
+        Assert.That(host.Session.Session.Gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
+        Assert.That(host.Inner.Latest!.ReceivedMethods, Does.Not.Contain("shutdown"));
     }
 
     /// <summary>
@@ -344,7 +343,7 @@ public class SharedRecycleTests
     /// again — or their diagnostics would stay the recycled process's until the next edit
     /// (finding 9, D105).
     /// </summary>
-    [Fact]
+    [Test]
     public async Task AnAttachedSessionPullsItsOpenDocumentsAgainAfterTheHostReloads()
     {
         var connections = 0;
@@ -543,7 +542,7 @@ public class SharedRecycleTests
             await WaitUntilAsync(() => host.Session.Session.Recycler.Status.Phase == BackendPhase.Running);
 
             host.Time.Advance(BackendRecycler.BaselineDelay);
-            Assert.Equal(400 * Megabyte, host.Session.Session.Recycler.Status.BaselineBytes);
+            Assert.That(host.Session.Session.Recycler.Status.BaselineBytes, Is.EqualTo(400 * Megabyte));
 
             return host;
         }
@@ -559,7 +558,7 @@ public class SharedRecycleTests
                 NullLogger.Instance);
 
             var connection = await attaching.ConnectAsync(Cancellation);
-            Assert.True(connection.Attached);
+            Assert.That(connection.Attached, Is.True);
 
             var peer = new Peer(connection);
 
@@ -600,7 +599,7 @@ public class SharedRecycleTests
                 await Task.Delay(20, Cancellation);
             }
 
-            Assert.Equal(ReadinessState.Dormant, Session.Session.Gate.State);
+            Assert.That(Session.Session.Gate.State, Is.EqualTo(ReadinessState.Dormant));
         }
 
         public async ValueTask DisposeAsync()

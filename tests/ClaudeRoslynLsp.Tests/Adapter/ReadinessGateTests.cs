@@ -4,7 +4,7 @@ using ClaudeRoslynLsp.Tests.Testing;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Adapter;
 
@@ -23,7 +23,7 @@ public class ReadinessGateTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(120);
 
-    [Fact]
+    [Test]
     public void RequestsAreHeldWhileTheWorkspaceLoadsAndReleasedInArrivalOrder()
     {
         var released = new List<string>();
@@ -35,24 +35,24 @@ public class ReadinessGateTests
         for (var index = 0; index < 5; index++)
         {
             var method = $"request-{index}";
-            Assert.True(gate.TryHold(JsonRpcId.FromNumber(index), method, outcome =>
+            Assert.That(gate.TryHold(JsonRpcId.FromNumber(index), method, outcome =>
             {
-                Assert.Equal(GateOutcome.Pass, outcome);
+                Assert.That(outcome, Is.EqualTo(GateOutcome.Pass));
                 released.Add(method);
-            }));
+            }), Is.True);
         }
 
-        Assert.Equal(5, gate.HeldCount);
-        Assert.Empty(released);
+        Assert.That(gate.HeldCount, Is.EqualTo(5));
+        Assert.That(released, Is.Empty);
 
         gate.MarkProjectsLoaded();
 
-        Assert.Equal(["request-0", "request-1", "request-2", "request-3", "request-4"], released);
-        Assert.Equal(ReadinessState.ProjectsLoaded, gate.State);
-        Assert.Equal(0, gate.HeldCount);
+        Assert.That(released, Is.EqualTo(["request-0", "request-1", "request-2", "request-3", "request-4"]));
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
+        Assert.That(gate.HeldCount, Is.EqualTo(0));
     }
 
-    [Fact]
+    [Test]
     public void OnceOpenARequestGoesStraightThroughWithoutBeingQueued()
     {
         using var gate = CreateGate(out _, out _);
@@ -61,15 +61,15 @@ public class ReadinessGateTests
 
         var outcome = default(GateOutcome?);
 
-        Assert.False(gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", x => outcome = x));
-        Assert.Equal(GateOutcome.Pass, outcome);
+        Assert.That(gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", x => outcome = x), Is.False);
+        Assert.That(outcome, Is.EqualTo(GateOutcome.Pass));
     }
 
     /// <summary>
     /// The budget is a floor, not a promise: after it, a partially loaded workspace answering some
     /// questions beats a server that has stopped answering at all.
     /// </summary>
-    [Fact]
+    [Test]
     public void TheLoadBudgetFlipsTheGateOpenAndPassesEverythingHeld()
     {
         using var gate = CreateGate(out var time, out var notices);
@@ -79,26 +79,26 @@ public class ReadinessGateTests
         var released = 0;
         gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", outcome =>
         {
-            Assert.Equal(GateOutcome.Pass, outcome);
+            Assert.That(outcome, Is.EqualTo(GateOutcome.Pass));
             released++;
         });
 
         time.Advance(Timeout - TimeSpan.FromSeconds(1));
-        Assert.Equal(0, released);
-        Assert.Equal(ReadinessState.RoslynInitialized, gate.State);
+        Assert.That(released, Is.EqualTo(0));
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.RoslynInitialized));
 
         time.Advance(TimeSpan.FromSeconds(2));
 
-        Assert.Equal(1, released);
-        Assert.Equal(ReadinessState.LoadTimedOut, gate.State);
-        Assert.Contains(notices, x => x.Contains("did not finish loading", StringComparison.Ordinal));
+        Assert.That(released, Is.EqualTo(1));
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.LoadTimedOut));
+        Assert.That(notices, Has.Some.Matches<string>(x => x!.Contains("did not finish loading", StringComparison.Ordinal)));
     }
 
     /// <summary>
     /// A cancellation arriving while a request is held has never reached Roslyn, so it cannot be
     /// mapped through — the gate answers it, with LSP's own <c>RequestCancelled</c>.
     /// </summary>
-    [Fact]
+    [Test]
     public void CancellingAHeldRequestDequeuesItAndLeavesTheRestInOrder()
     {
         var released = new List<string>();
@@ -110,34 +110,34 @@ public class ReadinessGateTests
         gate.TryHold(JsonRpcId.FromNumber(1), "first", _ => released.Add("first"));
         gate.TryHold(JsonRpcId.FromNumber(2), "second", outcome =>
         {
-            Assert.Equal(GateOutcome.Cancelled, outcome);
+            Assert.That(outcome, Is.EqualTo(GateOutcome.Cancelled));
             released.Add("second-cancelled");
         });
         gate.TryHold(JsonRpcId.FromNumber(3), "third", _ => released.Add("third"));
 
-        Assert.True(gate.TryCancel(JsonRpcId.FromNumber(2)));
-        Assert.Equal(2, gate.HeldCount);
-        Assert.Equal(["second-cancelled"], released);
+        Assert.That(gate.TryCancel(JsonRpcId.FromNumber(2)), Is.True);
+        Assert.That(gate.HeldCount, Is.EqualTo(2));
+        Assert.That(released, Is.EqualTo(["second-cancelled"]));
 
         gate.MarkProjectsLoaded();
 
-        Assert.Equal(["second-cancelled", "first", "third"], released);
+        Assert.That(released, Is.EqualTo(["second-cancelled", "first", "third"]));
     }
 
-    [Fact]
+    [Test]
     public void CancellingSomethingThatIsNotHeldReportsSo()
     {
         using var gate = CreateGate(out _, out _);
         gate.Start();
 
-        Assert.False(gate.TryCancel(JsonRpcId.FromNumber(99)));
+        Assert.That(gate.TryCancel(JsonRpcId.FromNumber(99)), Is.False);
     }
 
     /// <summary>
     /// A backend that will not start is a state the user has to be able to read. The refusal names
     /// <c>doctor</c>, because that is where the resolution chain is.
     /// </summary>
-    [Fact]
+    [Test]
     public void AFailedBackendRefusesEverythingHeldWithAnActionableMessage()
     {
         using var gate = CreateGate(out _, out _);
@@ -148,18 +148,18 @@ public class ReadinessGateTests
 
         gate.MarkFailed("the backend could not be started");
 
-        Assert.Equal(GateOutcome.Failed, outcome);
-        Assert.Equal(ReadinessState.Failed, gate.State);
-        Assert.Contains("doctor", gate.FailureMessage, StringComparison.Ordinal);
-        Assert.Contains("the backend could not be started", gate.FailureMessage, StringComparison.Ordinal);
+        Assert.That(outcome, Is.EqualTo(GateOutcome.Failed));
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Failed));
+        Assert.That(gate.FailureMessage, Contains.Substring("doctor").Using(StringComparison.Ordinal));
+        Assert.That(gate.FailureMessage, Contains.Substring("the backend could not be started").Using(StringComparison.Ordinal));
 
         // And a request arriving afterwards is refused at once rather than queued forever.
         var later = default(GateOutcome?);
-        Assert.False(gate.TryHold(JsonRpcId.FromNumber(2), "textDocument/hover", x => later = x));
-        Assert.Equal(GateOutcome.Failed, later);
+        Assert.That(gate.TryHold(JsonRpcId.FromNumber(2), "textDocument/hover", x => later = x), Is.False);
+        Assert.That(later, Is.EqualTo(GateOutcome.Failed));
     }
 
-    [Fact]
+    [Test]
     public void ALoadedWorkspaceCannotBeUnLoadedByALaterFailure()
     {
         using var gate = CreateGate(out _, out _);
@@ -167,35 +167,35 @@ public class ReadinessGateTests
         gate.MarkProjectsLoaded();
         gate.MarkFailed("the Roslyn backend exited");
 
-        Assert.Equal(ReadinessState.ProjectsLoaded, gate.State);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
     }
 
     /// <summary>
     /// Notifications flow from the moment Roslyn is initialised, not from the moment the workspace is
     /// loaded: a <c>didOpen</c> withheld until then would leave Roslyn analysing the file on disk.
     /// </summary>
-    [Fact]
+    [Test]
     public void NotificationsAreAllowedFromRoslynInitializedOnwards()
     {
         using var gate = CreateGate(out _, out _);
 
-        Assert.False(gate.NotificationsAllowed);
+        Assert.That(gate.NotificationsAllowed, Is.False);
 
         gate.Start();
-        Assert.False(gate.NotificationsAllowed);
+        Assert.That(gate.NotificationsAllowed, Is.False);
 
         gate.MarkRoslynInitialized();
-        Assert.True(gate.NotificationsAllowed);
+        Assert.That(gate.NotificationsAllowed, Is.True);
 
         gate.MarkProjectsLoaded();
-        Assert.True(gate.NotificationsAllowed);
+        Assert.That(gate.NotificationsAllowed, Is.True);
     }
 
     /// <summary>
     /// Ten seconds of silence on a slow load looks like a hang, so the client is told — once per
     /// interval, only while something is actually waiting, and naming the workspace.
     /// </summary>
-    [Fact]
+    [Test]
     public void AClientHoldingRequestsIsToldEveryTenSeconds()
     {
         using var gate = CreateGate(out var time, out var notices);
@@ -205,26 +205,27 @@ public class ReadinessGateTests
 
         // Nothing held: nothing said.
         time.Advance(TimeSpan.FromSeconds(25));
-        Assert.Empty(notices);
+        Assert.That(notices, Is.Empty);
 
         gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", _ => { });
 
         time.Advance(ReadinessGate.NoticeInterval);
-        var first = Assert.Single(notices);
+        Assert.That(notices, Has.Exactly(1).Items);
+        var first = notices.Single();
 
-        Assert.Contains("holding 1 request(s)", first, StringComparison.Ordinal);
-        Assert.Contains("Quartz.slnx", first, StringComparison.Ordinal);
+        Assert.That(first, Contains.Substring("holding 1 request(s)").Using(StringComparison.Ordinal));
+        Assert.That(first, Contains.Substring("Quartz.slnx").Using(StringComparison.Ordinal));
         // The notice reports the moment the timer was scheduled for, not the end of the jump: the
         // third tick is due at 30 s and that is when the line was written.
-        Assert.Contains("30s elapsed", first, StringComparison.Ordinal);
+        Assert.That(first, Contains.Substring("30s elapsed").Using(StringComparison.Ordinal));
 
         time.Advance(ReadinessGate.NoticeInterval);
-        Assert.Equal(2, notices.Count);
+        Assert.That(notices.Count, Is.EqualTo(2));
 
         // And it stops the moment the workspace is up.
         gate.MarkProjectsLoaded();
         time.Advance(ReadinessGate.NoticeInterval * 3);
-        Assert.Equal(2, notices.Count);
+        Assert.That(notices.Count, Is.EqualTo(2));
     }
 
     /// <summary>
@@ -232,7 +233,7 @@ public class ReadinessGateTests
     /// itself after the load budget and pass everything it held to a backend that is not there, and it
     /// would narrate a load nobody has started every ten seconds while it waited.
     /// </summary>
-    [Fact]
+    [Test]
     public void ADormantGateHoldsWithoutATimeoutOrANotice()
     {
         using var gate = CreateGate(out var time, out var notices);
@@ -242,40 +243,40 @@ public class ReadinessGateTests
         var asked = 0;
         gate.HeldWhileDormant += () => asked++;
 
-        Assert.True(gate.MarkDormant());
-        Assert.Equal(ReadinessState.Dormant, gate.State);
-        Assert.False(gate.IsOpen);
-        Assert.False(gate.NotificationsAllowed);
+        Assert.That(gate.MarkDormant(), Is.True);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Dormant));
+        Assert.That(gate.IsOpen, Is.False);
+        Assert.That(gate.NotificationsAllowed, Is.False);
 
         var released = 0;
-        Assert.True(gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", _ => released++));
+        Assert.That(gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", _ => released++), Is.True);
 
         // Holding is what asks for the backend back.
-        Assert.Equal(1, asked);
+        Assert.That(asked, Is.EqualTo(1));
 
         time.Advance(Timeout * 30);
 
-        Assert.Equal(0, released);
-        Assert.Equal(ReadinessState.Dormant, gate.State);
-        Assert.Equal(1, gate.HeldCount);
-        Assert.Empty(notices);
+        Assert.That(released, Is.EqualTo(0));
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Dormant));
+        Assert.That(gate.HeldCount, Is.EqualTo(1));
+        Assert.That(notices, Is.Empty);
     }
 
     /// <summary>A gate that is not open has nothing to go dormant from, and the recycle must not go ahead.</summary>
-    [Fact]
+    [Test]
     public void OnlyAnOpenGateCanGoDormant()
     {
         using var gate = CreateGate(out _, out _);
         gate.Start();
         gate.MarkRoslynInitialized();
 
-        Assert.False(gate.MarkDormant());
-        Assert.Equal(ReadinessState.RoslynInitialized, gate.State);
+        Assert.That(gate.MarkDormant(), Is.False);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.RoslynInitialized));
 
         gate.MarkFailed("no backend");
 
-        Assert.False(gate.MarkDormant());
-        Assert.Equal(ReadinessState.Failed, gate.State);
+        Assert.That(gate.MarkDormant(), Is.False);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Failed));
     }
 
     /// <summary>
@@ -283,7 +284,7 @@ public class ReadinessGateTests
     /// workspace's readiness releases what was held and raises <c>Opened</c> again, which is what
     /// re-arms the diagnostics and watch bridges.
     /// </summary>
-    [Fact]
+    [Test]
     public void WakingArmsTheLoadBudgetAndReopeningRaisesOpenedAgain()
     {
         using var gate = CreateGate(out var time, out var notices);
@@ -293,7 +294,7 @@ public class ReadinessGateTests
         gate.Opened += opened.Add;
 
         gate.MarkProjectsLoaded();
-        Assert.Single(opened);
+        Assert.That(opened, Has.Exactly(1).Items);
 
         gate.MarkDormant();
 
@@ -303,25 +304,25 @@ public class ReadinessGateTests
         // An hour dormant: none of it counts against the load budget.
         time.Advance(TimeSpan.FromHours(1));
 
-        Assert.True(gate.MarkWaking());
-        Assert.Equal(ReadinessState.Starting, gate.State);
+        Assert.That(gate.MarkWaking(), Is.True);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Starting));
 
         time.Advance(Timeout - TimeSpan.FromSeconds(1));
-        Assert.Empty(outcomes);
+        Assert.That(outcomes, Is.Empty);
 
         // And the ten-second notice is back, because now something is genuinely loading.
-        Assert.NotEmpty(notices);
+        Assert.That(notices, Is.Not.Empty);
 
         gate.MarkRoslynInitialized();
         gate.MarkProjectsLoaded();
 
-        Assert.Equal([GateOutcome.Pass], outcomes);
-        Assert.Equal(2, opened.Count);
-        Assert.Equal(ReadinessState.ProjectsLoaded, opened[1]);
+        Assert.That(outcomes, Is.EqualTo([GateOutcome.Pass]));
+        Assert.That(opened.Count, Is.EqualTo(2));
+        Assert.That(opened[1], Is.EqualTo(ReadinessState.ProjectsLoaded));
     }
 
     /// <summary>The wake's budget runs out like a first load's does.</summary>
-    [Fact]
+    [Test]
     public void AReloadThatOverrunsItsBudgetTimesOutFromTheWake()
     {
         using var gate = CreateGate(out var time, out _);
@@ -337,15 +338,15 @@ public class ReadinessGateTests
 
         time.Advance(Timeout + TimeSpan.FromSeconds(1));
 
-        Assert.Equal(GateOutcome.Pass, outcome);
-        Assert.Equal(ReadinessState.LoadTimedOut, gate.State);
+        Assert.That(outcome, Is.EqualTo(GateOutcome.Pass));
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.LoadTimedOut));
     }
 
     /// <summary>
     /// A recycle abandoned before Roslyn heard anything reopens the gate, releases what arrived, and
     /// does not raise <c>Opened</c> — nothing downstream was told it had closed.
     /// </summary>
-    [Fact]
+    [Test]
     public void CancellingDormancyReleasesWhatArrivedWithoutReopeningTheBridges()
     {
         using var gate = CreateGate(out _, out _);
@@ -362,16 +363,16 @@ public class ReadinessGateTests
 
         gate.CancelDormant();
 
-        Assert.Equal(ReadinessState.ProjectsLoaded, gate.State);
-        Assert.Equal([GateOutcome.Pass], outcomes);
-        Assert.Equal(0, opened);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
+        Assert.That(outcomes, Is.EqualTo([GateOutcome.Pass]));
+        Assert.That(opened, Is.EqualTo(0));
     }
 
     /// <summary>
     /// A late readiness notification from a backend that is being stopped must not open a dormant
     /// gate into a server that is gone; only the wake leaves that state.
     /// </summary>
-    [Fact]
+    [Test]
     public void AStrayReadinessNotificationDoesNotOpenADormantGate()
     {
         using var gate = CreateGate(out _, out _);
@@ -384,15 +385,15 @@ public class ReadinessGateTests
 
         gate.MarkProjectsLoaded();
 
-        Assert.Equal(ReadinessState.Dormant, gate.State);
-        Assert.Equal(0, released);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Dormant));
+        Assert.That(released, Is.EqualTo(0));
     }
 
     /// <summary>
     /// A load that finishes after its budget ran out moves the gate to loaded without opening it a
     /// second time, and says so once (finding 6, D100).
     /// </summary>
-    [Fact]
+    [Test]
     public void AWorkspaceThatLoadsAfterItsBudgetIsLoadedLateWithoutOpeningAgain()
     {
         using var gate = CreateGate(out var time, out _);
@@ -406,17 +407,17 @@ public class ReadinessGateTests
 
         time.Advance(Timeout + TimeSpan.FromSeconds(1));
 
-        Assert.Equal(ReadinessState.LoadTimedOut, gate.State);
-        Assert.Equal([ReadinessState.LoadTimedOut], opened);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.LoadTimedOut));
+        Assert.That(opened, Is.EqualTo([ReadinessState.LoadTimedOut]));
 
         gate.MarkProjectsLoaded();
 
-        Assert.Equal(ReadinessState.ProjectsLoaded, gate.State);
-        Assert.Equal(1, late);
-        Assert.Single(opened);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
+        Assert.That(late, Is.EqualTo(1));
+        Assert.That(opened, Has.Exactly(1).Items);
 
         gate.MarkProjectsLoaded();
-        Assert.Equal(1, late);
+        Assert.That(late, Is.EqualTo(1));
     }
 
     /// <summary>
@@ -424,7 +425,7 @@ public class ReadinessGateTests
     /// and the gate is dormant rather than failed, so the next request is held and asks again
     /// (finding 5, D96).
     /// </summary>
-    [Fact]
+    [Test]
     public void AWakeThatFailsGoesBackToSleepAndRefusesOnlyWhatWaitedForIt()
     {
         using var gate = CreateGate(out var time, out _);
@@ -436,7 +437,7 @@ public class ReadinessGateTests
         string? message = null;
 
         gate.TryHold(JsonRpcId.FromNumber(1), "textDocument/definition", outcomes.Add);
-        Assert.True(gate.MarkWaking());
+        Assert.That(gate.MarkWaking(), Is.True);
 
         gate.TryHold(JsonRpcId.FromNumber(2), "textDocument/hover", outcome =>
         {
@@ -444,44 +445,44 @@ public class ReadinessGateTests
             message = gate.FailureMessage;
         });
 
-        Assert.True(gate.ReturnToDormant("the relaunch failed; the next request tries again"));
+        Assert.That(gate.ReturnToDormant("the relaunch failed; the next request tries again"), Is.True);
 
-        Assert.Equal(ReadinessState.Dormant, gate.State);
-        Assert.Equal([GateOutcome.Failed, GateOutcome.Failed], outcomes);
-        Assert.Contains("the next request tries again", message, StringComparison.Ordinal);
-        Assert.Equal(0, gate.HeldCount);
-        Assert.Null(gate.FailureReason);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Dormant));
+        Assert.That(outcomes, Is.EqualTo([GateOutcome.Failed, GateOutcome.Failed]));
+        Assert.That(message, Contains.Substring("the next request tries again").Using(StringComparison.Ordinal));
+        Assert.That(gate.HeldCount, Is.EqualTo(0));
+        Assert.That(gate.FailureReason, Is.Null);
 
         var asked = 0;
         gate.HeldWhileDormant += () => asked++;
 
-        Assert.True(gate.TryHold(JsonRpcId.FromNumber(3), "textDocument/definition", outcomes.Add));
-        Assert.Equal(1, gate.HeldCount);
-        Assert.Equal(1, asked);
+        Assert.That(gate.TryHold(JsonRpcId.FromNumber(3), "textDocument/definition", outcomes.Add), Is.True);
+        Assert.That(gate.HeldCount, Is.EqualTo(1));
+        Assert.That(asked, Is.EqualTo(1));
 
         // Asleep: no load budget runs, and nothing is refused.
         time.Advance(Timeout * 2);
 
-        Assert.Equal(ReadinessState.Dormant, gate.State);
-        Assert.Equal(2, outcomes.Count);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Dormant));
+        Assert.That(outcomes.Count, Is.EqualTo(2));
     }
 
     /// <summary>Only a waking gate can go back to sleep; an open or a dormant one is left as it is.</summary>
-    [Fact]
+    [Test]
     public void OnlyAWakingGateCanGoBackToSleep()
     {
         using var gate = CreateGate(out _, out _);
         gate.Start();
         gate.MarkProjectsLoaded();
 
-        Assert.False(gate.ReturnToDormant("not waking"));
-        Assert.Equal(ReadinessState.ProjectsLoaded, gate.State);
+        Assert.That(gate.ReturnToDormant("not waking"), Is.False);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.ProjectsLoaded));
 
         gate.MarkDormant();
 
-        Assert.False(gate.ReturnToDormant("not waking"));
-        Assert.Equal(ReadinessState.Dormant, gate.State);
-        Assert.Null(gate.FailureReason);
+        Assert.That(gate.ReturnToDormant("not waking"), Is.False);
+        Assert.That(gate.State, Is.EqualTo(ReadinessState.Dormant));
+        Assert.That(gate.FailureReason, Is.Null);
     }
 
     private static ReadinessGate CreateGate(out TestTimeProvider time, out List<string> notices)

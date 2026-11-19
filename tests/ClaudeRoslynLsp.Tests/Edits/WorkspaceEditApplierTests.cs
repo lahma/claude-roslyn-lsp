@@ -3,7 +3,7 @@ using System.Text;
 using ClaudeRoslynLsp.Edits;
 using ClaudeRoslynLsp.Mcp.Engine;
 
-using Xunit;
+using NUnit.Framework;
 
 namespace ClaudeRoslynLsp.Tests.Edits;
 
@@ -12,7 +12,7 @@ namespace ClaudeRoslynLsp.Tests.Edits;
 /// </summary>
 public class WorkspaceEditApplierTests
 {
-    [Fact]
+    [Test]
     public void EditsAreAppliedInReverseOrderSoEarlierOffsetsStayValid()
     {
         using var workspace = TempWorkspace.Create("applier-order");
@@ -29,15 +29,15 @@ public class WorkspaceEditApplierTests
 
         WorkspaceEditApplier.Apply(plan);
 
-        Assert.Equal("int Calculate() => Calculate2();\n", File.ReadAllText(file));
-        Assert.Equal(2, plan.TotalEditCount);
+        Assert.That(File.ReadAllText(file), Is.EqualTo("int Calculate() => Calculate2();\n"));
+        Assert.That(plan.TotalEditCount, Is.EqualTo(2));
     }
 
     /// <summary>
     /// Overlaps are refused rather than resolved. LSP forbids them, so one means the answer is wrong
     /// already, and "merged" would be a guess written to somebody's source file.
     /// </summary>
-    [Fact]
+    [Test]
     public void OverlappingEditsAreRefused()
     {
         using var workspace = TempWorkspace.Create("applier-overlap");
@@ -50,14 +50,14 @@ public class WorkspaceEditApplierTests
             Replace(0, 3, 0, 8, "Y"),
         ])));
 
-        Assert.Contains("overlapping", exception.Message, StringComparison.Ordinal);
+        Assert.That(exception!.Message, Contains.Substring("overlapping").Using(StringComparison.Ordinal));
     }
 
     /// <summary>
     /// A column is a count of UTF-16 code units, which is what makes a surrogate pair two columns on
     /// both sides of the wire (D14 pins the encoding for exactly this reason).
     /// </summary>
-    [Fact]
+    [Test]
     public void ColumnsCountUtf16CodeUnitsSoAstralCharactersOccupyTwo()
     {
         using var workspace = TempWorkspace.Create("applier-surrogate");
@@ -66,17 +66,17 @@ public class WorkspaceEditApplierTests
         // at character 7 — a counted-by-runes implementation would replace " nam" instead.
         var file = workspace.File_("a.cs", "// \U0001F680 x name;\n");
 
-        Assert.Equal(8, "// \U0001F680 x ".Length);
+        Assert.That("// \U0001F680 x ".Length, Is.EqualTo(8));
 
         var (applier, _) = Applier(workspace);
 
         WorkspaceEditApplier.Apply(applier.Plan(Edit(file, [Replace(0, 8, 0, 12, "renamed")])));
 
-        Assert.Equal("// \U0001F680 x renamed;\n", File.ReadAllText(file));
+        Assert.That(File.ReadAllText(file), Is.EqualTo("// \U0001F680 x renamed;\n"));
     }
 
     /// <summary>C22 and the BOM rule together: the file keeps its mark and its endings.</summary>
-    [Fact]
+    [Test]
     public void TheFilesMarkAndLineEndingSurviveAnEditWhoseTextMixesBoth()
     {
         using var workspace = TempWorkspace.Create("applier-bom");
@@ -92,11 +92,11 @@ public class WorkspaceEditApplierTests
 
         var bytes = File.ReadAllBytes(file);
 
-        Assert.Equal([0xEF, 0xBB, 0xBF], bytes[..3]);
-        Assert.Equal("one\r\nTWO\r\nEXTRA\r\nthree\r\n", Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3));
+        Assert.That(bytes[..3], Is.EqualTo([0xEF, 0xBB, 0xBF]));
+        Assert.That(Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3), Is.EqualTo("one\r\nTWO\r\nEXTRA\r\nthree\r\n"));
     }
 
-    [Fact]
+    [Test]
     public void AUtf16FileStaysUtf16()
     {
         using var workspace = TempWorkspace.Create("applier-utf16");
@@ -110,15 +110,15 @@ public class WorkspaceEditApplierTests
 
         var bytes = File.ReadAllBytes(file);
 
-        Assert.Equal(Encoding.Unicode.GetPreamble(), bytes[..2]);
-        Assert.Equal("xyz\n", Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2));
+        Assert.That(bytes[..2], Is.EqualTo(Encoding.Unicode.GetPreamble()));
+        Assert.That(Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2), Is.EqualTo("xyz\n"));
     }
 
     /// <summary>
     /// C21: <c>Move type to X.cs</c> creates the file and then edits into it, in that order, in one
     /// array. Both halves have to work, and the order has to be honoured.
     /// </summary>
-    [Fact]
+    [Test]
     public void ACreateFollowedByEditsIntoTheNewFileWorks()
     {
         using var workspace = TempWorkspace.Create("applier-create");
@@ -140,11 +140,12 @@ public class WorkspaceEditApplierTests
 
         WorkspaceEditApplier.Apply(plan);
 
-        Assert.Equal("class Circle;\n", File.ReadAllText(target));
-        Assert.True(Assert.Single(plan.ChangedFiles).Created);
+        Assert.That(File.ReadAllText(target), Is.EqualTo("class Circle;\n"));
+        Assert.That(plan.ChangedFiles, Has.Exactly(1).Items);
+        Assert.That(plan.ChangedFiles.Single().Created, Is.True);
     }
 
-    [Fact]
+    [Test]
     public void ARenameMovesTheFileAndLaterEditsLandOnTheNewName()
     {
         using var workspace = TempWorkspace.Create("applier-rename");
@@ -167,15 +168,15 @@ public class WorkspaceEditApplierTests
 
         WorkspaceEditApplier.Apply(plan);
 
-        Assert.False(File.Exists(source));
-        Assert.Equal("class New;\n", File.ReadAllText(target));
+        Assert.That(File.Exists(source), Is.False);
+        Assert.That(File.ReadAllText(target), Is.EqualTo("class New;\n"));
 
         var moved = plan.ChangedFiles.Single(file => file.MovedToRelativePath is not null);
-        Assert.Equal("New.cs", moved.MovedToRelativePath);
-        Assert.Equal("Old.cs", guard.ToRelative(moved.Path));
+        Assert.That(moved.MovedToRelativePath, Is.EqualTo("New.cs"));
+        Assert.That(guard.ToRelative(moved.Path), Is.EqualTo("Old.cs"));
     }
 
-    [Fact]
+    [Test]
     public void ADeleteRemovesTheFileAndIsReported()
     {
         using var workspace = TempWorkspace.Create("applier-delete");
@@ -189,15 +190,16 @@ public class WorkspaceEditApplierTests
 
         WorkspaceEditApplier.Apply(plan);
 
-        Assert.False(File.Exists(file));
-        Assert.True(Assert.Single(plan.ChangedFiles).Deleted);
+        Assert.That(File.Exists(file), Is.False);
+        Assert.That(plan.ChangedFiles, Has.Exactly(1).Items);
+        Assert.That(plan.ChangedFiles.Single().Deleted, Is.True);
     }
 
     /// <summary>
     /// The guard, from the applier's side. Roslyn hands out URIs outside the workspace as a matter of
     /// course — navigation into a BCL symbol lands in the system temp directory (C25).
     /// </summary>
-    [Fact]
+    [Test]
     public void AUriOutsideTheWorkspaceIsRefused()
     {
         using var workspace = TempWorkspace.Create("applier-escape");
@@ -217,11 +219,11 @@ public class WorkspaceEditApplierTests
             ],
         }));
 
-        Assert.Contains("outside the workspace root", exception.Message, StringComparison.Ordinal);
+        Assert.That(exception!.Message, Contains.Substring("outside the workspace root").Using(StringComparison.Ordinal));
     }
 
     /// <summary>A traversal that resolves back inside the root is fine; one that escapes is not.</summary>
-    [Fact]
+    [Test]
     public void ATraversalSegmentIsJudgedByWhereItResolvesTo()
     {
         using var workspace = TempWorkspace.Create("applier-traversal");
@@ -229,25 +231,25 @@ public class WorkspaceEditApplierTests
         var (_, guard) = Applier(workspace);
 
         var inside = new Uri(Path.Combine(workspace.Root, "Core", "..", "Core", "a.cs")).AbsoluteUri;
-        Assert.True(guard.TryResolve(inside, out _, out _));
+        Assert.That(guard.TryResolve(inside, out _, out _), Is.True);
 
         var outside = new Uri(Path.Combine(workspace.Root, "..", "elsewhere.cs")).AbsoluteUri;
-        Assert.False(guard.TryResolve(outside, out _, out var reason));
-        Assert.Contains("outside the workspace root", reason, StringComparison.Ordinal);
+        Assert.That(guard.TryResolve(outside, out _, out var reason), Is.False);
+        Assert.That(reason, Contains.Substring("outside the workspace root").Using(StringComparison.Ordinal));
     }
 
-    [Fact]
+    [Test]
     public void ANonFileSchemeIsRefused()
     {
         using var workspace = TempWorkspace.Create("applier-scheme");
         var (_, guard) = Applier(workspace);
 
-        Assert.False(guard.TryResolve("https://example.com/a.cs", out _, out var reason));
-        Assert.Contains("file:", reason, StringComparison.Ordinal);
+        Assert.That(guard.TryResolve("https://example.com/a.cs", out _, out var reason), Is.False);
+        Assert.That(reason, Contains.Substring("file:").Using(StringComparison.Ordinal));
     }
 
     /// <summary>Planning reads and computes; it must not write. That is what makes preview honest.</summary>
-    [Fact]
+    [Test]
     public void PlanningWritesNothing()
     {
         using var workspace = TempWorkspace.Create("applier-plan");
@@ -256,18 +258,19 @@ public class WorkspaceEditApplierTests
 
         var plan = applier.Plan(Edit(file, [Replace(0, 0, 0, 3, "xyz")]));
 
-        Assert.Equal("abc\n", File.ReadAllText(file));
-        Assert.Equal("xyz\n", Assert.Single(plan.ChangedFiles).NewText);
+        Assert.That(File.ReadAllText(file), Is.EqualTo("abc\n"));
+        Assert.That(plan.ChangedFiles, Has.Exactly(1).Items);
+        Assert.That(plan.ChangedFiles.Single().NewText, Is.EqualTo("xyz\n"));
     }
 
-    [Fact]
+    [Test]
     public void AnEditWithNoDocumentChangesPlansToNothing()
     {
         using var workspace = TempWorkspace.Create("applier-empty");
         var (applier, _) = Applier(workspace);
 
-        Assert.True(applier.Plan(new WorkspaceEdit()).IsEmpty);
-        Assert.True(applier.Plan(null).IsEmpty);
+        Assert.That(applier.Plan(new WorkspaceEdit()).IsEmpty, Is.True);
+        Assert.That(applier.Plan(null).IsEmpty, Is.True);
     }
 
     private static (WorkspaceEditApplier Applier, WorkspacePathGuard Guard) Applier(TempWorkspace workspace)

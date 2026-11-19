@@ -17,13 +17,8 @@
   </ItemGroup>
 
   <ItemGroup Label="Test">
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
-    <!--
-      Held at 3.x deliberately: xunit.v3 4.0.0 drops VSTest-mode support, which D9 depends on.
-      See AGENTS.md, *Package budget*, for the evidence and the revisit trigger.
-    -->
-    <PackageVersion Include="xunit.v3" Version="3.2.2" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="NUnit" Version="5.0.0" />
+    <PackageVersion Include="NUnit3TestAdapter" Version="6.3.1" />
   </ItemGroup>
 
 </Project>

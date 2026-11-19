@@ -156,6 +156,11 @@ internal sealed partial class ChildProcessFakeRoslynFactory : IRoslynConnectionF
                          ?? throw new InvalidOperationException(
                              "the running executable's path is not available, so it cannot launch itself");
 
+        // The framework-dependent `any` tool package (D22) runs as `dotnet claude-roslyn-lsp.dll`, where
+        // the process is the host, not this program: launching it again means naming the assembly.
+        var underHost = string.Equals(
+            Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase);
+
         var startInfo = new ProcessStartInfo
         {
             FileName = executable,
@@ -167,6 +172,11 @@ internal sealed partial class ChildProcessFakeRoslynFactory : IRoslynConnectionF
             StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
         };
+
+        if (underHost)
+        {
+            startInfo.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, ServerVersion.Name + ".dll"));
+        }
 
         startInfo.ArgumentList.Add(CliVerbs.FakeRoslyn);
 

@@ -32,9 +32,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ubuntu-latest:
-    name: ubuntu-latest
-    runs-on: ubuntu-latest
+  ubuntu-24_04:
+    name: ubuntu-24_04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,5 +52,5 @@ jobs:
           global-json-file: global.json
       - name: 'Restore: dotnet tools'
         run: dotnet tool restore
-      - name: 'Run: Test, SmokeTest, LiveTest'
-        run: dotnet fallout Test SmokeTest LiveTest
+      - name: 'Run: Test, SmokeTest, LiveTest, Pack'
+        run: dotnet fallout Test SmokeTest LiveTest Pack

@@ -30,6 +30,46 @@ internal sealed record ResolvedSymbol(string Uri, LspPosition Position, SymbolMa
 /// </remarks>
 internal static class ToolLookup
 {
+    /// <summary>
+    /// Finds the project a <c>project</c> argument names: by name first, then by the end of its
+    /// workspace-relative project-file path.
+    /// </summary>
+    /// <remarks>
+    /// One lookup for every tool that takes a project, so they agree on what a name matches and on
+    /// what they say when it matches nothing — which is "not found, and here is what there is", not a
+    /// list of candidates to choose between when there were none.
+    /// </remarks>
+    /// <param name="context">The tool context.</param>
+    /// <param name="state">The workspace, whose project list is searched.</param>
+    /// <param name="tool">The calling tool's MCP name, for the message.</param>
+    /// <param name="project">The argument: a project name or a <c>.csproj</c> path.</param>
+    internal static WorkspaceProject FindProject(
+        RoslynToolContext context,
+        WorkspaceState state,
+        string tool,
+        string project)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(project);
+
+        var wanted = project.Trim();
+        var projects = state.Projects ?? [];
+
+        return projects.FirstOrDefault(candidate =>
+                   string.Equals(candidate.Name, wanted, StringComparison.OrdinalIgnoreCase))
+               ?? projects.FirstOrDefault(candidate =>
+                   context.RelativeFromPath(candidate.Path)
+                       .EndsWith(wanted.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
+               ?? throw ToolErrors.NotFound(
+                   tool,
+                   projects.Count == 0
+                       ? $"project '{wanted}': the workspace lists no projects, so name the files or a path instead"
+                       : $"project '{wanted}' among the workspace's {projects.Count.ToString(CultureInfo.InvariantCulture)} "
+                         + $"({string.Join(", ", projects.Take(20).Select(candidate => candidate.Name))}); "
+                         + "pass one of those names or its .csproj path");
+    }
+
     /// <summary>The container prefix Roslyn uses for a member's declaring type (S5).</summary>
     private const string MemberContainerPrefix = "in ";
 

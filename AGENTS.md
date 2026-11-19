@@ -64,7 +64,8 @@ put a real Roslyn behind those tools and, in doing so, found five things about t
 that a scripted backend cannot show (C55-C62). **D85-D94** were settled by WP9, which made the two
 verbs share one Roslyn per solution and filled in D23. **D95-D107** were settled by WP10, which gives
 an idle Roslyn's memory back (issue #1): a child that edited, built and ran tests all day holds four
-to six times its load size and never returns any of it.
+to six times its load size and never returns any of it. **D108** onwards were settled by the 0.3.0 upgrade, which took
+in what the sibling repositories `sonarqube-mcp` and `bitbucket-mcp` learned shipping the same stack.
 
 The four rows D16-D19 reserved were settled by WP4 and are written out as **D50-D59**, which is
 where the argument lives; the reserved rows point there rather than restating it in two places.
@@ -174,6 +175,7 @@ where the argument lives; the reserved rows point there rather than restating it
 | D105 | **The host tells attached clients when its backend changes, and stops claiming a workspace is loaded while it reloads.** `claude-roslyn-lsp/backendChanged` carries the state, Roslyn's process id, the recycle count, the baseline and the last recycle time; it is built from the recycler's status, sent whenever the state, the process or the count moves, sent to a late attacher straight after its handshake, and listed in D89's fan-out set so that set stays the one place that says what an attached client sees. An attached `OwnedRoslynEngine` reports the host's process id and recycle counters from it in `getWorkspaceStatus` (it used to name the dead process after any host relaunch, because C45's id was only read at its own handshake), and an attached `AdapterSession` resets its diagnostics bridge on it, because its result ids were issued by the process that went (D57). `SharedRoslynHost._projectsLoaded` is cleared whenever the backend is anything but running: it used to be set once and never reset, so a client attaching during a reload was told the workspace was loaded and had its requests answered empty (C27). Two gaps closed by the 0.2.0 review: an attached engine forgets its cached workspace report whenever the host's backend is not running or is a different process or recycle count, because the C58 fallback means "nothing has changed since Roslyn last answered", which is untrue of a Roslyn that never answered this engine; and an attached `AdapterSession` pulls its open documents again when the host reports a *new* Roslyn running, because its own gate never closes during the host's reload and its published diagnostics would otherwise stay the recycled process's until the next edit. |
 | D106 | **An idle shutdown regardless of size exists and is off.** `CLAUDE_ROSLYN_LSP_IDLE_SHUTDOWN_MINUTES` recycles after that much idle time whatever the backend holds — the issue's second proposal, for a machine running a dozen sessions where four children that have answered nothing for 22 hours are 1.7 GB nobody is using. Off by default because every relaunch costs a whole solution load and the growth rule already catches the children that cost real memory; when both rules are due, this one is the reason given. It needs no baseline and skips the compaction step, which belongs to the growth rule. |
 | D107 | **`doctor` lists every live host on the machine with what its Roslyn holds, measured by `doctor` itself.** Per live session: the adapter pid, the Roslyn pid with its working set and private bytes read by `Process.GetProcessById` at report time — the operating system's numbers, not a figure a host wrote down minutes ago — the state, the last activity's age, the recycles, the baseline, the attached clients and the solution; then one total line of live hosts and their combined Roslyn memory. That is the report that answers "who is using my memory" without matching a dozen `dotnet` processes to their sessions by hand. It says in so many words that a server running with `CLAUDE_ROSLYN_LSP_SHARE=off` keeps a private Roslyn, does not publish itself, and is therefore not in the list. `Cli/SharedEngineReport` gathers and renders it, with the process sampler a parameter so the section is tested without a real Roslyn. |
+| D108 | **The SDK and the target framework stay on .NET 10 until a measured gain says otherwise.** `global.json` pins the .NET 10 SDK and `TargetFramework` is `net10.0`, through .NET 11 (STS, released 2026-11-10). Measured on the sibling `sonarqube-mcp` on 2026-11-18, `net11.0` made the AOT binary 1.9% larger and no faster; .NET 11 ends support on the same day as .NET 10 (2028-11-14); it raises the platform floor (macOS 15, x86-64-v2); and ModelContextProtocol has no `net11.0` build. Here the argument is stronger still: the Roslyn payload is `tools/net10.0/<rid>/` and needs a .NET 10 runtime whatever this binary targets (D31), so `net11.0` would make the framework-dependent `any` package (D22) need two runtimes where one does today. The SDK stays too: the .NET 11 SDK would bring back the `NuGet.Frameworks` pin (*Package budget changes*, 2026-11-19). Move when the Roslyn payload moves, at .NET 12 LTS, or when a .NET 11 feature is actually needed. |
 
 ### The plugin-option rule
 
@@ -345,14 +347,14 @@ adding one.
 Complete, as of the scaffold. Versions are centrally pinned in `Directory.Packages.props`, with
 transitive pinning on.
 
-- `src/ClaudeRoslynLsp`: `ModelContextProtocol` (pinned **exactly** `[2.2.0]`, because the AOT and
+- `src/ClaudeRoslynLsp`: `ModelContextProtocol` (pinned **exactly** `[2.4.0]`, because the AOT and
   serializer contract this server depends on — resolver chaining, schema generation, annotation
   defaults — is verified against that one version and a floating range would move it under a
   release), `Microsoft.Extensions.DependencyInjection`, `Microsoft.Extensions.Logging.Console`.
   Nothing else, ever, for the reasons in hard rule 1.
 - `tests/`: `xunit.v3`, `xunit.runner.visualstudio`, `Microsoft.NET.Test.Sdk`. No mocking or
   assertion libraries.
-- `build/`: `Fallout.Common` + `Fallout.Components` 10.4.0, plus `NuGet.Frameworks` 7.9.0 (see
+- `build/`: `Fallout.Common` + `Fallout.Components` 10.5.0, and nothing pinned beside them (see
   below). The build project opts out of central package management.
 
 SourceLink needs no package reference — it is in-SDK on .NET 8 and later.
@@ -371,13 +373,36 @@ whenever Fallout's `ITest` evaluates a test project in-process — which it does
 `GITHUB_ACTIONS` is set, so the failure is invisible locally and appears on the first CI run. Fallout
 10.4.0 brings 6.14.3 transitively through `NuGet.Packaging`, and the app-local copy shadows the SDK's,
 so every CI `Test` run throws `InvalidProjectFileException`. Pinning forward is safe in both
-directions, because the runtime binds a higher assembly version than the one requested. Remove once
-Fallout ships a `NuGet.Packaging` new enough to bring 7.9.0 in on its own
-(Fallout-build/Fallout#638).
+directions, because the runtime binds a higher assembly version than the one requested. Removed on
+2026-11-19, once Fallout 10.5.0 brought 7.9.0 in on its own (below).
 
-**Fallout stays on 10.4.0.** The `11.0.x` line is the *edge* channel, not the newer one; `10.4.0` is
-stable and functionally ahead. `GitHubActionsAttribute.Env`, which the publish workflow needs, does
+**Fallout stays on the 10.x line.** The `11.0.x` line is the *edge* channel, not the newer one; 10.x
+is stable and functionally ahead. `GitHubActionsAttribute.Env`, which the publish workflow needs, does
 not exist in 11.0.x, and regenerating the workflows there would move the actions *backwards*.
+
+**2026-11-19 — Fallout 10.4.0 to 10.5.0, and the `NuGet.Frameworks` pin removed.** 10.5.0 brings
+`NuGet.Frameworks` and `NuGet.Packaging` 7.9.0 itself (Fallout-build/Fallout#677, which closed #638),
+the version .NET SDK 10.0.4xx binds, so the build project references the two Fallout packages and
+nothing else. The CI path was reproduced locally before the pin went — `dotnet fallout Test` with
+`GITHUB_ACTIONS=true` and the `GITHUB_*` variables set for that one process, still on Fallout's
+`ITest` — and passed. The bump also clears NU1902/NU1903 on the build project's restore: 10.4.0
+brought System.Security.Cryptography.Pkcs and System.Security.Cryptography.Xml 10.0.10, which carry
+known advisories, and 10.5.0 brings 10.0.13. `build.ps1` takes 10.5.0's bootstrap change
+(`DOTNET_INSTALL_SKIP_TAR=1`, Fallout-build/Fallout#730). The pin comes back, at **8.0.0**, if
+`global.json` moves to the .NET 11 SDK while a Fallout component still evaluates projects
+in-process: that SDK's `Microsoft.Build.dll` asks for `NuGet.Frameworks` 7.11.0.0, Fallout brings
+7.9.0, and whether the evaluation fails depends on which copy loads first. 8.0.0 is the SDK's own
+copy and satisfies both SDKs; Fallout-build/Fallout#731 tracks the fix.
+
+**2026-11-19 — app version refresh, no ids added or removed.** `ModelContextProtocol` `[2.2.0]` to
+`[2.4.0]`, still an exact pin; for net10.0 it adds no package id, only newer
+`Microsoft.Extensions.*.Abstractions` versions. Two of its changes touch this server: since 2.3.0
+`tools/list` keeps registration order (nothing here depends on the order — `SmokeTest` and
+`ToolInventoryTests` compare sets), and since 2.4.0 protocol property names match case-sensitively
+(modelcontextprotocol/csharp-sdk#1934). `Microsoft.Extensions.DependencyInjection` and
+`Microsoft.Extensions.Logging.Console` 10.0.12 to **10.0.15**, deliberately not 11.0.0: the 11.x
+packages target net10.0 too, but they would pull the 11.x abstractions in as packages, while the
+10.0 servicing line is the one that matches the target framework (D108).
 
 ## Layout
 
@@ -472,7 +497,7 @@ tree and a decision naming why nothing existing could hold it.
 
 ## Build
 
-The orchestrator is [Fallout](https://fallout.build) 10.4.0 (stable channel), the maintained hard
+The orchestrator is [Fallout](https://fallout.build) 10.5.0 (stable channel), the maintained hard
 fork of NUKE. The CLI is pinned in `.config/dotnet-tools.json` as `fallout.globaltool` (command
 `fallout`) and resolves `build/_build.csproj` by convention.
 

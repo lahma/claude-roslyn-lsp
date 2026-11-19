@@ -10,9 +10,10 @@ namespace ClaudeRoslynLsp;
 internal static class ServerVersion
 {
     /// <summary>
-    /// The product name. It is the binary name, the NuGet package id, the plugin name, the MCP
-    /// <c>serverInfo.name</c> and the LSP <c>serverInfo.name</c> — one string for all five, which
-    /// is what lets <c>SmokeTest</c> assert both handshakes against the same constant.
+    /// The product name. It is the binary name, the NuGet package id, the MCP <c>serverInfo.name</c>
+    /// and the LSP <c>serverInfo.name</c> — one string for all four, which is what lets
+    /// <c>SmokeTest</c> assert both handshakes against the same constant. The Claude Code plugin is
+    /// named <c>roslyn-adapter</c> instead (D114).
     /// </summary>
     internal const string Name = "claude-roslyn-lsp";
 

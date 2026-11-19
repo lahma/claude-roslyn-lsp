@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for humans and AI agents working in this repository. `CLAUDE.md` imports this file, so keep
+Guidance for humans and AI agents working in this repository. `.claude/CLAUDE.md` imports this file, so keep
 it the single source of truth.
 
 `claude-roslyn-lsp` is one .NET 10 binary, published as a Native AOT executable per RID, that puts
@@ -64,8 +64,9 @@ put a real Roslyn behind those tools and, in doing so, found five things about t
 that a scripted backend cannot show (C55-C62). **D85-D94** were settled by WP9, which made the two
 verbs share one Roslyn per solution and filled in D23. **D95-D107** were settled by WP10, which gives
 an idle Roslyn's memory back (issue #1): a child that edited, built and ran tests all day holds four
-to six times its load size and never returns any of it. **D108** onwards were settled by the 0.9.0 upgrade, which took
-in what the sibling repositories `sonarqube-mcp` and `bitbucket-mcp` learned shipping the same stack.
+to six times its load size and never returns any of it. **D108-D113** were settled by the 0.9.0 upgrade, which took
+in what the sibling repositories `sonarqube-mcp` and `bitbucket-mcp` learned shipping the same stack, and
+**D114** — the plugin's name — just before 1.0.0.
 
 The four rows D16-D19 reserved were settled by WP4 and are written out as **D50-D59**, which is
 where the argument lives; the reserved rows point there rather than restating it in two places.
@@ -181,6 +182,7 @@ where the argument lives; the reserved rows point there rather than restating it
 | D111 | **A client's byte order mark is encoding, not text, and the adapter removes it where the text enters.** Claude Code sends a UTF-8 file's mark as the document's first character in `didOpen` and `didChange` (C67). Roslyn takes it for text, so every position on the first line moved by one and the formatter proposed deleting it; and the MCP half, which applies an edit to the file as `TextFileCodec` decodes it — without the mark (D61) — applied that deletion to the first real character, wrote it and answered `ok` (issue #3). Everything else in the product, Roslyn reading a closed file included, treats the mark as encoding, so `AdapterSession` strips one leading U+FEFF from a client's document notifications before the mirror, Roslyn or a shared host sees them (`DocumentMirror.WithoutByteOrderMark`): one place, because it is the only one external client text enters by, and an attached client is always this binary. A notification that carried a mark is reserialised; every other one still crosses as the client's bytes (D47). The cost is a client that keeps the mark in its own buffer *and* applies edits Roslyn computed for line 1 — none of the agents this product serves applies LSP edits, and an editor normally decodes the mark as encoding before its buffer ever holds it. |
 | D112 | **An edit Roslyn computed against text that is not the file on disk is refused, not written.** Roslyn answers about the text it holds, and for a document an LSP client has open that is the client's text; the applier writes into the file as it is on disk (D61). When the two differ — an editor sharing the engine with unsaved changes, or a file a shell command rewrote that the client never re-sent, which the watcher cannot report either because open documents are excluded from it (D56) — every edit lands at an offset Roslyn never meant, and the wrong file used to be written and reported `ok`. Issue #3 was one instance (D111 removed that cause); this is the guard for all of them. `RoslynToolContext.ApplyEditAsync`, the one place the four mutating tools plan, asks `IRoslynEngine.OpenTextAsync` for every file that received text edits and refuses the plan — preview included — when the held text differs from the disk text, naming the file and what to do. Line endings are compared away, because LSP positions are a line and a character and a client holding the same lines with other terminators cannot move an edit. The engine answers from its mirror when it hosts or owns the Roslyn (D91 puts every attached client's documents there), and an attached engine asks the host with `claude-roslyn-lsp/documentText`, answered from the host's mirror and never forwarded; the mirror matches the file a URI names rather than its spelling (`DocumentMirror.FindFile`), because a client may encode a drive letter differently from this server. An answer that cannot be had is null, which is the behaviour before this decision: a check that cannot judge does not refuse. |
 | D113 | **`formatCode` applies `end_of_line` and `insert_final_newline` itself, after Roslyn's edits.** Roslyn's `textDocument/formatting` changes indentation, spacing and wrapping and never converts a file's line endings or its final newline — `dotnet format` applies those two rules with formatters of its own — so a repository gating CI on `dotnet format --verify-no-changes` still failed after the tool that described itself as its replacement (issue #4). `Edits/EditorConfig` resolves the `.editorconfig` chain for each formatted file by the specification (nearest first, stopping at `root = true`, later sections winning, `unset`, globs without a `/` matching in any directory, `*` `**` `?` `[seq]` `{a,b}` `{n1..n2}`, case-sensitive as Roslyn's own matching is), and `WorkspaceEditApplier.Plan` takes the resulting `TextLayout` per file: every terminator normalised to `end_of_line`, the final newline added or removed, the file then written in that convention. A file Roslyn has nothing to change in is still planned when it has layout rules, and a layout change counts as one edit so the answer reports it. Only these two: encoding and the byte order mark stay as the file has them (D61), and nothing else `dotnet format` does is taken on. The chain is read again on every call, the cached apply included, because the rules live in files on disk. A pure-BCL reader (hard rules 1 and 3), with a `Regex` per section rather than `Adapter/GlobMatcher`, whose LSP syntax is segment-wise and has no character classes or numeric ranges. |
+| D114 | **The Claude Code plugin is called `roslyn-adapter`; everything else keeps the product's name.** Claude Code 2.1.325's `claude plugin validate` refuses a third party's plugin name that begins `claude-` — "it passes as one of Anthropic's own" — and an install that works today is one a later Claude Code may refuse. `roslyn-lsp`, the obvious alternative, was already the name of four public plugins (lewing/agent-plugins, unsafePtr/ClaudeCodeRoslynLspProxy, 0xdhx/dhx-hooks, Jodre11/claude-code-plugins), and two plugins of one name give colliding tool ids. `roslyn-adapter` was in no public `.claude-plugin` manifest and not in the official marketplace on 2026-11-19, and it is what the product calls itself. The rename is the plugin's alone: the marketplace stays `claude-roslyn-lsp`, because that is what every existing user's `/plugin marketplace add` registered and the reserved-prefix rule is about plugin names; the binary, the NuGet id, the MCP server's `serverInfo.name` and the registry name stay `claude-roslyn-lsp` (`ServerVersion.Name`). What it costs a user of 0.9.0 or earlier, once, and why it was done before 1.0 rather than after: `/plugin update` cannot follow a rename, so the new plugin is installed and the old one removed by hand; plugin options and `${CLAUDE_PLUGIN_DATA}` are per plugin, so options are set again and Roslyn is downloaded again into the new data directory; and the MCP tool ids change from `mcp__plugin_claude-roslyn-lsp_roslyn__*` to `mcp__plugin_roslyn-adapter_roslyn__*`, which permission rules name. The local plugin directory follows as `roslyn-adapter-local`, and `PluginManifestTests` holds both names. |
 
 ### The plugin-option rule
 
@@ -428,6 +430,8 @@ packages target net10.0 too, but they would pull the 11.x abstractions in as pac
 ```
 .claude-plugin/             marketplace.json + plugin.json — the repository as its own Claude Code
                             plugin marketplace, source "./" (PluginManifestTests)
+.claude/CLAUDE.md           Imports AGENTS.md for Claude Code — under .claude/, because the root is
+                            the plugin's root, where a CLAUDE.md is not loaded and fails --strict
 .claude/agents/builder.md   The delegation contract for implementation work packages
 .claude/skills/             The shipped Agent Skill (one canonical copy; AgentSkillTests keeps its
                             tool references in step with the inventory)
@@ -888,6 +892,21 @@ scoping.
 Both manifests are checked with the official CLI, which is non-interactive:
 
 ```powershell
-claude plugin validate . --strict          # the marketplace manifest and the plugin manifest
+claude plugin validate . --strict          # the marketplace manifest and the plugin manifest; must end "Validation passed"
 claude plugin marketplace add .            # resolves it; remove afterwards
 ```
+
+`--strict` turns every plugin warning into a failure, so it has to stay warning-free. Three things
+keep it that way:
+
+- **A plugin name that does not begin `claude-`** (D114): the validator reserves the prefix for
+  Anthropic's own plugins and fails on it outright, `--strict` or not.
+- **No `CLAUDE.md` at the repository root.** The root is the plugin's root (`source: "./"`, D72),
+  where Claude Code does not load one as context, and the validator warns about it. The import that
+  gives contributors this file lives in `.claude/CLAUDE.md` (`@../AGENTS.md`, relative to the
+  importing file), which Claude Code reads as project instructions just the same.
+- **One expected line that is not a warning: `ICON_MISSING`.** It is a *plugin directory* check, and
+  the validator says itself that those do not change the result. No icon ships yet, on purpose: the
+  first icon a plugin is submitted to the directory with becomes its listing icon for good, so it is
+  the owner's choice. When one is chosen: a square PNG of 512–2048 px, under 2 MB, at
+  `.claude-plugin/icon.png`.

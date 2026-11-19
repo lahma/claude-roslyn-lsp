@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
-  "name": "claude-roslyn-lsp",
+  "name": "roslyn-adapter",
   "displayName": "Roslyn C# for Claude Code",
   "version": "0.9.0",
   "description": "Microsoft's Roslyn language server, mediated for Claude Code: navigation and edit-time diagnostics over LSP, plus an MCP refactoring surface (rename, code actions, fix-all, format, diagnostics on demand).",

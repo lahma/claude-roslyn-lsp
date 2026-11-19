@@ -44,13 +44,22 @@ public class PluginManifestTests
     private const string ServerManifestPath = ".mcp/server.json";
     private const string ChangelogPath = "CHANGELOG.md";
 
-    /// <summary>The plugin's name, the marketplace's name, the binary's name and the package id.</summary>
+    /// <summary>The plugin's name (D114).</summary>
     /// <remarks>
-    /// All four are the same string here, unlike in sonarqube-mcp where a reserved nuget.org prefix
-    /// forced the package id apart from everything else. That they agree is worth asserting anyway —
-    /// it is a property of this repository, not a coincidence to be discovered later.
+    /// Not the product's name: Claude Code reserves plugin names beginning <c>claude-</c> for
+    /// Anthropic's own, and <c>roslyn-lsp</c> belongs to several other public plugins. A plugin's
+    /// name is also what its tool ids (<c>mcp__plugin_roslyn-adapter_roslyn__*</c>) and its install
+    /// id are made of, so changing it again is a reinstall for every user — asserted here so it
+    /// cannot drift by accident.
     /// </remarks>
-    private const string PluginName = "claude-roslyn-lsp";
+    private const string PluginName = "roslyn-adapter";
+
+    /// <summary>
+    /// The marketplace's name, which stays the product's: it is what <c>/plugin marketplace add</c>
+    /// registered for every existing user, and Claude Code reserves the prefix for plugin names, not
+    /// marketplace names.
+    /// </summary>
+    private const string MarketplaceName = "claude-roslyn-lsp";
 
     /// <summary>
     /// The one environment variable the manifest is allowed to set under its own name, and the value
@@ -79,7 +88,7 @@ public class PluginManifestTests
         using var marketplace = Read(root, MarketplacePath);
         using var plugin = Read(root, PluginPath);
 
-        Assert.That(marketplace.RootElement.GetProperty("name").GetString(), Is.EqualTo(PluginName));
+        Assert.That(marketplace.RootElement.GetProperty("name").GetString(), Is.EqualTo(MarketplaceName));
         Assert.That(plugin.RootElement.GetProperty("name").GetString(), Is.EqualTo(PluginName));
 
         Assert.That(

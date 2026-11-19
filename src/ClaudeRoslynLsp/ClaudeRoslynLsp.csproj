@@ -34,7 +34,8 @@
        listed alongside it (the mcpserver template does the same). The SDK gives the RID packages the
        DotnetToolRidPackage type instead, so only the pointer carries McpServer - which matters,
        because nuget.org refuses a McpServer package that is not also a DotnetTool. The package id,
-       the assembly name, the tool command and the plugin name are all the same string. -->
+       the assembly name and the tool command are all the same string; the Claude Code plugin is
+       named roslyn-adapter (D114). -->
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackAsTool>true</PackAsTool>

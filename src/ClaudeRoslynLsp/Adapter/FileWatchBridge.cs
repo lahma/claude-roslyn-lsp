@@ -735,7 +735,7 @@ internal sealed partial class FileWatchBridge : IDisposable
                 return;
             }
 
-            if (_pendingKeys.Add(uri + " " + changeType))
+            if (_pendingKeys.Add(uri + "\0" + changeType))
             {
                 _pending.Add(new FileChange(uri, changeType, isProjectFile));
             }

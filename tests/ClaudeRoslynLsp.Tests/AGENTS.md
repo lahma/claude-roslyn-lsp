@@ -49,6 +49,10 @@ by scanning the repository. Do not delete one to make a change pass:
   `src/ClaudeRoslynLsp/Cli/` (hard rule 5). It strips comments and literals first, so the several
   comments that *discuss* the rule do not trip it, and it self-checks in both directions: it must
   find source files at all, and it must still find real usages inside `Cli/`.
+- **`NoControlCharactersTest`** fails on a raw control character other than tab in any `.cs` file
+  under `src/`, `tests/` or `build/`. A NUL typed into a literal compiles to the same program as its
+  escape `'\0'`, and makes git and GitHub treat the file as binary — no diff, no review — so four key
+  separators once went unnoticed that way.
 - **`PluginManifestTests`** asserts that the marketplace lists this repository as its one plugin with
   `source: "./"`, that the declared skill path still has a `SKILL.md` behind it, that both server
   entries run the same `dnx` pin with only their verb differing, that their environment blocks are

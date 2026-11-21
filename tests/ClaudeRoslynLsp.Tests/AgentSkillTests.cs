@@ -47,8 +47,8 @@ public class AgentSkillTests
     /// <summary>
     /// The canonical skill location. <c>.claude/skills/</c> is what Claude Code loads as a project
     /// skill from a checkout, and what <c>npx skills add</c> and <c>gh skill install</c> read when
-    /// installing into another agent; every other tool is pointed at this path from AGENTS.md and
-    /// README.md rather than given a second copy.
+    /// installing into another agent; every other tool is pointed at this path from the instruction
+    /// files and README.md rather than given a second copy (D72).
     /// </summary>
     private const string SkillDirectory = ".claude/skills/claude-roslyn-lsp";
 

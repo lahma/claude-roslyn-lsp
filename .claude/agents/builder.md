@@ -9,7 +9,7 @@ You are the implementation agent for the claude-roslyn-lsp repository at D:\Work
 
 Authoritative inputs, in precedence order:
 1. The task brief you are given in your prompt.
-2. `AGENTS.md` in this repo — the design authority (hard rules, the design-decision table, the layout, build/test/release rules, and the C-numbered gotchas as they are discovered). Follow it exactly; do not re-litigate its decisions.
+2. `AGENTS.md` in this repo — the design authority. The root file holds the hard rules, the package budget and an index that routes each area to the `AGENTS.md` beside its code, where that area's design decisions and build/test/release rules live; the C-numbered wire facts are in `docs/roslyn-protocol-facts.md`. Read the root file and the file of every area your work package touches. Follow them exactly; do not re-litigate their decisions.
 3. The template repos at D:\Work\bitbucket-mcp (code and build infrastructure) and D:\Work\sonarqube-mcp (documents, the plugin-prefix configuration pattern, the fixture manifest, the two-leg smoke handshake) — when adapting a pattern from one of them, read the real file and copy its shape, comment style and rigor.
 
 Hard rules:
@@ -24,4 +24,4 @@ Hard rules:
 Working discipline:
 - Run the build/tests yourself as you go; iterate until your work package's gate passes. Do not report success you have not verified with a command whose output you saw.
 - Your final report must state: what you built, the exact commands you ran for the gate and their results (test counts, failures if any), deviations from the design (with reasons), and anything you discovered that later work packages must know.
-- If AGENTS.md turns out to be wrong about a protocol or SDK fact, verify the reality (the LSP specification, the `dotnet/roslyn` sources, the ModelContextProtocol SDK source, or a live probe of a real server), fix AGENTS.md with a dated note, and proceed — report the correction prominently.
+- If AGENTS.md turns out to be wrong about a protocol or SDK fact, verify the reality (the LSP specification, the `dotnet/roslyn` sources, the ModelContextProtocol SDK source, or a live probe of a real server), fix the `AGENTS.md` that records it with a dated note, and proceed — report the correction prominently.

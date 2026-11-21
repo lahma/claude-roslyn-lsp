@@ -44,7 +44,7 @@ jobs:
       matrix:
         include:
           # Named, not ubuntu-latest: a Linux binary needs the glibc of the image it is built on,
-          # and PublishAot and PackRuntime fail above the recorded floor (AGENTS.md R3).
+          # and PublishAot and PackRuntime fail above the recorded floor (build/AGENTS.md, R3).
           - os: ubuntu-24.04
             rid: linux-x64
           - os: ubuntu-24.04-arm

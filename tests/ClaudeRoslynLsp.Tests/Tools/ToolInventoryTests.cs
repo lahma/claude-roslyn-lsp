@@ -31,9 +31,9 @@ namespace ClaudeRoslynLsp.Tests.Tools;
 public class ToolInventoryTests
 {
     /// <summary>
-    /// The design's tool list (the AGENTS.md tool table), in full and in ordinal order. Adding a tool
-    /// means editing this array, the AGENTS.md tool table, <c>Build.cs</c>'s <c>ExpectedToolNames</c>,
-    /// the README table and the skill.
+    /// The design's tool list (the tool table in <c>src/ClaudeRoslynLsp/Mcp/AGENTS.md</c>), in full
+    /// and in ordinal order. Adding a tool means editing this array, that table, <c>Build.cs</c>'s
+    /// <c>ExpectedToolNames</c>, the README table and the skill.
     /// </summary>
     private static readonly string[] ExpectedToolNames =
     [

@@ -61,8 +61,9 @@ partial class Build : FalloutBuild,
     /// the inventory is asserted outside the test assembly, which is what makes it a check on the
     /// *shipped* server rather than on a reflected type list: an AOT publish that dropped a tool
     /// class, or a serializer context that could not describe a result type, fails here and nowhere
-    /// else. Adding a tool means editing this array, AGENTS.md's tool table, the README table,
-    /// ToolInventoryTests, ToolSchemaTests and SKILL.md.
+    /// else. Adding a tool means editing this array, the tool table in
+    /// src/ClaudeRoslynLsp/Mcp/AGENTS.md, the README table, ToolInventoryTests, ToolSchemaTests and
+    /// SKILL.md.
     /// </remarks>
     static readonly string[] ExpectedToolNames =
     [

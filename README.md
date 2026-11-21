@@ -499,7 +499,7 @@ destructive because a code action can delete a file and a fix-all rewrites a sol
 and `formatCode` deliberately are not, because putting a confirmation prompt in front of the two
 operations this product most wants a model to reach for is how a user learns to click through the
 prompts that matter. The full annotation table, and the reasoning for each judgement call, is in
-[AGENTS.md](AGENTS.md).
+[`src/ClaudeRoslynLsp/Mcp/AGENTS.md`](src/ClaudeRoslynLsp/Mcp/AGENTS.md).
 
 Four conventions run through all ten:
 
@@ -1156,10 +1156,11 @@ tool packages, because those are publishes of their own.
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) first. It records the design decisions with the argument for each one,
-the package budget, the wire facts in
-[`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md) that cost a spike each to find, and
-the handful of hard rules that are easy to break by accident: never reference
+Read [AGENTS.md](AGENTS.md) first. It holds the package budget and an index that routes each area to
+the `AGENTS.md` beside its code, where the design decisions are recorded with the argument for each
+one; the wire facts that cost a spike each to find are in
+[`docs/roslyn-protocol-facts.md`](docs/roslyn-protocol-facts.md). It also holds the handful of hard
+rules that are easy to break by accident: never reference
 `Microsoft.CodeAnalysis.*`, never transcribe the prior art, no `Console.*` outside `Cli/`, never
 hand-edit the generated workflows, and never weaken a rule-enforcing test to make a change pass.
 

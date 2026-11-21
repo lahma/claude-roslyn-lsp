@@ -4,7 +4,7 @@ using System.Net;
 namespace ClaudeRoslynLsp.Tests.Http;
 
 /// <summary>
-/// Hand-rolled <see cref="HttpMessageHandler"/> stub (AGENTS.md: no mocking libraries), serving a
+/// Hand-rolled <see cref="HttpMessageHandler"/> stub (D9: no mocking libraries), serving a
 /// FIFO queue of responders and recording every request it saw.
 /// </summary>
 /// <remarks>

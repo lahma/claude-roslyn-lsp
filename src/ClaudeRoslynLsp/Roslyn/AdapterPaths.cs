@@ -160,7 +160,7 @@ internal sealed record AdapterPaths
             : (Path.Combine(profile, ".cache", DirectoryName), "~/.cache");
     }
 
-    /// <summary>Blank is absent here too — see the plugin-option rule in AGENTS.md.</summary>
+    /// <summary>Blank is absent here too — see the plugin-option rule in src/ClaudeRoslynLsp/AGENTS.md.</summary>
     private static string? Trimmed(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }
